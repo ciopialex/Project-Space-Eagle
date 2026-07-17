@@ -1,0 +1,25 @@
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Python caching
+__pycache__/
+*.py[cod]
+*$py.class
+
+# User configurations (private keys)
+config/api_keys.json
+
+# Local databases and runtime state
+memory/long_term.json
+memory/__pycache__/
+dashboard/__pycache__/
+config/__pycache__/
+actions/__pycache__/
+
+# IDEs & System files
+.vscode/
+.idea/
+.DS_Store
+scratch/
