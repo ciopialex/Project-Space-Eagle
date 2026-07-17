@@ -60,27 +60,27 @@ _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
 
 class C:
-    BG        = "#00060a"
-    PANEL     = "#010d14"
-    PANEL2    = "#010f18"
-    BORDER    = "#0d3347"
-    BORDER_B  = "#1a5c7a"
-    BORDER_A  = "#0f4060"
-    PRI       = "#00d4ff"
-    PRI_DIM   = "#007a99"
-    PRI_GHO   = "#001f2e"
-    ACC       = "#ff6b00"
-    ACC2      = "#ffcc00"
-    GREEN     = "#00ff88"
-    GREEN_D   = "#00aa55"
-    RED       = "#ff3355"
-    MUTED_C   = "#ff3366"
-    TEXT      = "#8ffcff"
-    TEXT_DIM  = "#3a8a9a"
-    TEXT_MED  = "#5ab8cc"
-    WHITE     = "#d8f8ff"
-    DARK      = "#000d14"
-    BAR_BG    = "#011520"
+    BG        = "#0A0A0A"
+    PANEL     = "rgba(24, 24, 28, 0.85)"
+    PANEL2    = "rgba(30, 30, 35, 0.75)"
+    BORDER    = "rgba(255, 255, 255, 0.08)"
+    BORDER_B  = "rgba(255, 255, 255, 0.12)"
+    BORDER_A  = "rgba(255, 255, 255, 0.06)"
+    PRI       = "#E5E5EA"
+    PRI_DIM   = "#C8C8D0"
+    PRI_GHO   = "rgba(255, 255, 255, 0.05)"
+    ACC       = "#C8C8D0"
+    ACC2      = "#B0B0B0"
+    GREEN     = "#22c55e"
+    GREEN_D   = "#16a34a"
+    RED       = "#ef4444"
+    MUTED_C   = "#f43f5e"
+    TEXT      = "#E5E5EA"
+    TEXT_DIM  = "#B0B0B0"
+    TEXT_MED  = "#C8C8D0"
+    WHITE     = "#FFFFFF"
+    DARK      = "#0F0F12"
+    BAR_BG    = "rgba(255, 255, 255, 0.03)"
 
 
 # Ana renge (accent) bağlı anahtarlar — durum renkleri (ACC, GREEN, RED…) sabit kalır
@@ -167,7 +167,10 @@ def retheme_all_widgets(old: dict[str, str], new: dict[str, str]) -> None:
 
 
 def qcol(h: str, a: int = 255) -> QColor:
-    c = QColor(h); c.setAlpha(a); return c
+    c = QColor(h)
+    if a != 255 or not h.startswith("rgba"):
+        c.setAlpha(a)
+    return c
 
 
 # ── Windows GPU via NVML DLL (no subprocess, no console window) ──────────────
@@ -965,7 +968,7 @@ class _CameraPreview(QWidget):
             _CameraPreview {{
                 background: rgba(0, 6, 10, 242);
                 border: 1px solid {C.PRI};
-                border-radius: 6px;
+                border-radius: 12px;
             }}
         """)
         self.setFixedWidth(self._W)
@@ -1030,7 +1033,7 @@ class SetupOverlay(QWidget):
             SetupOverlay {{
                 background: rgba(0, 6, 10, 245);
                 border: 1px solid {C.BORDER_B};
-                border-radius: 6px;
+                border-radius: 12px;
             }}
         """)
 
@@ -1254,7 +1257,7 @@ class CustomizeOverlay(QWidget):
             CustomizeOverlay {{
                 background: rgba(0, 6, 10, 245);
                 border: 1px solid {C.BORDER_B};
-                border-radius: 6px;
+                border-radius: 12px;
             }}
         """)
         lay = QVBoxLayout(self)
@@ -1425,7 +1428,7 @@ class ClipboardPanel(QWidget):
             ClipboardPanel {{
                 background: rgba(0, 8, 14, 248);
                 border: 1px solid {C.BORDER_B};
-                border-radius: 6px;
+                border-radius: 12px;
             }}
         """)
         self.setFixedWidth(self._W)
@@ -1726,6 +1729,206 @@ class RemoteKeyOverlay(QWidget):
         self.closed.emit()
 
 
+
+# ── DYNAMIC ISLAND OVERLAYS ──────────────────────────────────────────────────
+class SizeAdjustingStackedWidget(QStackedWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.currentChanged.connect(self.on_current_changed)
+
+    def on_current_changed(self, index):
+        self.updateGeometry()
+        p = self.parentWidget()
+        if p:
+            p.updateGeometry()
+            if p.layout():
+                p.layout().invalidate()
+            win = p.window()
+            if win:
+                win.updateGeometry()
+                if win.layout():
+                    win.layout().invalidate()
+
+    def sizeHint(self):
+        cur = self.currentWidget()
+        if cur:
+            return cur.sizeHint()
+        return super().sizeHint()
+
+    def minimumSizeHint(self):
+        cur = self.currentWidget()
+        if cur:
+            return cur.minimumSizeHint()
+        return super().minimumSizeHint()
+
+
+class PillWidget(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("PillWidget")
+        
+        self.svg_path = str(Path(BASE_DIR) / "assets/images/AE_dynamic_island_cutout.svg")
+        downloads_svg = "/home/shennyonthebeat/Downloads/AE_dynamic_island_cutout.svg"
+        if not os.path.exists(self.svg_path) and os.path.exists(downloads_svg):
+            os.makedirs(os.path.dirname(self.svg_path), exist_ok=True)
+            import shutil
+            try:
+                shutil.copy(downloads_svg, self.svg_path)
+            except Exception:
+                pass
+                
+        from PyQt6.QtSvg import QSvgRenderer
+        self.renderer = None
+        if os.path.exists(self.svg_path):
+            self.renderer = QSvgRenderer(self.svg_path)
+        elif os.path.exists(downloads_svg):
+            self.renderer = QSvgRenderer(downloads_svg)
+            
+        self.setStyleSheet("background: transparent; border: none;")
+        
+        # Color & Pulse variables
+        self.target_color = QColor(C.GREEN)
+        self.current_color = QColor(C.GREEN)
+        self.pulse_alpha = 110
+        self.pulse_grow = True
+        
+        # Continuous breathe timer
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_pulse)
+        self.timer.start(30)
+        
+    def sizeHint(self):
+        return QSize(200, 56)
+
+    def minimumSizeHint(self):
+        return QSize(200, 56)
+
+    def set_state(self, state: str):
+        state = state.upper()
+        if state in ("STANDBY", "LISTENING", "THINKING"):
+            self.target_color = QColor(C.GREEN)
+        elif state == "WORKING":
+            self.target_color = QColor("#EAB308")
+        elif state == "SPEAKING":
+            self.target_color = QColor("#3B82F6")
+        self.update()
+        
+    def update_pulse(self):
+        # 1. Liquid color melting interpolation
+        r = self.current_color.red() + (self.target_color.red() - self.current_color.red()) * 0.08
+        g = self.current_color.green() + (self.target_color.green() - self.current_color.green()) * 0.08
+        b = self.current_color.blue() + (self.target_color.blue() - self.current_color.blue()) * 0.08
+        self.current_color = QColor(int(r), int(g), int(b))
+        
+        # 2. Dimmer breathing pulsation (alpha bounds: 80 to 140)
+        step = 4 if self.target_color.name() in ("#EAB308", "#3B82F6") else 2
+        if self.pulse_grow:
+            self.pulse_alpha += step
+            if self.pulse_alpha >= 140:
+                self.pulse_alpha = 140
+                self.pulse_grow = False
+        else:
+            self.pulse_alpha -= step
+            if self.pulse_alpha <= 80:
+                self.pulse_alpha = 80
+                self.pulse_grow = True
+        self.update()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        # Enable high-end antialiasing and bilinear pixmap transforming
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        
+        r = QRectF(self.rect())
+        
+        # Calculate aspect-ratio-corrected centered rendering rectangle
+        # Cutout SVG is exactly 1000x280 (3.5714 aspect ratio)
+        svg_ratio = 1000.0 / 280.0
+        widget_w = r.width()
+        widget_h = r.height()
+        widget_ratio = widget_w / widget_h
+        
+        if widget_ratio > svg_ratio:
+            # Widget is wider than SVG aspect ratio: fit to height
+            render_h = widget_h
+            render_w = widget_h * svg_ratio
+        else:
+            # Widget is taller than SVG aspect ratio: fit to width
+            render_w = widget_w
+            render_h = widget_w / svg_ratio
+            
+        render_x = (widget_w - render_w) / 2
+        render_y = (widget_h - render_h) / 2
+        render_rect = QRectF(render_x, render_y, render_w, render_h)
+        
+        render_cx = render_x + render_w / 2
+        render_cy = render_y + render_h / 2
+        
+        # 1. Volumetric 3D Drop Shadows centered on render_rect
+        for i in range(4):
+            shadow_rect = render_rect.adjusted(i * 1.5, i * 1.5 + 2, -i * 1.5, -i * 1.5 + 2)
+            shadow_radius = shadow_rect.height() / 2
+            shadow_color = QColor(0, 0, 0, int(75 / (i + 1)))
+            painter.setBrush(QBrush(shadow_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(shadow_rect, shadow_radius, shadow_radius)
+            
+        # 2. Glowing center background centered on render_rect
+        def qc(h, a):
+            c = QColor(h)
+            c.setAlpha(a)
+            return c
+            
+        glow = QRadialGradient(render_cx, render_cy, render_rect.width() * 0.35)
+        glow.setColorAt(0.0, qc(self.current_color.name(), self.pulse_alpha))
+        glow.setColorAt(0.5, qc(self.current_color.name(), int(self.pulse_alpha * 0.45)))
+        glow.setColorAt(1.0, qc(self.current_color.name(), 0))
+        
+        painter.setBrush(QBrush(glow))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QPointF(render_cx, render_cy), render_rect.width() * 0.35, render_rect.height() * 0.45)
+        
+        # 3. Soft pulsating outer border glow centered on render_rect
+        glow_opacity = int((self.pulse_alpha / 140.0) * 35) + 10
+        outer_color = QColor(self.current_color)
+        outer_color.setAlpha(glow_opacity)
+        
+        glow_pen = QPen(outer_color, 1.5)
+        painter.setPen(glow_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        
+        r_glow = render_rect.adjusted(1, 1, -1, -1)
+        radius = r_glow.height() / 2
+        painter.drawRoundedRect(r_glow, radius, radius)
+        
+        # 4. Pre-render SVG cutout mask at native high-resolution (1000x280) to avoid scaling pixelation
+        if self.renderer and self.renderer.isValid():
+            from PyQt6.QtGui import QImage
+            high_res_mask = QImage(1000, 280, QImage.Format.Format_ARGB32_Premultiplied)
+            high_res_mask.fill(Qt.GlobalColor.transparent)
+            
+            mask_painter = QPainter(high_res_mask)
+            mask_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self.renderer.render(mask_painter)
+            mask_painter.end()
+            
+            # Smoothly draw high-res pre-rendered mask down to target render_rect
+            painter.drawImage(render_rect, high_res_mask)
+        else:
+            painter.setBrush(QBrush(QColor("#08080A")))
+            painter.setPen(QPen(QColor("rgba(255, 255, 255, 0.12)"), 1))
+            painter.drawRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
+            
+        # 5. Bevel glass highlight ring centered on render_rect
+        highlight_color = QColor(255, 255, 255, 26)
+        painter.setPen(QPen(highlight_color, 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        r_highlight = render_rect.adjusted(0.5, 0.5, -0.5, -0.5)
+        radius_highlight = r_highlight.height() / 2
+        painter.drawRoundedRect(r_highlight, radius_highlight, radius_highlight)
+
+
 class MainWindow(QMainWindow):
     _log_sig        = pyqtSignal(str)
     _state_sig      = pyqtSignal(str)
@@ -1751,7 +1954,7 @@ class MainWindow(QMainWindow):
             apply_ui_accent(_ui_color)
 
         self.setWindowTitle(f"{_display} — MARK XLIX")
-        self.setMinimumSize(_MIN_W, _MIN_H)
+        # Managed dynamically based on mode
         self.resize(_DEFAULT_W, _DEFAULT_H)
 
         screen = QApplication.primaryScreen().availableGeometry()
@@ -1768,14 +1971,29 @@ class MainWindow(QMainWindow):
         self._remote_overlay: RemoteKeyOverlay | None = None
         self._customize_overlay: CustomizeOverlay | None = None
 
-        central = QWidget()
-        central.setStyleSheet(f"background: {C.BG};")
-        self.setCentralWidget(central)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        root = QVBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        root.addWidget(self._build_header())
+        self.central_widget = QWidget()
+        self.central_widget.setObjectName("CentralWidget")
+        self.central_widget.setStyleSheet("#CentralWidget { background: transparent; }")
+        self.setCentralWidget(self.central_widget)
+
+        self._main_layout = QVBoxLayout(self.central_widget)
+        self._main_layout.setContentsMargins(0, 0, 0, 0)
+        self._main_layout.setSpacing(0)
+
+        self._stacked = SizeAdjustingStackedWidget(self.central_widget)
+        self._main_layout.addWidget(self._stacked)
+
+        # 1. Build Dashboard Layout container
+        self._dashboard_container = QWidget()
+        self._dashboard_container.setObjectName("DashboardContainer")
+        self._dashboard_container.setStyleSheet(f"#DashboardContainer {{ background: {C.BG}; border-radius: 12px; }}")
+        dash_layout = QVBoxLayout(self._dashboard_container)
+        dash_layout.setContentsMargins(0, 0, 0, 0)
+        dash_layout.setSpacing(0)
+        dash_layout.addWidget(self._build_header())
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -1789,7 +2007,7 @@ class MainWindow(QMainWindow):
         self.hud.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._content_panel = self._build_content_panel()
 
-        # Live camera container — replaces HUD when camera stream is active
+        # Live camera container
         _cam_cont = QWidget()
         _cam_cont.setStyleSheet("background: #000308;")
         _cam_v = QVBoxLayout(_cam_cont)
@@ -1848,8 +2066,20 @@ class MainWindow(QMainWindow):
         self._right_panel = self._build_right_panel()
         body.addWidget(self._right_panel, stretch=0)
 
-        root.addLayout(body, stretch=1)
-        root.addWidget(self._build_footer())
+        dash_layout.addLayout(body, stretch=1)
+        dash_layout.addWidget(self._build_footer())
+        self._stacked.addWidget(self._dashboard_container)
+
+        # 2. Build Pill Layout container
+        self._pill_widget = PillWidget(self.central_widget)
+        self._stacked.addWidget(self._pill_widget)
+
+        # Drag details & states
+        self._drag_active = False
+        self._drag_pos = QPointF(0, 0)
+        self._ui_mode = "DASHBOARD"
+        self._normal_geom = None
+        self._anim = None
 
         # Quick-access drawer (floating overlay, built after central widget layout is done)
         self._quick_drawer = self._build_quick_drawer()
@@ -2445,66 +2675,135 @@ class MainWindow(QMainWindow):
     def _build_header(self) -> QWidget:
         w = QWidget()
         w.setFixedHeight(54)
-        w.setStyleSheet(f"background: {C.DARK}; border-bottom: 1px solid {C.BORDER_B};")
+        w.setStyleSheet(f"""
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(15, 15, 18, 0.95), stop:1 rgba(8, 8, 10, 0.9));
+            border-bottom: 1px solid {C.BORDER};
+        """)
         lay = QHBoxLayout(w)
         lay.setContentsMargins(16, 0, 16, 0)
+        lay.setSpacing(12)
 
-        def _badge(txt, color=C.TEXT_MED):
-            l = QLabel(txt)
-            l.setFont(QFont("Courier New", 8))
-            l.setStyleSheet(f"color: {color}; background: transparent;")
-            return l
+        # Left Section: Settings + Glowing White Logo
+        left_layout = QHBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
 
-        lay.addWidget(_badge("MARK XLIX", C.PRI_DIM))
-        lay.addSpacing(8)
         self._drawer_btn = QPushButton("⚙")
-        self._drawer_btn.setFixedSize(26, 26)
-        self._drawer_btn.setFont(QFont("Courier New", 11))
+        self._drawer_btn.setFixedSize(28, 28)
+        self._drawer_btn.setFont(QFont("Courier New", 12))
         self._drawer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._drawer_btn.setToolTip("Settings & Controls")
         self._drawer_btn.setStyleSheet(f"""
             QPushButton {{
-                background: transparent; color: {C.TEXT_DIM};
-                border: 1px solid {C.BORDER}; border-radius: 4px;
+                background: rgba(255, 255, 255, 0.05); color: {C.PRI};
+                border: 1px solid {C.BORDER}; border-radius: 12px;
             }}
-            QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}
-            QPushButton:checked {{ color: {C.PRI}; border-color: {C.PRI}; background: {C.PRI_GHO}; }}
+            QPushButton:hover {{ color: {C.WHITE}; border-color: rgba(255, 255, 255, 0.2); background: rgba(255, 255, 255, 0.1); }}
+            QPushButton:checked {{ color: {C.WHITE}; border-color: {C.PRI}; background: rgba(255, 255, 255, 0.15); }}
         """)
         self._drawer_btn.setCheckable(True)
         self._drawer_btn.clicked.connect(self._toggle_drawer)
-        lay.addWidget(self._drawer_btn)
+        left_layout.addWidget(self._drawer_btn)
+
+        logo_lbl = QLabel()
+        logo_path = str(BASE_DIR / "assets/images/eagle_white.png")
+        if os.path.exists(logo_path):
+            px = QPixmap(logo_path)
+            logo_lbl.setPixmap(px.scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            logo_lbl.setText("AE")
+            logo_lbl.setFont(QFont("Doto", 12, QFont.Weight.Bold))
+            logo_lbl.setStyleSheet(f"color: {C.WHITE};")
+        logo_lbl.setToolTip("Aethelark System")
+        logo_lbl.setStyleSheet("background: transparent;")
+        left_layout.addWidget(logo_lbl)
+        
+        logo_text_lbl = QLabel("AETHELARK")
+        logo_text_lbl.setFont(QFont("Doto", 10, QFont.Weight.Bold))
+        logo_text_lbl.setStyleSheet(f"color: {C.WHITE}; letter-spacing: 2px; background: transparent;")
+        left_layout.addWidget(logo_text_lbl)
+
+        lay.addLayout(left_layout)
         lay.addStretch()
 
-        mid = QVBoxLayout(); mid.setSpacing(1)
-        _disp = self._assistant_name.upper()
-        self._title_lbl = QLabel(_disp)
-        self._title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._title_lbl.setFont(QFont("Courier New", 17, QFont.Weight.Bold))
-        self._title_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
-        mid.addWidget(self._title_lbl)
-        _sub_text = ("Just A Rather Very Intelligent System"
-                     if _disp in ("JARVIS", "J.A.R.V.I.S")
-                     else "Personal AI Assistant")
-        self._sub_lbl = QLabel(_sub_text)
-        self._sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._sub_lbl.setFont(QFont("Courier New", 7))
-        self._sub_lbl.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
-        mid.addWidget(self._sub_lbl)
-        lay.addLayout(mid)
-        lay.addStretch()
+        # Center Section: Centered Time Capsule (Date & Time)
+        time_capsule = QFrame()
+        time_capsule.setStyleSheet(f"""
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+        """)
+        tc_layout = QHBoxLayout(time_capsule)
+        tc_layout.setContentsMargins(14, 4, 14, 4)
+        tc_layout.setSpacing(8)
 
-        right_col = QVBoxLayout(); right_col.setSpacing(2)
         self._clock_lbl = QLabel("00:00:00")
-        self._clock_lbl.setFont(QFont("Courier New", 14, QFont.Weight.Bold))
-        self._clock_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
-        self._clock_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
-        right_col.addWidget(self._clock_lbl)
-        self._date_lbl = QLabel("")
-        self._date_lbl.setFont(QFont("Courier New", 7))
-        self._date_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
-        self._date_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
-        right_col.addWidget(self._date_lbl)
-        lay.addLayout(right_col)
+        self._clock_lbl.setFont(QFont("Doto", 11, QFont.Weight.Bold))
+        self._clock_lbl.setStyleSheet(f"color: {C.WHITE}; background: transparent; border: none;")
+        self._clock_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tc_layout.addWidget(self._clock_lbl)
+
+        self._date_lbl = QLabel("Mon 01 Jan 2000")
+        self._date_lbl.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
+        self._date_lbl.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent; border: none;")
+        self._date_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tc_layout.addWidget(self._date_lbl)
+
+        lay.addWidget(time_capsule)
+        lay.addStretch()
+
+        # Right Section: Window Control Buttons
+        right_layout = QHBoxLayout()
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(6)
+
+        # Minimize Button
+        min_btn = QPushButton("—")
+        min_btn.setFixedSize(26, 26)
+        min_btn.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        min_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        min_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 255, 255, 0.03); color: #B0B0B0;
+                border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 13px;
+            }
+            QPushButton:hover { background: rgba(255, 255, 255, 0.1); color: #FFF; }
+        """)
+        min_btn.clicked.connect(self.showMinimized)
+        right_layout.addWidget(min_btn)
+
+        # Collapse to Pill Button
+        collapse_btn = QPushButton("Collapse")
+        collapse_btn.setFixedHeight(26)
+        collapse_btn.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
+        collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        collapse_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 0.03); color: {C.PRI};
+                border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 13px;
+                padding: 0 10px;
+            }}
+            QPushButton:hover {{ background: rgba(255, 255, 255, 0.1); color: #FFF; }}
+        """)
+        collapse_btn.clicked.connect(lambda: self.set_ui_mode("PILL"))
+        right_layout.addWidget(collapse_btn)
+
+        # Close Button
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(26, 26)
+        close_btn.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 255, 255, 0.03); color: #B0B0B0;
+                border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 13px;
+            }
+            QPushButton:hover { background: #ef4444; color: #FFF; border-color: #ef4444; }
+        """)
+        close_btn.clicked.connect(self.close)
+        right_layout.addWidget(close_btn)
+
+        lay.addLayout(right_layout)
         return w
 
     def _tick_clock(self):
@@ -2514,7 +2813,14 @@ class MainWindow(QMainWindow):
     def _build_left_panel(self) -> QWidget:
         w = QWidget()
         w.setFixedWidth(_LEFT_W)
-        w.setStyleSheet(f"background: {C.DARK}; border-right: 1px solid {C.BORDER};")
+        w.setObjectName("LeftPanel")
+        w.setStyleSheet(f"""
+            QWidget#LeftPanel {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(24, 24, 28, 0.75), stop:1 rgba(12, 12, 15, 0.6));
+                border-right: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
+            }}
+        """)
         lay = QVBoxLayout(w)
         lay.setContentsMargins(8, 10, 8, 10)
         lay.setSpacing(6)
@@ -2585,7 +2891,14 @@ class MainWindow(QMainWindow):
     def _build_right_panel(self) -> QWidget:
         w = QWidget()
         w.setFixedWidth(_RIGHT_W)
-        w.setStyleSheet(f"background: {C.DARK}; border-left: 1px solid {C.BORDER};")
+        w.setObjectName("RightPanel")
+        w.setStyleSheet(f"""
+            QWidget#RightPanel {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(24, 24, 28, 0.75), stop:1 rgba(12, 12, 15, 0.6));
+                border-left: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
+            }}
+        """)
         lay = QVBoxLayout(w)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
@@ -2765,10 +3078,10 @@ class MainWindow(QMainWindow):
         self._input.setFixedHeight(30)
         self._input.setStyleSheet(f"""
             QLineEdit {{
-                background: #000d14; color: {C.WHITE};
-                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 3px 7px;
+                background: rgba(255, 255, 255, 0.03); color: {C.WHITE};
+                border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 15px; padding: 5px 12px;
             }}
-            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; background: rgba(255, 255, 255, 0.06); }}
         """)
         self._input.returnPressed.connect(self._send)
         row.addWidget(self._input)
@@ -2779,10 +3092,10 @@ class MainWindow(QMainWindow):
         send.setCursor(Qt.CursorShape.PointingHandCursor)
         send.setStyleSheet(f"""
             QPushButton {{
-                background: {C.PANEL}; color: {C.PRI};
-                border: 1px solid {C.PRI_DIM}; border-radius: 3px;
+                background: rgba(255, 255, 255, 0.05); color: {C.PRI};
+                border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 15px;
             }}
-            QPushButton:hover {{ background: {C.PRI_GHO}; border: 1px solid {C.PRI}; }}
+            QPushButton:hover {{ background: rgba(255, 255, 255, 0.12); color: {C.WHITE}; border-color: {C.PRI}; }}
         """)
         send.clicked.connect(self._send)
         row.addWidget(send)
@@ -3231,6 +3544,12 @@ class MainWindow(QMainWindow):
     def _apply_state(self, state: str):
         self.hud.state    = state
         self.hud.speaking = (state == "SPEAKING")
+        if hasattr(self, "_pill_widget") and self._pill_widget is not None:
+            self._pill_widget.set_state(state)
+            if state.upper() == "SPEAKING":
+                self.expand_pill_for_speech(True)
+            else:
+                self.expand_pill_for_speech(False)
 
     def _check_config(self) -> bool:
         if not API_FILE.exists(): return False
@@ -3266,6 +3585,139 @@ class MainWindow(QMainWindow):
         self._apply_state("LISTENING")
         self._assistant_name = _read_full_config().get("assistant_name", "JARVIS") or "JARVIS"
         self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. {self._assistant_name} online.")
+
+
+    def set_ui_mode(self, mode: str):
+        mode = mode.upper()
+        if not hasattr(self, "_ui_mode"):
+            self._ui_mode = "DASHBOARD"
+        if self._ui_mode == mode and self._anim:
+            return
+            
+        screen = QApplication.primaryScreen().availableGeometry()
+        
+        # Clear size constraints so morph animations work smoothly
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        
+        if mode == "PILL":
+            if self._ui_mode == "DASHBOARD":
+                self._normal_geom = self.geometry()
+            
+            # Hide overlays in pill mode
+            if hasattr(self, "_cam_preview") and self._cam_preview is not None:
+                self._cam_preview.hide()
+            if hasattr(self, "_clipboard_panel") and self._clipboard_panel is not None:
+                self._clipboard_panel.hide()
+                
+            # Switch views
+            self._dashboard_container.hide()
+            self._pill_widget.show()
+            self._stacked.setCurrentIndex(1)
+            
+            target_w, target_h = 200, 56
+            if self._normal_geom:
+                target_x = self.x() + (self.width() - target_w) // 2
+                target_y = max(10, self.y())
+            else:
+                target_x = (screen.width() - target_w) // 2
+                target_y = 15
+                
+            target_rect = QRectF(target_x, target_y, target_w, target_h).toRect()
+            self._ui_mode = "PILL"
+            self._animate_geometry(target_rect)
+            
+        elif mode == "DASHBOARD":
+            # Switch views
+            self._pill_widget.hide()
+            self._dashboard_container.show()
+            self._stacked.setCurrentIndex(0)
+            
+            target_w, target_h = 980, 700
+            if self._normal_geom:
+                pill_center_x = self.x() + self.width() // 2
+                target_x = pill_center_x - target_w // 2
+                target_y = max(30, self.y())
+            else:
+                target_x = (screen.width() - target_w) // 2
+                target_y = (screen.height() - target_h) // 2
+                
+            target_x = max(0, min(target_x, screen.width() - target_w))
+            target_y = max(0, min(target_y, screen.height() - target_h))
+            
+            target_rect = QRectF(target_x, target_y, target_w, target_h).toRect()
+            self._ui_mode = "DASHBOARD"
+            self._animate_geometry(target_rect)
+            self.activateWindow()
+            self.raise_()
+
+    def expand_pill_for_speech(self, expand: bool):
+        if not hasattr(self, "_ui_mode") or self._ui_mode != "PILL":
+            return
+        target_w = 260 if expand else 200
+        target_h = 60 if expand else 56
+        screen = QApplication.primaryScreen().availableGeometry()
+        target_x = self.x() + (self.width() - target_w) // 2
+        target_y = self.y()
+        target_rect = QRectF(target_x, target_y, target_w, target_h).toRect()
+        self._animate_geometry(target_rect)
+
+    def _animate_geometry(self, target_rect):
+        from PyQt6.QtCore import QPropertyAnimation
+        if self._anim:
+            self._anim.stop()
+        self._anim = QPropertyAnimation(self, b"geometry")
+        self._anim.setDuration(400)
+        self._anim.setStartValue(self.geometry())
+        self._anim.setEndValue(target_rect)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutBack)
+        
+        def on_finished():
+            if self._ui_mode == "DASHBOARD":
+                self.setMinimumSize(820, 580)
+            self._anim = None
+            
+        self._anim.finished.connect(on_finished)
+        self._anim.start()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        from PyQt6.QtCore import QEvent
+        if event.type() == QEvent.Type.ActivationChange:
+            if not self.isActiveWindow() and hasattr(self, "_ui_mode") and self._ui_mode == "DASHBOARD":
+                if not QApplication.activeModalWidget():
+                    self.set_ui_mode("PILL")
+
+    def mousePressEvent(self, event):
+        if hasattr(self, "_ui_mode") and self._ui_mode == "PILL" and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_active = True
+            from PyQt6.QtGui import QCursor
+            self._drag_pos = QCursor.pos() - self.frameGeometry().topLeft()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if hasattr(self, "_ui_mode") and self._ui_mode == "PILL" and self._drag_active:
+            from PyQt6.QtGui import QCursor
+            self.move(QCursor.pos() - self._drag_pos)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_active = False
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if hasattr(self, "_ui_mode") and self._ui_mode == "PILL" and event.button() == Qt.MouseButton.LeftButton:
+            self.set_ui_mode("DASHBOARD")
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
 
 class _RootShim:
     def __init__(self, app: QApplication):

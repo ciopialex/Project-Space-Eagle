@@ -195,10 +195,10 @@ def _format_spoken(
     if not flights:
         return (
             f"I couldn't find any flights from {origin} to {destination} "
-            f"on {date}, sir. The page may not have loaded correctly."
+            f"on {date}. The page may not have loaded correctly."
         )
 
-    lines = [f"Here are the top flights from {origin} to {destination} on {date}, sir."]
+    lines = [f"Here are the top flights from {origin} to {destination} on {date}."]
 
     for i, f in enumerate(flights[:5], 1):
         airline   = f.get("airline",   "Unknown airline")
@@ -242,7 +242,7 @@ def _format_text_report(
     page_url:    str,
 ) -> str:
     lines = [
-        "JARVIS — Flight Search Results",
+        "Aethelark — Flight Search Results",
         "─" * 50,
         f"Route     : {origin} → {destination}",
         f"Date      : {date}",
@@ -310,9 +310,9 @@ def flight_finder(parameters: dict, player=None, speak=None) -> str:
     save        = bool(params.get("save", False))
 
     if not origin or not destination:
-        return "Please provide both origin and destination, sir."
+        return "Please provide both origin and destination."
     if not date_raw:
-        return "Please provide a departure date, sir."
+        return "Please provide a departure date."
 
     # Normalise cabin value
     if cabin not in _CABIN_CODE:
@@ -325,7 +325,7 @@ def flight_finder(parameters: dict, player=None, speak=None) -> str:
         player.write_log(f"[FlightFinder] {origin} → {destination} on {date}")
 
     if speak:
-        speak(f"Searching flights from {origin} to {destination} on {date}, sir.")
+        speak(f"Searching flights from {origin} to {destination} on {date}.")
 
     print(
         f"[FlightFinder] ▶️ {origin} → {destination} | {date}"
@@ -339,10 +339,10 @@ def flight_finder(parameters: dict, player=None, speak=None) -> str:
         )
 
         if not raw_text:
-            return "Could not retrieve flight data, sir. The page may not have loaded."
+            return "Could not retrieve flight data. The page may not have loaded."
 
         if speak:
-            speak("Analysing the results now, sir.")
+            speak("Analysing the results now.")
 
         flights = _parse_flights_with_gemini(raw_text, origin, destination, date)
         spoken  = _format_spoken(flights, origin, destination, date)
@@ -361,4 +361,4 @@ def flight_finder(parameters: dict, player=None, speak=None) -> str:
 
     except Exception as e:
         print(f"[FlightFinder] ❌ {e}")
-        return f"Flight search failed, sir: {e}"
+        return f"Flight search failed: {e}"

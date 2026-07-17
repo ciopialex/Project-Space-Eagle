@@ -3,40 +3,47 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>JARVIS</title>
+  <title>Aethelark</title>
+  <link href="https://fonts.googleapis.com/css2?family=Doto:wght@700&family=Manrope:wght@200;350;400&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg:     #07090f;
-      --card:   rgba(255,255,255,0.04);
-      --border: rgba(255,255,255,0.08);
-      --accent: #6366f1;
-      --adim:   rgba(99,102,241,0.15);
-      --text:   #dde3ed;
-      --muted:  #5e6a7e;
+      --bg: #0A0A0A;
+      --card: rgba(24, 24, 28, 0.85);
+      --border: rgba(255, 255, 255, 0.08);
+      --accent: #C8C8D0;
+      --adim: rgba(255, 255, 255, 0.05);
+      --text: #E5E5EA;
+      --muted: #B0B0B0;
     }
     html, body {
       height: 100%;
-      background: var(--bg);
+      background: transparent;
       color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: 'Manrope', sans-serif; font-weight: 350;
       display: flex;
       align-items: center;
       justify-content: center;
+      margin: 0;
     }
     .card {
       width: 340px;
       padding: 44px 36px;
-      background: var(--card);
+      background: repeating-linear-gradient(90deg, transparent 0, transparent 2px, rgba(255, 255, 255, 0.03) 2px, rgba(255, 255, 255, 0.03) 3px), linear-gradient(135deg, rgba(24, 24, 28, 0.85) 0%, rgba(12, 12, 16, 0.9) 100%);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
       border: 1px solid var(--border);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 30px rgba(200, 200, 208, 0.08), 0 10px 40px rgba(0, 0, 0, 0.6);
       border-radius: 22px;
       text-align: center;
     }
     .logo {
+      font-family: 'Doto', sans-serif;
       font-size: 28px;
       font-weight: 700;
       letter-spacing: 10px;
       margin-bottom: 6px;
+      transform: scale(1.05, 0.9);
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
     }
     .logo em { color: var(--accent); font-style: normal; }
     .sub {
@@ -92,18 +99,32 @@
     .btn {
       width: 100%;
       padding: 14px;
-      background: var(--accent);
-      color: #fff;
+      background: linear-gradient(135deg, #222222 0%, #181818 100%);
+      color: #E0E0E0;
+      font-family: 'Doto', sans-serif;
       font-size: 12px;
       font-weight: 700;
       letter-spacing: 3px;
-      border: none;
+      border: 1px solid rgba(200, 200, 208, 0.2);
+      box-shadow: inset 0 0 0 1px rgba(200, 200, 208, 0.2), 0 3px 8px rgba(0, 0, 0, 0.3);
       border-radius: 12px;
       cursor: pointer;
-      transition: opacity 0.15s, transform 0.1s;
+      transition: all 0.15s;
+      transform: scale(1.05, 0.9);
     }
-    .btn:hover  { opacity: 0.88; }
-    .btn:active { transform: scale(0.98); }
+    .btn:hover  { 
+      background: linear-gradient(135deg, #C8C8D0 0%, #E8E8EE 100%) !important;
+      color: #000 !important;
+      box-shadow: inset 0 0 0 1px #C8C8D0, 0 0 15px rgba(200, 200, 208, 0.4), 0 4px 10px rgba(0, 0, 0, 0.4);
+    }
+    .btn:active { transform: scale(0.98) !important; animation: electric-zap 0.4s ease-out; }
+    
+    @keyframes electric-zap {
+        0% { box-shadow: 0 0 0 0 rgba(200, 200, 208, 0); border-color: rgba(200, 200, 208, 0.2); background: linear-gradient(135deg, #222222 0%, #181818 100%); }
+        10% { box-shadow: inset 0 0 20px rgba(255, 255, 255, 0.5), 0 0 30px 5px rgba(200, 200, 208, 0.6); border-color: #ffffff; background: #111; color: #fff; }
+        40% { box-shadow: inset 0 0 10px rgba(200, 200, 208, 0.3), 0 0 50px 15px rgba(200, 200, 208, 0.3); border-color: #C8C8D0; }
+        100% { box-shadow: 0 0 0 0 rgba(200, 200, 208, 0); border-color: rgba(200, 200, 208, 0.2); background: linear-gradient(135deg, #222222 0%, #181818 100%); }
+    }
     @keyframes shake {
       0%,100% { transform: translateX(0); }
       20%,60% { transform: translateX(-7px); }
@@ -133,11 +154,15 @@
   </style>
 </head>
 <body>
+  <canvas id="starfield" style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:-1;"></canvas>
   <div class="card" id="card">
-    <div class="logo"><em>J</em>ARVIS</div>
+    <div class="logo" style="display:flex; align-items:center; justify-content:center; gap:12px; margin-bottom:12px;">
+      <img src="/static/eagle_logo.png" style="height: 36px; filter: brightness(0) invert(1); opacity: 0.9;">
+      <img src="/static/aethelark_text.png" style="height: 20px; filter: brightness(0) invert(1); opacity: 0.9;">
+    </div>
     <div class="sub">Remote Access</div>
     <p id="reconnecting">Reconnecting…</p>
-    <p class="hint">Press <strong style="color:var(--text)">Remote Control</strong> in the JARVIS desktop app to get a QR code or session key.</p>
+    <p class="hint">Press <strong style="color:var(--text)">Remote Control</strong> in the Aethelark desktop app to get a QR code or session key.</p>
     <div class="key-wrap">
       <input class="key-input" id="key" type="text" maxlength="6"
              autocomplete="off" autocorrect="off" spellcheck="false"
@@ -148,7 +173,7 @@
     <p class="voice-note">
       🎤 <strong style="color:var(--text)">Voice commands:</strong> open
       <code>chrome://flags</code> on your phone, search
-      <code>Insecure origins treated as secure</code>, add your JARVIS URL, tap Relaunch.
+      <code>Insecure origins treated as secure</code>, add your Aethelark URL, tap Relaunch.
     </p>
   </div>
 
@@ -220,5 +245,139 @@
       c.classList.add('shake');
     }
   </script>
+
+    // ── Starfield Engine ──────────────────────────────────────────────────────
+    const canvas = document.getElementById('starfield');
+    const ctx = canvas.getContext('2d');
+    let width, height;
+    let stars = [];
+    let comets = [];
+    let mx = -1000, my = -1000;
+
+    function resize() {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    window.addEventListener('mousemove', e => { mx = e.clientX; my = e.clientY; });
+    window.addEventListener('mouseout', () => { mx = -1000; my = -1000; });
+    resize();
+
+    class Star {
+      constructor() {
+        this.x = Math.random() * width;
+        this.y = Math.random() * height;
+        this.baseSize = Math.random() * 1.3 + 0.5;
+        this.isDiamond = Math.random() < 0.2;
+        this.size = this.isDiamond ? this.baseSize * 1.5 : this.baseSize;
+        this.alpha = Math.random();
+        this.alphaSpeed = (Math.random() * 0.02 + 0.005) * (Math.random() < 0.5 ? 1 : -1);
+        this.vx = (Math.random() - 0.5) * 0.05;
+        this.vy = -(Math.random() * 0.06 + 0.03);
+        const colors = ['255,255,255', '200,220,255', '255,240,200', '230,200,255', '200,255,230'];
+        this.color = this.isDiamond ? colors[Math.floor(Math.random() * colors.length)] : '180,180,185';
+      }
+      update() {
+        this.x += this.vx;
+        this.y += this.vy;
+        
+        const dx = this.x - mx, dy = this.y - my;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < 150) {
+          this.x += (dx / dist) * 0.5;
+          this.y += (dy / dist) * 0.5;
+        }
+
+        if (this.x < 0) this.x = width;
+        if (this.x > width) this.x = 0;
+        if (this.y < 0) this.y = height;
+
+        this.alpha += this.alphaSpeed;
+        const maxA = this.isDiamond ? 1.0 : 0.55;
+        const minA = this.isDiamond ? 0.1 : 0.03;
+        if (this.alpha > maxA) { this.alpha = maxA; this.alphaSpeed *= -1; }
+        if (this.alpha < minA) { this.alpha = minA; this.alphaSpeed *= -1; }
+      }
+      draw() {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.globalAlpha = this.alpha;
+        if (this.isDiamond) {
+          ctx.fillStyle = `rgba(${this.color}, 1)`;
+          ctx.beginPath();
+          ctx.moveTo(0, -this.size * 3);
+          ctx.quadraticCurveTo(this.size*0.2, -this.size*0.2, this.size * 3, 0);
+          ctx.quadraticCurveTo(this.size*0.2, this.size*0.2, 0, this.size * 3);
+          ctx.quadraticCurveTo(-this.size*0.2, this.size*0.2, -this.size * 3, 0);
+          ctx.quadraticCurveTo(-this.size*0.2, -this.size*0.2, 0, -this.size * 3);
+          ctx.fill();
+        } else {
+          ctx.fillStyle = `rgba(${this.color}, 1)`;
+          ctx.beginPath();
+          ctx.arc(0, 0, this.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+
+    class Comet {
+      constructor() {
+        this.x = Math.random() * (width * 0.5);
+        this.y = Math.random() * (height * 0.3);
+        this.speed = Math.random() * 15 + 15;
+        this.angle = (Math.random() * 15 + 30) * Math.PI / 180;
+        this.vx = Math.cos(this.angle) * this.speed;
+        this.vy = Math.sin(this.angle) * this.speed;
+        this.length = Math.random() * 150 + 120;
+        this.active = true;
+      }
+      update() {
+        this.x += this.vx;
+        this.y += this.vy;
+        if (this.x > width || this.y > height) this.active = false;
+      }
+      draw() {
+        ctx.save();
+        const tailX = this.x - Math.cos(this.angle) * this.length;
+        const tailY = this.y - Math.sin(this.angle) * this.length;
+        const grad = ctx.createLinearGradient(this.x, this.y, tailX, tailY);
+        grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+        grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y);
+        ctx.lineTo(tailX, tailY);
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, 4, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255, 255, 255, 1)';
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, 1.5, 0, Math.PI*2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    for (let i = 0; i < 182; i++) stars.push(new Star());
+
+    function loop() {
+      ctx.clearRect(0, 0, width, height);
+      stars.forEach(s => { s.update(); s.draw(); });
+      
+      if (Math.random() < 0.0025 && comets.length < 2) comets.push(new Comet());
+      for (let i = comets.length - 1; i >= 0; i--) {
+        comets[i].update();
+        comets[i].draw();
+        if (!comets[i].active) comets.splice(i, 1);
+      }
+      requestAnimationFrame(loop);
+    }
+    loop();
+    </script>
 </body>
 </html>

@@ -30,7 +30,7 @@ def weather_action(
         _log(msg, player)
         return msg
 
-    msg = f"Showing the weather for {city}, {when}, sir."
+    msg = f"Showing the weather for {city}, {when}."
     _log(msg, player)
 
     if session_memory:
@@ -46,6 +46,6 @@ def _log(message: str, player=None) -> None:
     print(f"[Weather] {message}")
     if player:
         try:
-            player.write_log(f"JARVIS: {message}")
+            player.write_log(f"Aethelark: {message}")
         except Exception:
             pass
