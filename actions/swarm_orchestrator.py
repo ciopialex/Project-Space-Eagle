@@ -228,7 +228,7 @@ class SwarmOrchestrator:
         return report
 
     def _wire_thoughts(self, adapter, agent_key: str, worktree: Path):
-        sess = POOL.get_alive(adapter.name.lower(), worktree)
+        sess = POOL.get_alive(adapter.pool_key, worktree)
         watcher = getattr(sess, "watcher", None) if sess else None
         if watcher:
             watcher.on_thought = (

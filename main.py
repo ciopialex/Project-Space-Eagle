@@ -375,6 +375,19 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "agent_interject",
+        "description": "Interrupt a running coding agent mid-work (graceful Ctrl+C) and optionally redirect it with a new instruction. Use when the user says things like 'stop Claude' or 'tell the agent to use X instead of Y'.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "agent":     {"type": "STRING", "description": "Which agent: antigravity_cli | claude_code | opencode | kimi"},
+                "directory": {"type": "STRING", "description": "Project directory the agent is working in"},
+                "message":   {"type": "STRING", "description": "Optional new instruction to inject after interrupting"},
+            },
+            "required": ["agent", "directory"]
+        }
+    },
+    {
         "name": "computer_control",
         "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen.",
         "parameters": {
@@ -578,6 +591,7 @@ TOOL_SPECS = {
     "dev_agent": ToolSpec(reads=["memory"], writes=["file"], priority=1, timeout_s=45.0),
     "developer_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=120.0),
     "swarm_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=180.0),
+    "agent_interject": ToolSpec(writes=["file"], priority=3, timeout_s=30.0),
     "web_search": ToolSpec(reads=["web"], priority=1),
     "file_processor": ToolSpec(reads=["file"], writes=["file"], priority=1),
     "computer_control": ToolSpec(writes=["desktop"], exclusive=True, priority=1),
@@ -877,6 +891,15 @@ class AethelarkLive:
                 from actions.swarm_orchestrator import swarm_orchestrate
                 self.ui.set_state("WORKING")
                 r = await swarm_orchestrate(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "agent_interject":
+                from actions.agent_delegation import interject_agent
+                r = await interject_agent(
+                    agent_key=args.get("agent", ""),
+                    directory=args.get("directory", ""),
+                    message=args.get("message", ""),
+                    player=self.ui)
                 result = r or "Done."
 
             elif name == "web_search":
