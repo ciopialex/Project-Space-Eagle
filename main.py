@@ -360,6 +360,21 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "swarm_mode",
+        "description": "Multi-agent swarm orchestration on one project: launch several coding agents (antigravity_cli, claude_code, opencode, kimi) concurrently in isolated git worktrees with a shared blackboard, broadcast decisions between them, check swarm status, or stop the swarm.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":      {"type": "STRING", "description": "launch | status | broadcast | stop"},
+                "directory":   {"type": "STRING", "description": "Absolute path of the project directory the swarm operates on"},
+                "assignments": {"type": "STRING", "description": "For launch: JSON object mapping agent name to its task, e.g. '{\"claude_code\": \"build the frontend\", \"antigravity_cli\": \"build the API\"}'"},
+                "agent":       {"type": "STRING", "description": "For broadcast: which agent (or 'eagle') the decision comes from"},
+                "message":     {"type": "STRING", "description": "For broadcast: the decision/context to deliver to all other agents"},
+            },
+            "required": ["action", "directory"]
+        }
+    },
+    {
         "name": "computer_control",
         "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen.",
         "parameters": {
@@ -562,6 +577,7 @@ TOOL_SPECS = {
     "code_helper": ToolSpec(reads=["memory"], writes=["file"], priority=1, timeout_s=45.0),
     "dev_agent": ToolSpec(reads=["memory"], writes=["file"], priority=1, timeout_s=45.0),
     "developer_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=120.0),
+    "swarm_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=180.0),
     "web_search": ToolSpec(reads=["web"], priority=1),
     "file_processor": ToolSpec(reads=["file"], writes=["file"], priority=1),
     "computer_control": ToolSpec(writes=["desktop"], exclusive=True, priority=1),
@@ -856,6 +872,12 @@ class AethelarkLive:
                 self.ui.set_state("WORKING")
                 asyncio.create_task(developer_mode(parameters=args, player=self.ui))
                 result = "Developer Mode started in background terminal console."
+
+            elif name == "swarm_mode":
+                from actions.swarm_orchestrator import swarm_orchestrate
+                self.ui.set_state("WORKING")
+                r = await swarm_orchestrate(parameters=args, player=self.ui)
+                result = r or "Done."
 
             elif name == "web_search":
                 r = await loop.run_in_executor(None, lambda: web_search_action(parameters=args, player=self.ui))
