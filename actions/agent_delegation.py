@@ -111,6 +111,12 @@ class AgentAdapter:
             SENTINEL.ensure_running()
         except Exception:
             pass
+        try:
+            from actions.visual_verifier import watch_directory
+            watch_directory(project_dir, player=player, session=session)
+        except Exception as e:
+            if player:
+                player.write_log(f"SYS: Visual verification unavailable ({e}).")
 
         if player:
             player.write_log(
