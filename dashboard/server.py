@@ -604,6 +604,43 @@ class DashboardServer:
                 self._wake_callback()
             return JSONResponse({"ok": True})
 
+        # ── Swarm telemetry stream (Server-Sent Events) ──────────────────────
+        # Live agent status, thoughts, decisions, file claims and session
+        # tails. EventSource cannot set headers, so ?token= is accepted too.
+        # Emits `event: swarm` only when the state actually changed.
+
+        @app.get("/api/swarm/events")
+        async def swarm_events(req: Request, token: str = ""):
+            tok = (token.strip()
+                   or req.headers.get("authorization", "").removeprefix("Bearer ").strip())
+            if not tok or tok not in self._tokens:
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            from fastapi.responses import StreamingResponse
+            import json as _json
+
+            async def gen():
+                last_digest = ""
+                while True:
+                    try:
+                        from actions.swarm_orchestrator import swarm_snapshot
+                        snap = await asyncio.to_thread(swarm_snapshot)
+                    except Exception as e:
+                        snap = {"ts": time.time(), "error": str(e),
+                                "projects": {}, "sessions": {}}
+                    payload = _json.dumps(snap)
+                    digest = hashlib.md5(_json.dumps(
+                        {k: v for k, v in snap.items() if k != "ts"}
+                    ).encode()).hexdigest()
+                    if digest != last_digest:
+                        last_digest = digest
+                        yield f"event: swarm\ndata: {payload}\n\n"
+                    else:
+                        yield ": keepalive\n\n"
+                    await asyncio.sleep(1.0)
+
+            return StreamingResponse(gen(), media_type="text/event-stream",
+                                     headers={"Cache-Control": "no-cache"})
+
         # ── Phone mic real-time audio → Gemini Live ──────────────────────────
 
         @app.websocket("/ws/phone-audio")
