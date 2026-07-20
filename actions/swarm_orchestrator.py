@@ -264,6 +264,28 @@ class SwarmOrchestrator:
         base = self.board.summary()
         return f"{base}\nLive sessions: {', '.join(sorted(live)) or 'none'}"
 
+    def review(self, agent: str = "", deep: bool = False) -> str:
+        """Offload verification + merge of swarm branches to the Reviewer."""
+        from actions.swarm_reviewer import ReviewerAgent
+        state = self.board.read()
+        targets = ([agent] if agent else list(state["agents"].keys()))
+        if not targets:
+            return "No swarm agents registered — nothing to review."
+        reviewer = ReviewerAgent(self.project_dir, self.player)
+        results = []
+        for key in targets:
+            info = state["agents"].get(key)
+            if not info:
+                results.append(f"{key}: unknown agent")
+                continue
+            outcome = reviewer.review_and_merge(
+                key, info["branch"], info["worktree"], deep=deep)
+            merged = outcome.startswith("MERGED")
+            self.board.set_agent(key, status="merged" if merged else "review_blocked")
+            self.board.add_decision("reviewer", outcome[:300])
+            results.append(outcome)
+        return " || ".join(results)
+
     def stop_all(self) -> str:
         stopped = []
         for agent_key, sess in self._live_sessions().items():
@@ -316,6 +338,11 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
             orch.broadcast,
             parameters.get("agent", "eagle"),
             parameters.get("message", ""))
+    if action == "review":
+        return await asyncio.to_thread(
+            orch.review,
+            (parameters.get("agent") or "").strip(),
+            bool(parameters.get("deep")))
     if action == "stop":
         return await asyncio.to_thread(orch.stop_all)
     return await asyncio.to_thread(orch.status)

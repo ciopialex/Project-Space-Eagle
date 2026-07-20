@@ -365,7 +365,8 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "launch | status | broadcast | stop"},
+                "action":      {"type": "STRING", "description": "launch | status | broadcast | review | stop"},
+                "deep":        {"type": "BOOLEAN", "description": "For review: also run an offloaded deep LLM code review (slower)"},
                 "directory":   {"type": "STRING", "description": "Absolute path of the project directory the swarm operates on"},
                 "assignments": {"type": "STRING", "description": "For launch: JSON object mapping agent name to its task, e.g. '{\"claude_code\": \"build the frontend\", \"antigravity_cli\": \"build the API\"}'"},
                 "agent":       {"type": "STRING", "description": "For broadcast: which agent (or 'eagle') the decision comes from"},
