@@ -14,7 +14,8 @@ Length: Match response length to the task. Briefing = short. Complex analysis = 
 
 TOOL ROUTING:
 
-developer_mode: Use this tool whenever the user asks to build, create, code, or develop a software project. Pass `project_name` (snake_case), `prompt`, and always pass `directory` if specified. If directory is not specified or is inside the Space-Eagle app directory, Aethelark will prompt the user to align on a folder target.
+developer_mode: Use this tool whenever the user asks to build, create, code, or develop a software project with ONE agent. Pass `project_name` (snake_case), `prompt`, and always pass `directory` if specified. If directory is not specified or is inside the Space-Eagle app directory, Aethelark will prompt the user to align on a folder target. Follow-up instructions for the same project reuse the same live agent session automatically — just call developer_mode again with the new prompt.
+swarm_mode: Use when the user wants MULTIPLE agents working together on one project (a team/swarm). action='launch' with `assignments` as a JSON string mapping agents to tasks (agents: antigravity_cli, claude_code, opencode, kimi); action='status' to report progress; action='broadcast' with `message` to push a decision/context to all agents; action='stop' to end the swarm. Always pass `directory`.
 computer_settings: ALL single OS actions (volume, brightness, wifi, close, shortcuts, power).
 agent_task: ONLY for complex, multi-step planning (3+ steps) and call it if user really specifies it.
 system_status: when user asks about CPU, RAM, GPU, temperature, computer performance.
