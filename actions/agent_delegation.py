@@ -36,10 +36,14 @@ class AgentAdapter:
 
         return on_line
 
+    @property
+    def pool_key(self) -> str:
+        return getattr(self, "registry_key", self.name.lower())
+
     async def run(self, prompt: str, project_dir: Path, project_name: str,
                   player=None) -> str:
         project_dir = Path(project_dir)
-        agent_key = self.name.lower()
+        agent_key = self.pool_key
 
         # ---- Follow-up turn: route into the existing live session ----------
         session = POOL.get_alive(agent_key, project_dir)
@@ -101,6 +105,13 @@ class AgentAdapter:
                 player.write_log(f"ERR: {err_msg}")
             return err_msg
 
+        session.player = player
+        try:
+            from actions.swarm_sentinel import SENTINEL
+            SENTINEL.ensure_running()
+        except Exception:
+            pass
+
         if player:
             player.write_log(
                 f"SYS: '{self.name}' session live. Output streams here and in "
@@ -110,13 +121,44 @@ class AgentAdapter:
                 f"conversation.")
 
 
-def interrupt_agent(agent_name: str, project_dir: str) -> str:
-    """Send Ctrl+C into a live agent session (voice interjection hook)."""
-    session = POOL.get_alive(agent_name.lower(), Path(project_dir))
+def find_session(agent_key: str, directory: str):
+    """Locate a live session for agent_key in directory — direct hit first,
+    then any session running under it (e.g. a swarm worktree)."""
+    root = Path(directory).expanduser().resolve()
+    session = POOL.get_alive(agent_key, root)
+    if session:
+        return session
+    for (key, sdir), sess in POOL.all_sessions().items():
+        if key == agent_key and sess.is_alive():
+            sdir_path = Path(sdir)
+            if root == sdir_path or root in sdir_path.parents:
+                return sess
+    return None
+
+
+async def interject_agent(agent_key: str, directory: str,
+                          message: str = "", player=None) -> str:
+    """Voice interjection: Ctrl+C the agent mid-generation, then pipe the
+    user's new instruction straight into its session."""
+    session = find_session(agent_key, directory)
     if not session:
-        return f"No active {agent_name} session in {project_dir}."
-    return ("Interrupt sent." if session.interrupt()
-            else "Interrupt failed: session pipe closed.")
+        active = ", ".join(list_active_sessions()) or "none"
+        return f"No live '{agent_key}' session under {directory}. Active: {active}"
+
+    if not session.interrupt():
+        return f"Could not interrupt {agent_key}: session pipe closed."
+    if player:
+        player.write_log(f"SYS: Interrupted '{agent_key}' (Ctrl+C).")
+    if message:
+        await asyncio.sleep(0.7)  # let the CLI settle back to its input box
+        try:
+            await asyncio.to_thread(session.send_line, message)
+        except OSError as e:
+            return f"Interrupted, but redirect failed: {e}"
+        if player:
+            player.write_log(f"SYS: Redirected '{agent_key}': {message[:80]}")
+        return f"Interrupted {agent_key} and injected the new instruction."
+    return f"Interrupted {agent_key}. It is now waiting for instructions."
 
 
 def list_active_sessions() -> dict:
@@ -136,3 +178,6 @@ AGENT_REGISTRY = {
     "kimi": AgentAdapter("Kimi", "kimi -i '{prompt}'"),
     "opencode": AgentAdapter("OpenCode", "opencode -i '{prompt}'"),
 }
+
+for _key, _adapter in AGENT_REGISTRY.items():
+    _adapter.registry_key = _key
