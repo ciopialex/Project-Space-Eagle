@@ -82,14 +82,14 @@ _IMG_MAX_H = 720
 _JPEG_Q    = 82
 
 _SYSTEM_PROMPT = (
-    "You are Aethelark, Tony Stark's AI assistant. "
+    "You are Aethelark, an advanced AI assistant. "
     "You are given an image from either the user's screen or their webcam. "
     "Analyze what you see with detail and intelligence. "
     "Describe objects, text, people, components, and their context clearly. "
     "For technical questions (circuits, code, hardware) give specific, expert answers. "
     "Be concise — 2-4 sentences — unless the question demands more detail. "
     "Speak directly to the user ('I can see...', 'You have...'). "
-    "Address the user as 'sir' depending on the language they used."
+    "Address the user casually and naturally as a friendly peer."
 )
 
 
@@ -99,7 +99,8 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
 
     try:
         img = PIL.Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), PIL.Image.BILINEAR)
+        resample_mode = getattr(PIL.Image, "Resampling", PIL.Image).BILINEAR
+        img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), resample_mode)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_JPEG_Q, optimize=False)
         return buf.getvalue(), "image/jpeg"
@@ -117,6 +118,8 @@ def _capture_screen() -> tuple[bytes, str]:
         target   = monitors[1] if len(monitors) > 1 else monitors[0]
         shot     = sct.grab(target)
         png      = mss.tools.to_png(shot.rgb, shot.size)
+        if png is None:
+            raise RuntimeError("Screen capture failed to encode to PNG.")
 
     return _compress(png, "PNG")
 
@@ -196,7 +199,8 @@ def _capture_camera() -> tuple[bytes, str]:
     if _PIL:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = PIL.Image.fromarray(rgb)
-        img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), PIL.Image.BILINEAR)
+        resample_mode = getattr(PIL.Image, "Resampling", PIL.Image).BILINEAR
+        img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), resample_mode)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_JPEG_Q)
         return buf.getvalue(), "image/jpeg"
@@ -265,7 +269,7 @@ class _VisionSession:
             speech_config=gtypes.SpeechConfig(
                 voice_config=gtypes.VoiceConfig(
                     prebuilt_voice_config=gtypes.PrebuiltVoiceConfig(
-                        voice_name="Charon"
+                        voice_name="Puck"
                     )
                 )
             ),
@@ -301,20 +305,20 @@ class _VisionSession:
             self._ready_evt.set()  
 
     async def _send_loop(self) -> None:
+        out_queue = self._out_queue
+        if out_queue is None:
+            return
         while True:
-            image_bytes, mime_type, user_text = await self._out_queue.get()
+            image_bytes, mime_type, user_text = await out_queue.get()
             if not self._session:
                 print("[Vision] ⚠️  No session — dropping image")
                 continue
             try:
-                b64 = base64.b64encode(image_bytes).decode("ascii")
+                await self._session.send_realtime_input(
+                    media=gtypes.Blob(data=image_bytes, mime_type=mime_type)
+                )
                 await self._session.send_client_content(
-                    turns={
-                        "parts": [
-                            {"inline_data": {"mime_type": mime_type, "data": b64}},
-                            {"text": user_text},
-                        ]
-                    },
+                    turns={"parts": [{"text": user_text}]},
                     turn_complete=True,
                 )
                 print(f"[Vision] 📤 Sent {len(image_bytes):,} bytes — '{user_text[:60]}'")
@@ -324,10 +328,14 @@ class _VisionSession:
 
     async def _recv_loop(self) -> None:
         transcript: list[str] = []
+        session = self._session
+        audio_in = self._audio_in
+        if session is None or audio_in is None:
+            return
         try:
-            async for response in self._session.receive():
+            async for response in session.receive():
                 if response.data:
-                    await self._audio_in.put(response.data)
+                    await audio_in.put(response.data)
 
                 sc = response.server_content
                 if not sc:
@@ -342,7 +350,8 @@ class _VisionSession:
                     if transcript and self._player:
                         full = re.sub(r"\s+", " ", " ".join(transcript)).strip()
                         if full:
-                            self._player.write_log(f"Jarvis: {full}")
+                            asst_name = getattr(self._player, "_asst_name", "Aethelark")
+                            self._player.write_log(f"{asst_name}: {full}")
                             print(f"[Vision] 💬 {full}")
                     transcript = []
                     # Auto-close camera ~2s after Aethelark finishes speaking
@@ -360,17 +369,30 @@ class _VisionSession:
             raise  
 
     async def _play_loop(self) -> None:
+        audio_in = self._audio_in
+        if audio_in is None:
+            return
         stream = sd.RawOutputStream(
-            samplerate=_RECEIVE_SAMPLE_RATE,
+            samplerate=48000,
             channels=_CHANNELS,
             dtype="int16",
-            blocksize=_CHUNK_SIZE,
+            blocksize=_CHUNK_SIZE * 2,
         )
         stream.start()
         try:
             while True:
-                chunk = await self._audio_in.get()
-                await asyncio.to_thread(stream.write, chunk)
+                chunk = await audio_in.get()
+                
+                # Resample 24kHz raw PCM to 48kHz by repeating each 16-bit sample twice
+                try:
+                    import numpy as np
+                    samples = np.frombuffer(chunk, dtype=np.int16)
+                    resampled_chunk = np.repeat(samples, 2).tobytes()
+                except Exception as re_err:
+                    print(f"[Vision] Resampling error: {re_err}")
+                    resampled_chunk = chunk
+                
+                await asyncio.to_thread(stream.write, resampled_chunk)
         except Exception as e:
             print(f"[Vision] ❌ Play error: {e}")
             raise

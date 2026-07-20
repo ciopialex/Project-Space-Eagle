@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import os
 import platform
 import shutil
@@ -20,6 +21,26 @@ from playwright.async_api import (
     TimeoutError as PlaywrightTimeout,
 )
 _OS = platform.system()   # "Windows" | "Darwin" | "Linux"
+
+# Path to shared api_keys.json config
+_CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "api_keys.json"
+
+
+def _read_config() -> dict:
+    """Read api_keys.json; returns {} on any error."""
+    try:
+        return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_config(data: dict) -> None:
+    """Write api_keys.json atomically."""
+    try:
+        _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    except Exception as e:
+        print(f"[Browser] Config write failed: {e}")
 
 def _normalize_url(url: str) -> str:
     """
@@ -68,6 +89,7 @@ def _real_profile_dir(browser: str) -> str:
     if _OS == "Windows":
         m = {
             "chrome":   [Path(local) / "Google"          / "Chrome"          / "User Data"],
+            "chromium": [Path(local) / "Chromium"        / "User Data"],
             "edge":     [Path(local) / "Microsoft"        / "Edge"            / "User Data"],
             "brave":    [Path(local) / "BraveSoftware"    / "Brave-Browser"   / "User Data"],
             "vivaldi":  [Path(local) / "Vivaldi"          / "User Data"],
@@ -82,6 +104,7 @@ def _real_profile_dir(browser: str) -> str:
         lib = home / "Library" / "Application Support"
         m = {
             "chrome":   [lib / "Google"             / "Chrome"],
+            "chromium": [lib / "Chromium"],
             "edge":     [lib / "Microsoft Edge"],
             "brave":    [lib / "BraveSoftware"       / "Brave-Browser"],
             "vivaldi":  [lib / "Vivaldi"],
@@ -93,7 +116,8 @@ def _real_profile_dir(browser: str) -> str:
     elif _OS == "Linux":
         cfg = home / ".config"
         m = {
-            "chrome":   [cfg / "google-chrome", cfg / "chromium"],
+            "chrome":   [cfg / "google-chrome"],
+            "chromium": [cfg / "chromium", cfg / "chromium-browser"],
             "edge":     [cfg / "microsoft-edge"],
             "brave":    [cfg / "BraveSoftware" / "Brave-Browser"],
             "vivaldi":  [cfg / "vivaldi"],
@@ -217,6 +241,7 @@ def _find_exe_windows(prog_name: str) -> Optional[str]:
 _BROWSER_SPECS: dict[str, dict] = {
     "Windows": {
         "chrome":   {"engine": "chromium", "channel": "chrome",  "bins": []},
+        "chromium": {"engine": "chromium", "channel": None,      "bins": ["chromium.exe"]},
         "edge":     {"engine": "chromium", "channel": "msedge",  "bins": []},
         "firefox":  {"engine": "firefox",  "channel": None,      "bins": ["firefox.exe"]},
         "opera":    {"engine": "chromium", "channel": None,      "bins": ["opera.exe"],  "special": "opera_windows"},
@@ -227,6 +252,7 @@ _BROWSER_SPECS: dict[str, dict] = {
     },
     "Darwin": {
         "chrome":   {"engine": "chromium", "channel": "chrome",  "bins": []},
+        "chromium": {"engine": "chromium", "channel": None,      "bins": ["chromium"]},
         "edge":     {"engine": "chromium", "channel": "msedge",  "bins": ["microsoft-edge"]},
         "firefox":  {"engine": "firefox",  "channel": None,      "bins": ["firefox"]},
         "opera":    {"engine": "chromium", "channel": None,      "bins": ["opera"]},
@@ -237,7 +263,9 @@ _BROWSER_SPECS: dict[str, dict] = {
     },
     "Linux": {
         "chrome":   {"engine": "chromium", "channel": None,
-                     "bins": ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium"]},
+                     "bins": ["google-chrome", "google-chrome-stable"]},
+        "chromium": {"engine": "chromium", "channel": None,
+                     "bins": ["chromium-browser", "chromium", "/snap/bin/chromium"]},
         "edge":     {"engine": "chromium", "channel": None,
                      "bins": ["microsoft-edge", "microsoft-edge-stable"]},
         "firefox":  {"engine": "firefox",  "channel": None, "bins": ["firefox"]},
@@ -252,6 +280,8 @@ _BROWSER_SPECS: dict[str, dict] = {
 _ALIASES: dict[str, str] = {
     "google chrome":   "chrome",
     "google-chrome":   "chrome",
+    "chromium-browser":"chromium",
+    "chromium browser":"chromium",
     "microsoft edge":  "edge",
     "ms edge":         "edge",
     "msedge":          "edge",
@@ -288,6 +318,7 @@ def _resolve_browser(name: str) -> dict | None:
     if not exe and _OS == "Darwin":
         app_names = {
             "chrome":  ["Google Chrome.app"],
+            "chromium":["Chromium.app"],
             "edge":    ["Microsoft Edge.app"],
             "firefox": ["Firefox.app"],
             "opera":   ["Opera.app", "Opera GX.app"],
@@ -337,7 +368,7 @@ def _detect_default_browser() -> str:
                 ["xdg-settings", "get", "default-web-browser"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.lower()
-            for kw in ("firefox", "opera", "brave", "vivaldi", "chrome", "edge"):
+            for kw in ("firefox", "opera", "brave", "vivaldi", "chromium", "chrome", "edge"):
                 if kw in out:
                     return kw
     except Exception:
@@ -354,6 +385,7 @@ _SEARCH_ENGINES: dict[str, str] = {
 
 _MAC_APP_NAMES: dict[str, str] = {
     "chrome":  "Google Chrome",
+    "chromium":"Chromium",
     "edge":    "Microsoft Edge",
     "firefox": "Firefox",
     "opera":   "Opera",
@@ -364,7 +396,7 @@ _MAC_APP_NAMES: dict[str, str] = {
 }
 
 # Windows registry lookup names for browsers whose spec has no explicit binary
-_WIN_EXE_HINTS: dict[str, str] = {"chrome": "chrome", "edge": "msedge"}
+_WIN_EXE_HINTS: dict[str, str] = {"chrome": "chrome", "chromium": "chromium", "edge": "msedge"}
 
 
 def _open_native(url: str, browser_name: Optional[str]) -> str:
@@ -956,15 +988,23 @@ def browser_control(
         _log(player, result)
         return result
 
-    # ── Gezinme HER ZAMAN native ─────────────────────────────────────────────
-    # go_to / search / new_tab siteyi kullanıcının kendi tarayıcısında açar —
-    # kendi profili, giriş yapılmış hesapları ve açılış sayfasıyla; tıpkı
-    # kullanıcının kendisi açmış gibi. about:blank'li kontrollü pencere burada
-    # asla açılmaz. Tek istisna: hâlihazırda süren bir otomasyon akışı varsa
-    # gezinme o pencerede devam eder (çok adımlı görevler bölünmesin diye).
+    # ── Navigation: go_to / search / new_tab ────────────────────────────────
+    # Resolution order for target browser:
+    #   1. Explicitly requested browser (from model parameters)
+    #   2. Last active browser session in the registry
+    #   3. User-configured default_browser in api_keys.json
+    #   4. OS default (xdg-open / open / startfile)
     if action in ("go_to", "search", "new_tab"):
-        if _registry.has(browser):
-            sess = _registry.get(browser)
+        # Resolve target browser using the 3-tier fallback
+        target_browser = browser
+        if not target_browser:
+            target_browser = _registry._active_browser
+        if not target_browser:
+            cfg_default = _read_config().get("default_browser", "").lower().strip()
+            target_browser = _ALIASES.get(cfg_default, cfg_default) or None
+
+        if target_browser and _registry.has(target_browser):
+            sess = _registry.get(target_browser)
             try:
                 if action == "search":
                     result = sess.run(sess.search(params.get("query", ""),
@@ -987,7 +1027,7 @@ def browser_control(
         else:
             nav_url = params.get("url", "").strip()
 
-        result = _open_native(nav_url, browser)
+        result = _open_native(nav_url, target_browser)
         if result.startswith("Opened") and nav_url:
             _registry.note_native_url(_normalize_url(nav_url))
         _log(player, result)

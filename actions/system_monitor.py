@@ -110,27 +110,103 @@ def _get_cpu_temp() -> float:
     return -1.0
 
 
-def get_system_status() -> dict:
-    """Snapshot of current system metrics for the system_status tool."""
-    cpu  = psutil.cpu_percent(interval=0.2)
-    ram  = psutil.virtual_memory()
-    temp = _get_cpu_temp()
-    gpu  = _get_gpu_usage()
+import threading
 
-    boot_time   = psutil.boot_time()
-    uptime_secs = time.time() - boot_time
-    uptime_h    = int(uptime_secs // 3600)
-    uptime_m    = int((uptime_secs % 3600) // 60)
+_metrics_lock = threading.Lock()
+_cached_metrics = None
+_last_sampled_time = 0.0
+_sampler_started = False
+
+def _metrics_sampler_loop():
+    global _cached_metrics, _last_sampled_time
+    # Initialize cpu_percent calculation (first call establishes baseline)
+    psutil.cpu_percent(interval=None)
+    while True:
+        try:
+            cpu = psutil.cpu_percent(interval=None)
+            ram = psutil.virtual_memory()
+            temp = _get_cpu_temp()
+            gpu = _get_gpu_usage()
+            pids_count = len(psutil.pids())
+            boot_time = psutil.boot_time()
+            
+            with _metrics_lock:
+                _cached_metrics = {
+                    "cpu_percent": cpu,
+                    "ram_percent": ram.percent,
+                    "ram_used_gb": ram.used / 1024 ** 3,
+                    "ram_total_gb": ram.total / 1024 ** 3,
+                    "cpu_temp_c": temp,
+                    "gpu_percent": gpu,
+                    "boot_time": boot_time,
+                    "process_count": pids_count,
+                }
+                _last_sampled_time = time.monotonic()
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+def _ensure_sampler_started():
+    global _sampler_started
+    if not _sampler_started:
+        with _metrics_lock:
+            if not _sampler_started:
+                t = threading.Thread(target=_metrics_sampler_loop, name="AethelarkMetricsSampler", daemon=True)
+                t.start()
+                _sampler_started = True
+
+def get_system_status() -> dict:
+    """Snapshot of current system metrics for the system_status tool (retrieved from background cache)."""
+    _ensure_sampler_started()
+    
+    with _metrics_lock:
+        metrics = _cached_metrics
+        sampled_time = _last_sampled_time
+
+    if metrics is None:
+        # Cold start fallback (not sampled yet)
+        cpu = psutil.cpu_percent(interval=None)
+        ram = psutil.virtual_memory()
+        temp = _get_cpu_temp()
+        gpu = _get_gpu_usage()
+        boot_time = psutil.boot_time()
+        uptime_secs = time.time() - boot_time
+        uptime_h = int(uptime_secs // 3600)
+        uptime_m = int((uptime_secs % 3600) // 60)
+        return {
+            "cpu_percent": round(cpu, 1),
+            "ram_percent": round(ram.percent, 1),
+            "ram_used_gb": round(ram.used / 1024 ** 3, 1),
+            "ram_total_gb": round(ram.total / 1024 ** 3, 1),
+            "cpu_temp_c": round(temp, 1) if temp > 0 else None,
+            "gpu_percent": round(gpu, 1) if gpu >= 0 else None,
+            "uptime": f"{uptime_h}h {uptime_m}m",
+            "process_count": len(psutil.pids()),
+            "age_ms": 0,
+            "gpu_available": gpu >= 0,
+            "temp_available": temp > 0,
+        }
+
+    age_ms = int((time.monotonic() - sampled_time) * 1000)
+    uptime_secs = time.time() - metrics["boot_time"]
+    uptime_h = int(uptime_secs // 3600)
+    uptime_m = int((uptime_secs % 3600) // 60)
+    
+    temp = metrics["cpu_temp_c"]
+    gpu = metrics["gpu_percent"]
 
     return {
-        "cpu_percent":   round(cpu, 1),
-        "ram_percent":   round(ram.percent, 1),
-        "ram_used_gb":   round(ram.used   / 1024 ** 3, 1),
-        "ram_total_gb":  round(ram.total  / 1024 ** 3, 1),
-        "cpu_temp_c":    round(temp, 1) if temp > 0 else None,
-        "gpu_percent":   round(gpu,  1) if gpu  >= 0 else None,
-        "uptime":        f"{uptime_h}h {uptime_m}m",
-        "process_count": len(psutil.pids()),
+        "cpu_percent": round(metrics["cpu_percent"], 1),
+        "ram_percent": round(metrics["ram_percent"], 1),
+        "ram_used_gb": round(metrics["ram_used_gb"], 1),
+        "ram_total_gb": round(metrics["ram_total_gb"], 1),
+        "cpu_temp_c": round(temp, 1) if temp > 0 else None,
+        "gpu_percent": round(gpu, 1) if gpu >= 0 else None,
+        "uptime": f"{uptime_h}h {uptime_m}m",
+        "process_count": metrics["process_count"],
+        "age_ms": age_ms,
+        "gpu_available": gpu >= 0,
+        "temp_available": temp > 0,
     }
 
 
@@ -152,13 +228,18 @@ class SystemMonitor:
         self._last_alert[key] = time.monotonic()
 
     def check(self) -> str | None:
-        try:
-            cpu  = psutil.cpu_percent(interval=None)
-            ram  = psutil.virtual_memory().percent
-            temp = _get_cpu_temp()
-            gpu  = _get_gpu_usage()
-        except Exception:
+        _ensure_sampler_started()
+        
+        with _metrics_lock:
+            metrics = _cached_metrics
+            
+        if metrics is None:
             return None
+
+        cpu = metrics["cpu_percent"]
+        ram = metrics["ram_percent"]
+        temp = metrics["cpu_temp_c"]
+        gpu = metrics["gpu_percent"]
 
         alerts: list[str] = []
 

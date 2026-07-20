@@ -14,7 +14,13 @@ import threading
 from typing import Callable, Optional
 
 import numpy as np
+import re
 import sounddevice as sd
+
+def _split_into_sentences(text: str) -> list[str]:
+    # Split by periods, question marks, exclamation marks, followed by whitespace
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    return [s.strip() for s in sentences if s.strip()]
 
 
 
@@ -81,7 +87,11 @@ def _play_np(samples, sample_rate: int) -> None:
     """Play float32 mono (or stereo) audio via sounddevice.
     Accepts numpy arrays or PyTorch tensors.
     """
-    sd.play(_to_numpy(samples), sample_rate)
+    samples_np = _to_numpy(samples)
+    if sample_rate == 24000:
+        samples_np = np.repeat(samples_np, 2)
+        sample_rate = 48000
+    sd.play(samples_np, sample_rate)
     sd.wait()
 
 
@@ -94,7 +104,11 @@ def _play_audio_bytes(audio_bytes: bytes) -> None:
         nchannels=1,
     )
     samples = np.array(decoded.samples, dtype=np.float32)
-    sd.play(samples, decoded.sample_rate)
+    sample_rate = decoded.sample_rate
+    if sample_rate == 24000:
+        samples = np.repeat(samples, 2)
+        sample_rate = 48000
+    sd.play(samples, sample_rate)
     sd.wait()
 
 
@@ -109,22 +123,39 @@ class EdgeTTSEngine:
         self.voice = voice
 
     def speak(self, text: str) -> None:
+        sentences = _split_into_sentences(text)
+        if not sentences:
+            return
         loop = asyncio.new_event_loop()
         try:
-            audio_bytes = loop.run_until_complete(self._synth(text))
+            loop.run_until_complete(self._speak_stream(sentences))
         finally:
             loop.close()
-        if audio_bytes:
-            _play_audio_bytes(audio_bytes)
 
-    async def _synth(self, text: str) -> bytes:
+    async def _synth_sentence(self, sentence: str) -> bytes:
         import edge_tts
-        comm = edge_tts.Communicate(text, self.voice)
+        comm = edge_tts.Communicate(sentence, self.voice)
         buf  = bytearray()
         async for chunk in comm.stream():
             if chunk["type"] == "audio":
                 buf.extend(chunk["data"])
         return bytes(buf)
+
+    async def _speak_stream(self, sentences: list[str]) -> None:
+        sem = asyncio.Semaphore(3)
+        async def fetch_task(sentence: str):
+            async with sem:
+                try:
+                    return await self._synth_sentence(sentence)
+                except Exception as e:
+                    print(f"[TTS] Prefetch error for '{sentence}': {e}")
+                    return b""
+
+        tasks = [asyncio.create_task(fetch_task(s)) for s in sentences]
+        for task in tasks:
+            audio_bytes = await task
+            if audio_bytes:
+                await asyncio.to_thread(_play_audio_bytes, audio_bytes)
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +182,7 @@ def _import_kokoro_pipeline():
     import sys
 
     def _try_import():
-        from kokoro import KPipeline  # noqa: PLC0415
+        from kokoro import KPipeline  # type: ignore # noqa: PLC0415
         return KPipeline
 
     try:
@@ -243,7 +274,7 @@ class KokoroTTSEngine:
 
         # Prefer GPU — Kokoro on CUDA is ~10x faster than CPU.
         try:
-            import torch
+            import torch  # type: ignore
             device = "cuda" if torch.cuda.is_available() else "cpu"
             if device == "cpu":
                 import os as _os
@@ -358,22 +389,51 @@ class ElevenLabsTTSEngine:
         self.voice_id = voice_id
 
     def speak(self, text: str) -> None:
+        sentences = _split_into_sentences(text)
+        if not sentences:
+            return
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(self._speak_stream(sentences))
+        finally:
+            loop.close()
+
+    async def _synth_sentence(self, sentence: str) -> bytes:
         import requests
         headers = {
             "xi-api-key":   self.api_key,
             "Content-Type": "application/json",
         }
         payload = {
-            "text":     text,
+            "text":     sentence,
             "model_id": "eleven_multilingual_v2",
             "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
         }
-        resp = requests.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}",
-            json=payload, headers=headers, timeout=30,
-        )
-        resp.raise_for_status()
-        _play_audio_bytes(resp.content)
+        loop = asyncio.get_running_loop()
+        def _req():
+            resp = requests.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}",
+                json=payload, headers=headers, timeout=30,
+            )
+            resp.raise_for_status()
+            return resp.content
+        return await loop.run_in_executor(None, _req)
+
+    async def _speak_stream(self, sentences: list[str]) -> None:
+        sem = asyncio.Semaphore(2)
+        async def fetch_task(sentence: str):
+            async with sem:
+                try:
+                    return await self._synth_sentence(sentence)
+                except Exception as e:
+                    print(f"[ElevenLabs] Prefetch error: {e}")
+                    return b""
+
+        tasks = [asyncio.create_task(fetch_task(s)) for s in sentences]
+        for task in tasks:
+            audio_bytes = await task
+            if audio_bytes:
+                await asyncio.to_thread(_play_audio_bytes, audio_bytes)
 
 
 # ---------------------------------------------------------------------------

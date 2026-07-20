@@ -19,9 +19,9 @@ def _get_api_key() -> str:
 
 
 def _gemini_search(query: str) -> str:
-    from google import genai
+    from config import get_client
 
-    client   = genai.Client(api_key=_get_api_key())
+    client   = get_client()
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=query,
@@ -120,9 +120,9 @@ def _gemini_headlines(n: int = 5) -> tuple[list[str], str]:
     Returns (headline_list, raw_text_for_display).
     """
     import re
-    from google import genai
+    from config import get_client
 
-    client = genai.Client(api_key=_get_api_key())
+    client = get_client()
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=f"Current world news: {n} headlines. Numbered list, titles only.",
