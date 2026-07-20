@@ -1324,6 +1324,12 @@ class AethelarkLive:
                     import numpy as np
                     samples = np.frombuffer(chunk, dtype=np.int16)
                     resampled_chunk = np.repeat(samples, 2).tobytes()
+                    # Voice envelope → audio-reactive pill breathing (~20 Hz)
+                    try:
+                        rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+                        self.ui.set_audio_level(min(rms / 9000.0, 1.0))
+                    except Exception:
+                        pass
                 except Exception as re_err:
                     print(f"[Aethelark] Resampling error: {re_err}")
                     resampled_chunk = chunk
