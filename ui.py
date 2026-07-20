@@ -2200,6 +2200,15 @@ class PillWidget(QFrame):
         # Shadow image cache
         self._cached_shadow = None
         self._shadow_rect_key = None
+
+        # Logo layer caches: the silver base is blurred ONCE, the state glow
+        # once per color bucket — replaces a full PIL Gaussian blur per frame.
+        self._logo_base_img = None          # static blurred silver letters
+        self._logo_glow_cache = {}          # (r//8,g//8,b//8) -> blurred glow
+        self._capsule_path_cache = None     # (rect key, QPainterPath)
+
+        # Audio-reactive breathing: envelope pushed from the TTS stream
+        self._audio_level = 0.0
         
         # Pre-generate surface micro-texture noise (cached, never regenerated)
         import random as _rnd
@@ -2232,7 +2241,79 @@ class PillWidget(QFrame):
             self.target_color = QColor("#3B82F6")
         self.update()
         
+    def set_audio_level(self, level: float):
+        """Voice envelope (0..1) from the TTS stream — drives glow breathing."""
+        self._audio_level = max(self._audio_level, min(max(level, 0.0), 1.0))
+
+    def _capsule_path(self, rect: QRectF):
+        """Cached vector capsule path (true arc/Bezier outline) for clipping."""
+        from PyQt6.QtGui import QPainterPath
+        key = (rect.x(), rect.y(), rect.width(), rect.height())
+        if self._capsule_path_cache is None or self._capsule_path_cache[0] != key:
+            p = QPainterPath()
+            p.addRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+            self._capsule_path_cache = (key, p)
+        return self._capsule_path_cache[1]
+
+    def _logo_layers(self, pulse_col: QColor):
+        """(blurred silver base, blurred glow mask for pulse_col).
+
+        Visually equivalent to the old per-frame tint+blur composite, but
+        the expensive PIL Gaussian blur now runs once per layer instead of
+        33 times per second: pulse intensity is applied at draw time via
+        painter opacity (radial alpha scales linearly, so the result is
+        identical).
+        """
+        from PyQt6.QtGui import QImage
+        img_w = self.logo_image.width()
+        img_h = self.logo_image.height()
+
+        if self._logo_base_img is None:
+            base = QImage(img_w, img_h, QImage.Format.Format_ARGB32_Premultiplied)
+            base.fill(Qt.GlobalColor.transparent)
+            tp = QPainter(base)
+            tp.setRenderHint(QPainter.RenderHint.Antialiasing)
+            tp.drawImage(0, 0, self.logo_image)
+            tp.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            logo_grad = QLinearGradient(0, 0, 0, img_h)
+            logo_grad.setColorAt(0.0, QColor(229, 229, 234, 225))
+            logo_grad.setColorAt(0.5, QColor(200, 200, 208, 195))
+            logo_grad.setColorAt(1.0, QColor(176, 176, 180, 210))
+            tp.setBrush(QBrush(logo_grad))
+            tp.setPen(Qt.PenStyle.NoPen)
+            tp.drawRect(0, 0, img_w, img_h)
+            tp.end()
+            self._logo_base_img = _make_blurred_logo_image(base, blur_radius=1.1)
+
+        ckey = (pulse_col.red() // 8, pulse_col.green() // 8, pulse_col.blue() // 8)
+        glow = self._logo_glow_cache.get(ckey)
+        if glow is None:
+            g = QImage(img_w, img_h, QImage.Format.Format_ARGB32_Premultiplied)
+            g.fill(Qt.GlobalColor.transparent)
+            tp = QPainter(g)
+            tp.setRenderHint(QPainter.RenderHint.Antialiasing)
+            tp.drawImage(0, 0, self.logo_image)
+            tp.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            state_glow = QRadialGradient(img_w / 2, img_h / 2, img_w * 0.4)
+            state_glow.setColorAt(0.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), 255))
+            state_glow.setColorAt(1.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), 0))
+            tp.setBrush(QBrush(state_glow))
+            tp.setPen(Qt.PenStyle.NoPen)
+            tp.drawRect(0, 0, img_w, img_h)
+            tp.end()
+            glow = _make_blurred_logo_image(g, blur_radius=1.1)
+            if len(self._logo_glow_cache) >= 48:
+                self._logo_glow_cache.pop(next(iter(self._logo_glow_cache)))
+            self._logo_glow_cache[ckey] = glow
+        return self._logo_base_img, glow
+
     def update_pulse(self):
+        # 0. Audio envelope decay (voice-reactive breathing while speaking)
+        if self._audio_level > 0.004:
+            self._audio_level *= 0.82
+        else:
+            self._audio_level = 0.0
+
         # 1. Liquid color melting interpolation
         r = self.current_color.red() + (self.target_color.red() - self.current_color.red()) * 0.08
         g = self.current_color.green() + (self.target_color.green() - self.current_color.green()) * 0.08
@@ -2309,7 +2390,7 @@ class PillWidget(QFrame):
 
         # 2. AMBIENT SCREEN-LIGHT BLEED — subtle, natural glow beneath the pill
         pulse_col = self.current_color
-        bleed_alpha = int((self.pulse_alpha / 140.0) * 14) + 4
+        bleed_alpha = int((self.pulse_alpha / 140.0) * 14) + 4 + int(self._audio_level * 12)
         screen_bleed = QRadialGradient(
             render_cx + self._parallax_dx * 0.4,
             render_rect.bottom() - 4.0,
@@ -2352,12 +2433,8 @@ class PillWidget(QFrame):
         painter.drawRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
         
         # Draw inner shadow vignette directly on the solid base (for portal depth)
-        from PyQt6.QtGui import QPainterPath
-        capsule_clip = QPainterPath()
-        capsule_clip.addRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
-        
         painter.save()
-        painter.setClipPath(capsule_clip)
+        painter.setClipPath(self._capsule_path(render_rect))
         for i in range(6):
             inner_color = QColor(0, 0, 0, int(195 * (1 - i / 6)))
             inner_pen = QPen(inner_color, 1.0 + i * 0.9)
@@ -2387,41 +2464,15 @@ class PillWidget(QFrame):
             logo_x = render_rect.x() + (render_rect.width() - logo_w) / 2
             logo_y = render_rect.y() + (render_rect.height() - logo_h) / 2
             logo_rect = QRectF(logo_x, logo_y, logo_w, logo_h)
-            
-            img_w = self.logo_image.width()
-            img_h = self.logo_image.height()
-            
-            # Create high-res tinted scratch buffer
-            from PyQt6.QtGui import QImage
-            tinted = QImage(img_w, img_h, QImage.Format.Format_ARGB32_Premultiplied)
-            tinted.fill(Qt.GlobalColor.transparent)
-            
-            tp = QPainter(tinted)
-            tp.setRenderHint(QPainter.RenderHint.Antialiasing)
-            tp.drawImage(0, 0, self.logo_image)
-            
-            # Composite Base Silver-Titanium letters
-            tp.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-            logo_grad = QLinearGradient(0, 0, 0, img_h)
-            logo_grad.setColorAt(0.0, QColor(229, 229, 234, 225))
-            logo_grad.setColorAt(0.5, QColor(200, 200, 208, 195))
-            logo_grad.setColorAt(1.0, QColor(176, 176, 180, 210))
-            tp.setBrush(QBrush(logo_grad))
-            tp.setPen(Qt.PenStyle.NoPen)
-            tp.drawRect(0, 0, img_w, img_h)
-            
-            # Composite Pulse Glow inside letters
-            tp.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
-            state_glow = QRadialGradient(img_w / 2, img_h / 2, img_w * 0.4)
-            state_glow.setColorAt(0.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), self.pulse_alpha))
-            state_glow.setColorAt(1.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), 0))
-            tp.setBrush(QBrush(state_glow))
-            tp.drawRect(0, 0, img_w, img_h)
-            tp.end()
-            
-            # Apply PIL Gaussian Blur (radius=1.1) for smooth, non-pixelated logo vector edges
-            blurred_logo = _make_blurred_logo_image(tinted, blur_radius=1.1)
-            painter.drawImage(logo_rect, blurred_logo)
+
+            # Pre-blurred cached layers; pulse (and voice envelope) applied
+            # via draw opacity — same look, no per-frame Gaussian blur.
+            base_img, glow_img = self._logo_layers(pulse_col)
+            painter.drawImage(logo_rect, base_img)
+            glow_opacity = min((self.pulse_alpha + self._audio_level * 95.0) / 255.0, 0.72)
+            painter.setOpacity(glow_opacity)
+            painter.drawImage(logo_rect, glow_img)
+            painter.setOpacity(1.0)
         elif self.renderer and self.renderer.isValid():
             from PyQt6.QtGui import QImage, QPainterPath
             # Render at 2x resolution for crisp high-DPI scaling
@@ -2503,12 +2554,8 @@ class PillWidget(QFrame):
             painter.drawRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
 
         # 4A. Specular Glass Glossy Curved Reflection Overlay
-        from PyQt6.QtGui import QPainterPath
-        clip_path = QPainterPath()
-        clip_path.addRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
-        
         painter.save()
-        painter.setClipPath(clip_path)
+        painter.setClipPath(self._capsule_path(render_rect))
         
         highlight_rect = QRectF(render_rect.x(), render_rect.y(), render_rect.width(), render_rect.height() * 0.46)
         highlight_grad = QLinearGradient(highlight_rect.topLeft(), highlight_rect.bottomLeft())
@@ -2525,11 +2572,8 @@ class PillWidget(QFrame):
         # 4B. TOP-EDGE SPECULAR RIM LIGHT — bright crescent on the very top edge
         # This is the single biggest trick to make the pill read as a 3D object.
         # Light source is above-left, so the rim is brightest center-left.
-        from PyQt6.QtGui import QPainterPath as _QPP
-        rim_clip = _QPP()
-        rim_clip.addRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
         painter.save()
-        painter.setClipPath(rim_clip)
+        painter.setClipPath(self._capsule_path(render_rect))
 
         rim_rect = QRectF(
             render_rect.x() + render_rect.width() * 0.12,
@@ -2549,10 +2593,8 @@ class PillWidget(QFrame):
 
         # 4C. SURFACE MICRO-TEXTURE — cached noise overlay for tactile material feel
         if self._noise_px and not self._noise_px.isNull():
-            surf_clip = _QPP()
-            surf_clip.addRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
             painter.save()
-            painter.setClipPath(surf_clip)
+            painter.setClipPath(self._capsule_path(render_rect))
             painter.setOpacity(0.12)
             painter.drawTiledPixmap(render_rect.toRect(), self._noise_px)
             painter.setOpacity(1.0)
@@ -2581,6 +2623,7 @@ class MainWindow(QMainWindow):
     _cam_stream_sig = pyqtSignal(bool)       # True=start live stream, False=stop
     _cam_frame_sig  = pyqtSignal(bytes)      # live camera frame → HUD area
     _clipboard_sig  = pyqtSignal(str)        # clipboard text changed (thread-safe)
+    _audio_sig      = pyqtSignal(float)      # TTS output envelope → pill breathing
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -2749,6 +2792,7 @@ class MainWindow(QMainWindow):
         self._cam_stream_sig.connect(self._on_cam_stream)
         self._cam_frame_sig.connect(self._on_cam_frame)
         self._clipboard_sig.connect(self._show_clipboard_panel)
+        self._audio_sig.connect(self._pill_widget.set_audio_level)
         self._cam_stop = threading.Event()
 
         # Camera preview overlay (child of central widget, positioned in resizeEvent)
@@ -4440,6 +4484,10 @@ class AethelarkUI:
 
     def write_log(self, text: str):
         self._win._log_sig.emit(text)
+
+    def set_audio_level(self, level: float):
+        """Thread-safe: push the TTS output envelope (0..1) for pill breathing."""
+        self._win._audio_sig.emit(level)
 
     def wait_for_api_key(self):
         while not self._win._ready:
