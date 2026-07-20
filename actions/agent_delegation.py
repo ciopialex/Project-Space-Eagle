@@ -76,6 +76,16 @@ class AgentAdapter:
                 player.write_log(f"ERR: {err_msg}")
             return err_msg
 
+        # Virtual VT100 watcher: thought extraction + prompt auto-approval.
+        try:
+            from actions.agent_screen import AgentScreenWatcher
+            session.watcher = AgentScreenWatcher(session, self.name, player=player)
+        except Exception as e:
+            session.watcher = None
+            if player:
+                player.write_log(f"SYS: Screen watcher unavailable ({e}); "
+                                 f"raw log streaming only.")
+
         # One read-only live console per session (best effort).
         await asyncio.to_thread(
             open_viewer_terminal,
