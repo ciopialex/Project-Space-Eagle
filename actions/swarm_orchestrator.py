@@ -130,9 +130,10 @@ class Blackboard:
         return "\n".join(lines) or "No swarm activity recorded."
 
 
-def _swarm_preamble(agent: str, task: str, branch: str, project_dir: Path) -> str:
+def _swarm_preamble(agent: str, task: str, branch: str, project_dir: Path,
+                    repo_map: str = "") -> str:
     board = Path(project_dir) / STATE_DIR / "swarm_state.json"
-    return (
+    text = (
         f"You are '{agent}', one member of a coordinated multi-agent engineering "
         f"swarm working on this project. You work in an isolated git worktree on "
         f"branch '{branch}' — commit your work to this branch as you reach "
@@ -141,6 +142,9 @@ def _swarm_preamble(agent: str, task: str, branch: str, project_dir: Path) -> st
         f"decisions recorded there. Messages prefixed [SWARM UPDATE] are live "
         f"context from teammates — adapt to them. YOUR TASK: {task}"
     )
+    if repo_map:
+        text += f"\nCONDENSED CODEBASE MAP:\n{repo_map}"
+    return text
 
 
 class SwarmOrchestrator:
@@ -150,6 +154,9 @@ class SwarmOrchestrator:
         self.project_dir = Path(project_dir).resolve()
         self.player = player
         self.board = Blackboard(self.project_dir)
+        # Every orchestrator is visible to telemetry regardless of how it
+        # was constructed (voice tool, sentinel, tests).
+        _ORCHESTRATORS[str(self.project_dir)] = self
 
     def _log(self, msg: str):
         if self.player:
@@ -199,6 +206,12 @@ class SwarmOrchestrator:
         from actions.agent_delegation import AGENT_REGISTRY
 
         self.ensure_repo()
+        try:
+            from actions.repo_map import build_repo_map
+            repo_map = await asyncio.to_thread(
+                build_repo_map, self.project_dir, 4000)
+        except Exception:
+            repo_map = ""
         started, errors = [], []
         for agent_key, task in assignments.items():
             adapter = AGENT_REGISTRY.get(agent_key)
@@ -211,7 +224,8 @@ class SwarmOrchestrator:
                 errors.append(f"{agent_key}: {e}")
                 continue
             branch = f"swarm/{agent_key}"
-            prompt = _swarm_preamble(agent_key, task, branch, self.project_dir)
+            prompt = _swarm_preamble(agent_key, task, branch, self.project_dir,
+                                     repo_map=repo_map)
             result = await adapter.run(prompt, wt, self.project_dir.name,
                                        player=self.player)
             if "session" not in result.lower():
@@ -293,6 +307,30 @@ class SwarmOrchestrator:
             self.board.set_agent(agent_key, status="stopped")
             stopped.append(agent_key)
         return f"Stopped: {', '.join(stopped) or 'nothing running'}."
+
+
+def swarm_snapshot() -> dict:
+    """Full swarm telemetry for dashboard streaming: every tracked project's
+    blackboard plus live session tails."""
+    import re as _re
+    ansi = _re.compile(r"(?:\x1b[@-_][0-?]*[ -/]*[@-~])")
+    projects = {}
+    for key, orch in list(_ORCHESTRATORS.items()):
+        state = orch.board.read()
+        projects[key] = {
+            "agents": state.get("agents", {}),
+            "decisions": state.get("decisions", [])[-10:],
+            "file_claims": state.get("file_claims", {}),
+        }
+    sessions = {}
+    for (agent_key, sdir), sess in POOL.all_sessions().items():
+        tail = ansi.sub("", sess.snapshot_tail(1200).decode("utf-8", "replace"))
+        sessions[f"{agent_key}@{sdir}"] = {
+            "alive": sess.is_alive(),
+            "age_s": round(time.time() - sess.created_at, 1),
+            "tail": tail[-800:],
+        }
+    return {"ts": time.time(), "projects": projects, "sessions": sessions}
 
 
 # ------------------------------------------------------------- tool entry
