@@ -1,110 +1,56 @@
-```mermaid
-graph TB
-    subgraph Hardware & OS Layer
-        Mic["🎤 Hardware Mic Input"]
-        Spk["🔊 Hardware Speaker Output"]
-        Cam["📷 Webcam Device"]
-        Disp["🖥️ Screen Frame Buffer"]
-        Disk["💾 Disk (Config/Logs/Memory DB)"]
-        OS_Proc["⚙️ OS Processes & Subprocesses"]
-        OS_Kern["🧠 Kernel Resource Metrics (CPU/RAM/GPU/Temp)"]
-    end
+# Aethelark Space-Eagle: Present Architecture & Upgrade Handoff
 
-    subgraph PyQt6 UI Thread
-        JarvisUI["JarvisUI (Main GUI Event Loop)"]
-        Pill["PillWidget (Floating Island overlay)"]
-        Logs["LogWidget (Chat & System event logger)"]
-        CamStream["HUD Camera Stream Panel"]
-    end
+## 1. Present Codebase Implementation (Ground Truth)
 
-    subgraph asyncio Event Loop (main.py Engine Thread)
-        direction TB
-        
-        subgraph Upstream Audio Pipeline
-            InputStream["sounddevice.InputStream (16kHz PCM)"]
-            InputStreamCallback["Callback Function (Thread-safe context)"]
-            OutQueue["out_queue (asyncio.Queue, maxsize=200)"]
-            SendRealtimeTask["_send_realtime (Async Task Loop)"]
-        end
+### Subsystem 1: Voice & Vision Controller (`main.py`)
+* **Gemini Live WebSocket:** Establishes a bidirectional streaming session using `google-genai` SDK (`types.LiveConnectConfig`, `response_modalities=["AUDIO"]`).
+* **Audio Buffer Management:** 
+  * Playback queue `queue.Queue(maxsize=2000)` prevents buffer overflow drops.
+  * `PyAudio` / PortAudio `RawOutputStream` uses fixed block scheduling (`blocksize=2400`) and 100ms silence pre-buffering.
+* **Tool Dispatcher:** Binds tool definitions from `actions/` and dispatches function calls returned by the model.
 
-        subgraph Downstream Audio Pipeline
-            RecvTask["_receive_audio (Async Task Loop)"]
-            AudioInQueue["audio_in_queue (asyncio.Queue)"]
-            PlayTask["_play_audio (Async Task Loop)"]
-            RawOutputStream["sounddevice.RawOutputStream (24kHz PCM)"]
-        end
+### Subsystem 2: Dynamic Island HUD (`ui.py`)
+* **Widget Hierarchy:** Top-level `QMainWindow` hosting a `QStackedWidget` containing `PillWidget` (Index 1) and `_dashboard_container` (Index 0).
+* **Pill Geometry & Padding:** Window size is `240x84`. `render_rect` is centered at `(24.0, 8.0)` with size `192x53.76` (3.5714 aspect ratio matching `AE_dynamic_island_cutout.svg`).
+* **Visual Layer Stack in `paintEvent`:**
+  1. *Cached Drop Shadow:* `_make_gaussian_shadow_image` renders a 4.5px PIL Gaussian blur shadow mask, cached on `shadow_key`.
+  2. *Ambient Screen Bleed:* `screen_bleed` radial gradient (`bleed_ellipse` at `y=49.76` to `y=73.76`, leaving 10.24px safety margin).
+  3. *Solid Base:* Piano black linear gradient `#141419` $\rightarrow$ `#08080A` $\rightarrow$ `#000000`.
+  4. *Inner Vignette:* 6-pass clipped stroke for portal depth.
+  5. *Logo Compositing:* Silver-titanium gradient with pulse color glow, anti-aliased via `_make_blurred_logo_image` (1.1px PIL Gaussian Blur).
+  6. *Specular Highlights:* Top specular glass crescent and metallic border stroke.
 
-        subgraph Sequential Tool execution Loop
-            ToolCallHandler["Tool Call Handler (Sequential iteration)"]
-            ExecTool["_execute_tool (Method dispatcher)"]
-            ThreadPoolExecutor["ThreadPoolExecutor (Global Thread Pool)"]
-            
-            subgraph Synchronous Blocking Actions
-                OpenApp["open_app() Action"]
-                SysStatus["get_system_status() Action"]
-                ScreenProc["screen_process() Action"]
-                SaveMem["save_memory() Action"]
-            end
-        end
+### Subsystem 3: Agent Delegation Action (`actions/agent_delegation.py`)
+* **Command Template Mapping:** Maps agent names (`antigravity_cli`, `claude_code`, `opencode`, `kimi`) to shell commands (e.g. `agy -i '{prompt}'`, `claude '{prompt}'`).
+* **Subprocess Spawning:** Invokes `gnome-terminal` with `script -f -q -c "<agent_cmd>" /tmp/agent_delegation_<name>_<proj>.log; exec bash`.
+* **Log Tailing:** Reads and cleans ANSI strings from the `/tmp` log file, forwarding lines to HUD logs.
 
-        subgraph Background Engine Tasks
-            SysMonTask["_run_system_monitor (10s polling loop)"]
-            ProactiveTask["_run_proactive_mode (60s check-in loop)"]
-            DashboardServer["DashboardServer (FastAPI/Uvicorn WebSocket Host)"]
-        end
-    end
+### Subsystem 4: System Actions Suite (`actions/`)
+* **`browser_control.py`:** Manages multi-browser launching and profile path resolution (`api_keys.json`).
+* **`screen_processor.py`:** Handles webcam and desktop screenshot frame capture.
+* **`system_monitor.py`:** Fetches CPU/RAM/GPU telemetry via `psutil`.
+* **`open_app.py`:** Spawns native applications via `subprocess`.
 
-    subgraph Remote Cloud Services
-        GeminiLiveAPI["Gemini 2.5 Multimodal Live WebSocket Session"]
-    end
+---
 
-    Mic --> InputStream
-    InputStream --> InputStreamCallback
-    InputStreamCallback --> OutQueue
-    OutQueue --> SendRealtimeTask
-    SendRealtimeTask --> GeminiLiveAPI
+## 2. Architectural Upgrade Paths for Target Behaviors
 
-    GeminiLiveAPI --> RecvTask
-    RecvTask --> AudioInQueue
-    AudioInQueue --> PlayTask
-    PlayTask --> RawOutputStream
-    RawOutputStream --> Spk
+To achieve the desired software behaviors, an incoming engineer or model can implement the following architectural enhancements:
 
-    RecvTask --> Logs
-    RecvTask --> Pill
-    PlayTask --> Pill
+### Enhancement A: Persistent PTY Session Manager (Target: Single-Session Memory)
+* **Architectural Change:** Replace stateless `subprocess.Popen("gnome-terminal")` in `actions/agent_delegation.py` with a **Session Pool**.
+* **Mechanism:** Maintain a dictionary of active PTY file descriptors or terminal processes indexed by `(agent_name, project_dir)`. Re-use active PTY `stdin` handles for follow-up turns instead of launching new terminal windows.
 
-    RecvTask --> ToolCallHandler
-    ToolCallHandler --> ExecTool
-    ExecTool --> ThreadPoolExecutor
-    
-    ThreadPoolExecutor --> OpenApp
-    OpenApp --> OS_Proc
-    
-    ThreadPoolExecutor --> SysStatus
-    SysStatus --> OS_Kern
-    
-    ThreadPoolExecutor --> ScreenProc
-    ScreenProc --> Cam
-    ScreenProc --> Disp
-    ScreenProc --> CamStream
-    
-    ExecTool --> Disk
-    SaveMem --> Disk
+### Enhancement B: Virtual VT100 Screen Buffer (Target: Thought Stream & Auto-Approval)
+* **Architectural Change:** Integree an in-memory VT100 terminal screen emulator (such as Python `pyte`).
+* **Mechanism:** Feed raw byte streams from agent PTYs into `pyte.Stream(screen)`. Extract 2D clean text snapshots to detect interactive CLI menus (`1. Accept changes`) and automatically inject keyboard responses (`1\n`). Parse `<thinking>` tags for HUD telemetry.
 
-    OpenApp --> ExecTool
-    SysStatus --> ExecTool
-    ScreenProc --> ExecTool
-    
-    ExecTool --> ToolCallHandler
-    
-    ToolCallHandler --> GeminiLiveAPI
+### Enhancement C: Git Worktree & Blackboard Sync (Target: Multi-Agent Hive Mind)
+* **Architectural Change:** Create `actions/swarm_orchestrator.py`.
+* **Mechanism:**
+  * Partition concurrent agents into isolated Git Worktrees (`git worktree add`).
+  * Implement `.space_eagle/swarm_state.json` as a real-time IPC blackboard for file locks and architectural decision broadcasting.
+  * Delegate code reviews and merge conflict resolution to a specialized Reviewer Agent worker.
 
-    SysMonTask --> OS_Kern
-    SysMonTask --> GeminiLiveAPI
-    
-    ProactiveTask --> Disk
-    ProactiveTask --> GeminiLiveAPI
-    
-    DashboardServer --> Logs
-```
+### Enhancement D: Hardware Frame Streaming (Target: Ultra-Low Latency Vision)
+* **Architectural Change:** Upgrade `actions/screen_processor.py` to use GPU hardware encoding (VAAPI/NVENC/PyAV) to capture and stream visual frames in **<5ms**.

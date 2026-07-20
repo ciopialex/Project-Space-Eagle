@@ -169,7 +169,7 @@ def _ensure_network_access(port: int) -> None:
             )
 
         bat_body = "\r\n".join(bat_lines) + "\r\n"
-        fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="jarvis_fw_")
+        fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="aethelark_fw_")
         try:
             os.write(fd, bat_body.encode("mbcs"))   # Windows cmd.exe expects ANSI
             os.close(fd)
@@ -351,7 +351,7 @@ def _local_ip() -> str:
     # Method 3: enumerate all interfaces (fully offline, no external deps)
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ip = info[4][0]
+            ip = str(info[4][0])
             if not ip.startswith("127.") and not ip.startswith("169.254."):
                 return ip
     except Exception:
@@ -398,7 +398,7 @@ class DashboardServer:
     @staticmethod
     def _ssl_enabled() -> bool:
         certs = BASE_DIR / "config" / "certs"
-        return (certs / "jarvis.key").exists() and (certs / "jarvis.crt").exists()
+        return (certs / "aethelark.key").exists() and (certs / "aethelark.crt").exists()
 
     def get_url(self) -> str:
         proto = "https" if self._ssl_enabled() else "http"
@@ -538,9 +538,9 @@ class DashboardServer:
 </style></head>
 <body>
 <script>
-  sessionStorage.setItem('jarvis_token','{tok}');
-  sessionStorage.setItem('jarvis_key','{key}');
-  localStorage.setItem('jarvis_device_token','{dev_tok}');
+  sessionStorage.setItem('aethelark_token','{tok}');
+  sessionStorage.setItem('aethelark_key','{key}');
+  localStorage.setItem('aethelark_device_token','{dev_tok}');
   setTimeout(function(){{location.replace('/')}},400);
 </script>
 <p>Connecting to Aethelark…</p>
@@ -756,8 +756,8 @@ class DashboardServer:
         """Second HTTPS server on PORT+1 sharing the same app and in-memory state.
         Chrome HTTPS-upgrades any bare IP:PORT the user types, so this port also needs TLS.
         User types IP:8001 → Chrome tries https → self-signed cert warning → accept once → done."""
-        ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
-        ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
+        ssl_key  = BASE_DIR / "config" / "certs" / "aethelark.key"
+        ssl_cert = BASE_DIR / "config" / "certs" / "aethelark.crt"
         asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT + 1)
         cfg = uvicorn.Config(
             self.app, host="0.0.0.0", port=PORT + 1, log_level="warning",
@@ -780,15 +780,17 @@ class DashboardServer:
         asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT)
 
         use_ssl  = self._ssl_enabled()
-        ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
-        ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
+        ssl_key  = BASE_DIR / "config" / "certs" / "aethelark.key"
+        ssl_cert = BASE_DIR / "config" / "certs" / "aethelark.crt"
 
         if use_ssl:
             asyncio.create_task(self._serve_alias())
 
+        ssl_keyfile = str(ssl_key) if use_ssl else None
+        ssl_certfile = str(ssl_cert) if use_ssl else None
         cfg = uvicorn.Config(
             self.app, host="0.0.0.0", port=PORT, log_level="warning",
-            **({"ssl_keyfile": str(ssl_key), "ssl_certfile": str(ssl_cert)} if use_ssl else {}),
+            ssl_keyfile=ssl_keyfile, ssl_certfile=ssl_certfile
         )
 
         proto = "https" if use_ssl else "http"

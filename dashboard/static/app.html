@@ -190,8 +190,8 @@
 
   <script>
     // ── Auth — bearer token ───────────────────────────────────────────────────
-    const _authToken  = sessionStorage.getItem('jarvis_token');
-    const _sessionKey = sessionStorage.getItem('jarvis_key');
+    const _authToken  = sessionStorage.getItem('aethelark_token');
+    const _sessionKey = sessionStorage.getItem('aethelark_key');
 
     if (!_authToken) {
       location.replace('/login');
@@ -268,9 +268,9 @@
 
     function append(speaker, text) {
       const d = document.createElement('div');
-      if (speaker === 'jarvis') {
+      if (speaker === 'aethelark') {
         d.className = 'msg msg-j';
-        d.innerHTML = `<div class="lbl">Jarvis</div>${esc(text)}`;
+        d.innerHTML = `<div class="lbl">Aethelark</div>${esc(text)}`;
       } else {
         d.className = 'msg msg-u';
         d.innerHTML = `<div class="lbl">You</div>${esc(text)}`;

@@ -24,7 +24,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QBrush, QColor, QConicalGradient, QDragEnterEvent, QDropEvent, QFont,
-    QFontDatabase, QKeySequence, QLinearGradient, QPainter, QPainterPath,
+    QFontDatabase, QImage, QKeySequence, QLinearGradient, QPainter, QPainterPath,
     QPen, QPixmap, QRadialGradient, QShortcut,
 )
 from PyQt6.QtWidgets import (
@@ -43,6 +43,78 @@ CONFIG_DIR = BASE_DIR / "config"
 API_FILE   = CONFIG_DIR / "api_keys.json"
 
 
+def load_manrope_font() -> str:
+    """Download and register the official Google Manrope font dynamically."""
+    from PyQt6.QtGui import QFontDatabase
+    import urllib.request
+    import os
+    
+    font_dir = BASE_DIR / "assets" / "fonts"
+    font_dir.mkdir(parents=True, exist_ok=True)
+    font_path = font_dir / "Manrope-Variable.ttf"
+    
+    if not font_path.exists():
+        url = "https://github.com/google/fonts/raw/main/ofl/manrope/Manrope%5Bwght%5D.ttf"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                with open(font_path, "wb") as f:
+                    f.write(response.read())
+        except Exception as e:
+            print(f"Warning: Failed to download Manrope font: {e}")
+            
+    if font_path.exists():
+        font_id = QFontDatabase.addApplicationFont(str(font_path))
+        if font_id != -1:
+            families = QFontDatabase.applicationFontFamilies(font_id)
+            if families:
+                return families[0]
+    return "Manrope"
+
+
+def _make_gaussian_shadow_image(w: int, h: int, render_rect: QRectF, offset_y: float = 2.0, blur_radius: float = 4.5, alpha: int = 135) -> QImage:
+    """Generates a true Gaussian-blurred drop shadow QImage matching the capsule curvature 1:1."""
+    try:
+        from PIL import Image, ImageFilter
+        img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.transparent)
+        
+        p = QPainter(img)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor(0, 0, 0, alpha))
+        p.setPen(Qt.PenStyle.NoPen)
+        
+        shadow_rect = render_rect.translated(0, offset_y)
+        p.drawRoundedRect(shadow_rect, shadow_rect.height() / 2.0, shadow_rect.height() / 2.0)
+        p.end()
+        
+        ptr = img.bits()
+        ptr.setsize(img.height() * img.bytesPerLine())
+        pil_img = Image.frombuffer('RGBA', (img.width(), img.height()), ptr, 'raw', 'BGRA', img.bytesPerLine(), 1)
+        blurred = pil_img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        
+        b_bytes = blurred.tobytes('raw', 'BGRA')
+        res_img = QImage(b_bytes, blurred.width, blurred.height, img.bytesPerLine(), QImage.Format.Format_ARGB32_Premultiplied)
+        return res_img.copy()
+    except Exception as e:
+        print(f"Shadow blur generator fallback: {e}")
+        return QImage()
+
+
+def _make_blurred_logo_image(img: QImage, blur_radius: float = 1.1) -> QImage:
+    """Applies a subtle 1.1px PIL Gaussian Blur to the AE logo image for liquid-smooth anti-aliased edges."""
+    try:
+        from PIL import Image, ImageFilter
+        ptr = img.bits()
+        ptr.setsize(img.height() * img.bytesPerLine())
+        pil_img = Image.frombuffer('RGBA', (img.width(), img.height()), ptr, 'raw', 'BGRA', img.bytesPerLine(), 1)
+        blurred = pil_img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        b_bytes = blurred.tobytes('raw', 'BGRA')
+        return QImage(b_bytes, blurred.width, blurred.height, img.bytesPerLine(), QImage.Format.Format_ARGB32_Premultiplied).copy()
+    except Exception:
+        return img
+
+
 def _read_full_config() -> dict:
     """Read api_keys.json config dict. Returns {} on any error."""
     try:
@@ -53,8 +125,8 @@ def _read_full_config() -> dict:
 
 _DEFAULT_W, _DEFAULT_H = 980, 700
 _MIN_W,     _MIN_H     = 820, 580
-_LEFT_W  = 148
-_RIGHT_W = 340
+_LEFT_W  = 168
+_RIGHT_W = 360
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
@@ -531,6 +603,7 @@ class HudCanvas(QWidget):
             p.drawLine(QPointF(bx, by), QPointF(bx, by + dy * bl))
 
         # face
+        # face
         if self._face_px:
             fsz    = int(fw * 0.62 * self._scale)
             scaled = self._face_px.scaled(
@@ -540,19 +613,108 @@ class HudCanvas(QWidget):
             )
             p.drawPixmap(int(cx - fsz / 2), int(cy - fsz / 2), scaled)
         else:
-            orb_r = int(fw * 0.27 * self._scale)
-            oc    = (200, 0, 50) if self.muted else (0, 60, 110)
-            for i in range(8, 0, -1):
-                r2  = int(orb_r * i / 8)
-                frc = i / 8
-                a   = max(0, min(255, int(self._halo * 1.1 * frc)))
-                p.setBrush(QBrush(QColor(int(oc[0]*frc), int(oc[1]*frc), int(oc[2]*frc), a)))
-                p.setPen(Qt.PenStyle.NoPen)
-                p.drawEllipse(QRectF(cx - r2, cy - r2, r2 * 2, r2 * 2))
-            p.setPen(QPen(qcol(C.PRI, min(255, int(self._halo * 2))), 1))
-            p.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
-            p.drawText(QRectF(cx - 80, cy - 14, 160, 28),
-                       Qt.AlignmentFlag.AlignCenter, self._assistant_name)
+            # 1. Neumorphic Specular Fluid Core (3D Liquid Droplet)
+            # Renders 3 morphing organic waves with rich radial gradients and glowing outlines
+            orb_r = int(fw * 0.22 * self._scale)
+            t = self._tick * 0.05
+            
+            # Wave configuration list: (size_scale, phase_offset, gradient_stops, outline_color)
+            # Utilizes offset radial gradients to simulate light hitting a liquid bubble
+            wave_configs = [
+                # A) Outer Ambient Shadow Wave
+                (1.1, 2.4, 
+                 [(0.0, QColor(0, 0, 0, 10)), 
+                  (0.6, qcol(C.PRI, 30)), 
+                  (1.0, qcol(C.PRI, 5))], 
+                 qcol(C.PRI, 50)),
+                 
+                # B) Middle Accent Glow Wave
+                (0.85, 1.2, 
+                 [(0.0, qcol(C.ACC, 90)), 
+                  (0.5, qcol(C.PRI, 45)), 
+                  (1.0, QColor(0, 0, 0, 0))], 
+                 qcol(C.ACC, 110)),
+                 
+                # C) Core Specular Liquid Drop (Highest Opacity, top-left highlight)
+                (1.0, 0.0, 
+                 [(0.0, QColor(255, 255, 255, 220)), 
+                  (0.2, qcol(C.PRI, 180)), 
+                  (0.6, qcol(C.PRI_DIM, 90)), 
+                  (1.0, QColor(8, 8, 10, 30))], 
+                 qcol(C.PRI, 180))
+            ]
+            
+            # Shifting colors to muted theme if microphone is muted
+            if self.muted:
+                wave_configs[0] = (1.1, 2.4, [(0.0, QColor(0, 0, 0, 10)), (0.6, qcol(C.MUTED_C, 25)), (1.0, qcol(C.MUTED_C, 5))], qcol(C.MUTED_C, 40))
+                wave_configs[1] = (0.85, 1.2, [(0.0, qcol(C.MUTED_C, 75)), (0.5, qcol(C.MUTED_C, 35)), (1.0, QColor(0, 0, 0, 0))], qcol(C.MUTED_C, 90))
+                wave_configs[2] = (1.0, 0.0, [(0.0, QColor(255, 255, 255, 200)), (0.2, qcol(C.MUTED_C, 140)), (0.6, qcol(C.MUTED_C, 70)), (1.0, QColor(8, 8, 10, 20))], qcol(C.MUTED_C, 140))
+                
+            for r_scale, phase, stops, stroke_color in wave_configs:
+                path = QPainterPath()
+                r_val = orb_r * r_scale
+                
+                # Draw a 12-sided morphing polygon smoothed with cubic bezier curves
+                pts = []
+                steps = 12
+                for i in range(steps):
+                    angle = i * (2 * math.pi / steps)
+                    ripple_freq = 4.0 if self.speaking else 2.5
+                    ripple_amp = 0.12 if self.speaking else 0.04
+                    noise = math.sin(t * ripple_freq + angle * 3.0 + phase) * r_val * ripple_amp
+                    r_curr = r_val + noise
+                    
+                    x = cx + r_curr * math.cos(angle)
+                    y = cy + r_curr * math.sin(angle)
+                    pts.append(QPointF(x, y))
+                
+                path.moveTo(pts[0])
+                for i in range(steps):
+                    p1 = pts[i]
+                    p2 = pts[(i + 1) % steps]
+                    cp1 = p1 + QPointF((p2.x() - p1.x()) * 0.5, (p2.y() - p1.y()) * 0.5)
+                    dx = p2.x() - p1.x()
+                    dy = p2.y() - p1.y()
+                    perp_x = -dy * 0.15 * math.sin(t + phase + i)
+                    perp_y = dx * 0.15 * math.sin(t + phase + i)
+                    cp = cp1 + QPointF(perp_x, perp_y)
+                    path.quadTo(cp, p2)
+                    
+                # Skeuomorphic liquid radial gradient (shining offset from top-left)
+                grad = QRadialGradient(cx - r_val * 0.35, cy - r_val * 0.35, r_val * 1.4)
+                for stop_pos, color in stops:
+                    grad.setColorAt(stop_pos, color)
+                    
+                p.setBrush(QBrush(grad))
+                # Faint glowing outline around the liquid border
+                p.setPen(QPen(stroke_color, 1.2))
+                p.drawPath(path)
+                
+            # 2. Sleek Vector Rings (Tesla Autopilot Radar / Spatial Depth styling)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            for i in range(2):
+                ring_r = orb_r * (1.3 + i * 0.3)
+                a = max(5, int(15 - i * 8))
+                p.setPen(QPen(qcol(C.PRI, a), 1.0, Qt.PenStyle.DashLine))
+                p.drawEllipse(QRectF(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2))
+
+            # 3. Minimalist Center Logo Icon (Steve Jobs / Tesla design language)
+            # A stylized geometric vector chevron/eagle monogram instead of name text
+            p.setPen(QPen(qcol(C.WHITE, 210), 1.5, Qt.PenStyle.SolidLine))
+            logo_path = QPainterPath()
+            lw_w = 12
+            lw_h = 10
+            # Draw a beautiful, geometric, thin double-chevron/hawk wing monogram
+            # Wing 1 (top chevron)
+            logo_path.moveTo(cx - lw_w, cy - lw_h)
+            logo_path.lineTo(cx, cy - 2)
+            logo_path.lineTo(cx + lw_w, cy - lw_h)
+            # Wing 2 (bottom chevron)
+            logo_path.moveTo(cx - lw_w, cy)
+            logo_path.lineTo(cx, cy + lw_h - 2)
+            logo_path.lineTo(cx + lw_w, cy)
+            
+            p.drawPath(logo_path)
 
         # particles
         for pt in self._particles:
@@ -581,7 +743,7 @@ class HudCanvas(QWidget):
             txt, col = f"{sym}  {self.state}", qcol(C.PRI)
 
         p.setPen(QPen(col, 1))
-        p.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+        p.setFont(QFont("Manrope", 11, QFont.Weight.Bold))
         p.drawText(QRectF(0, sy, W, 26), Qt.AlignmentFlag.AlignCenter, txt)
 
         # waveform
@@ -620,14 +782,12 @@ class MetricBar(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         W, H = self.width(), self.height()
 
-        p.setBrush(QBrush(qcol(C.PANEL2)))
-        p.setPen(QPen(qcol(C.BORDER_A), 1))
-        p.drawRoundedRect(QRectF(1, 1, W - 2, H - 2), 4, 4)
+        # No background box, fully borderless & transparent for premium weightless look
 
         bar_h   = 4
-        bar_y   = H - bar_h - 5
-        bar_w   = W - 12
-        bar_x   = 6
+        bar_y   = H - bar_h - 4
+        bar_w   = W - 4
+        bar_x   = 2
         fill_w  = int(bar_w * self._value / 100)
 
         p.setBrush(QBrush(qcol(C.BAR_BG)))
@@ -645,13 +805,13 @@ class MetricBar(QWidget):
             p.setBrush(QBrush(bar_col))
             p.drawRoundedRect(QRectF(bar_x, bar_y, fill_w, bar_h), 2, 2)
 
-        p.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        p.setFont(QFont("Manrope", 9, QFont.Weight.Bold))
         p.setPen(QPen(qcol(C.TEXT_DIM), 1))
-        p.drawText(QRectF(8, 5, 50, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._label)
+        p.drawText(QRectF(2, 4, 50, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._label)
 
-        p.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        p.setFont(QFont("Manrope", 11, QFont.Weight.Bold))
         p.setPen(QPen(bar_col if self._text != "--" else qcol(C.TEXT_DIM), 1))
-        p.drawText(QRectF(0, 4, W - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self._text)
+        p.drawText(QRectF(0, 3, W - 2, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self._text)
 
 class LogWidget(QTextEdit):
     _sig = pyqtSignal(str)
@@ -659,7 +819,7 @@ class LogWidget(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
-        self.setFont(QFont("Courier New", 9))
+        self.setFont(QFont("Manrope", 9))
         self.setStyleSheet(f"""
             QTextEdit {{
                 background: {C.PANEL};
@@ -685,7 +845,7 @@ class LogWidget(QTextEdit):
         self._text    = ""
         self._pos     = 0
         self._tag     = "sys"
-        self._ai_name_lc = "jarvis"   # updated when assistant name changes
+        self._ai_name_lc = "aethelark"   # updated when assistant name changes
         self._tmr = QTimer(self)
         self._tmr.timeout.connect(self._step)
         self._sig.connect(self._enqueue)
@@ -708,7 +868,7 @@ class LogWidget(QTextEdit):
         tl = self._text.lower()
         _ai_pfx = f"{self._ai_name_lc}:"
         if   tl.startswith("you:"):                              self._tag = "you"
-        elif tl.startswith(_ai_pfx) or tl.startswith("jarvis:"): self._tag = "ai"
+        elif tl.startswith(_ai_pfx) or tl.startswith("aethelark:"): self._tag = "ai"
         elif tl.startswith("file:"):                             self._tag = "file"
         elif "err" in tl:                                        self._tag = "err"
         else:                                                    self._tag = "sys"
@@ -834,7 +994,7 @@ class FileDropZone(QWidget):
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select a file for JARVIS", str(Path.home()),
+            self, "Select a file for Aethelark", str(Path.home()),
             "All Files (*.*);;"
             "Images (*.jpg *.jpeg *.png *.gif *.webp *.bmp *.svg);;"
             "Documents (*.pdf *.docx *.txt *.md *.pptx);;"
@@ -892,21 +1052,21 @@ class _DropCanvas(QWidget):
         p.drawLine(QPointF(cx - 8, cy - 6), QPointF(cx, cy - 14))
         p.drawLine(QPointF(cx + 8, cy - 6), QPointF(cx, cy - 14))
         p.drawLine(QPointF(cx - 14, cy + 4), QPointF(cx + 14, cy + 4))
-        p.setFont(QFont("Courier New", 8))
+        p.setFont(QFont("Manrope", 8))
         p.setPen(QPen(qcol(C.PRI_DIM if not hover else C.TEXT), 1))
         p.drawText(QRectF(0, cy + 8, W, 16), Qt.AlignmentFlag.AlignCenter,
                    "Drop file here  or  Click to Browse")
-        p.setFont(QFont("Courier New", 7))
+        p.setFont(QFont("Manrope", 7))
         p.setPen(QPen(qcol("#1a4a5a"), 1))
         p.drawText(QRectF(0, cy + 24, W, 14), Qt.AlignmentFlag.AlignCenter,
                    "Images · Video · Audio · PDF · Docs · Code · Data")
 
     def _paint_drag_over(self, p, W, H):
         cx, cy = W / 2, H / 2
-        p.setFont(QFont("Courier New", 20))
+        p.setFont(QFont("Manrope", 20))
         p.setPen(QPen(qcol(C.PRI), 1))
         p.drawText(QRectF(0, cy - 24, W, 32), Qt.AlignmentFlag.AlignCenter, "⬇")
-        p.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        p.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
         p.setPen(QPen(qcol(C.PRI), 1))
         p.drawText(QRectF(0, cy + 12, W, 16), Qt.AlignmentFlag.AlignCenter, "Release to load")
 
@@ -925,26 +1085,26 @@ class _DropCanvas(QWidget):
         tx = block_x + block_w + 6
         tw = W - tx - 38
 
-        p.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        p.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
         p.setPen(QPen(qcol(C.WHITE), 1))
         name = path.name if len(path.name) <= 34 else path.name[:31] + "..."
         p.drawText(QRectF(tx, H * 0.18, tw, 16),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
 
-        p.setFont(QFont("Courier New", 7))
+        p.setFont(QFont("Manrope", 7))
         p.setPen(QPen(qcol(C.TEXT_DIM), 1))
         p.drawText(QRectF(tx, H * 0.18 + 18, tw, 14),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    f"{ext_str}  ·  {size_str}")
 
-        p.setFont(QFont("Courier New", 6))
+        p.setFont(QFont("Manrope", 6))
         p.setPen(QPen(qcol("#1e5c6a"), 1))
         par = str(path.parent)
         if len(par) > 42: par = "…" + par[-41:]
         p.drawText(QRectF(tx, H * 0.18 + 34, tw, 12),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, par)
 
-        p.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        p.setFont(QFont("Manrope", 9, QFont.Weight.Bold))
         p.setPen(QPen(qcol(C.RED, 180), 1))
         p.drawText(QRectF(W - 34, 0, 28, H), Qt.AlignmentFlag.AlignCenter, "✕")
 
@@ -979,13 +1139,13 @@ class _CameraPreview(QWidget):
 
         hdr = QHBoxLayout()
         title = QLabel("◈  VISUAL INPUT")
-        title.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        title.setFont(QFont("Manrope", 7, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         hdr.addWidget(title)
         hdr.addStretch()
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(16, 16)
-        close_btn.setFont(QFont("Courier New", 8))
+        close_btn.setFont(QFont("Manrope", 8))
         close_btn.setStyleSheet(
             f"color: {C.TEXT_DIM}; background: transparent; border: none;"
         )
@@ -1050,7 +1210,7 @@ class SetupOverlay(QWidget):
                  align=Qt.AlignmentFlag.AlignCenter):
             w = QLabel(txt)
             w.setAlignment(align)
-            w.setFont(QFont("Courier New", font_size,
+            w.setFont(QFont("Manrope", font_size,
                             QFont.Weight.Bold if bold else QFont.Weight.Normal))
             w.setStyleSheet(f"color: {color}; background: transparent;")
             return w
@@ -1068,7 +1228,7 @@ class SetupOverlay(QWidget):
         self._key_input = QLineEdit()
         self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self._key_input.setPlaceholderText("AIza…")
-        self._key_input.setFont(QFont("Courier New", 10))
+        self._key_input.setFont(QFont("Manrope", 10))
         self._key_input.setFixedHeight(32)
         self._key_input.setStyleSheet(f"""
             QLineEdit {{
@@ -1094,7 +1254,7 @@ class SetupOverlay(QWidget):
         self._os_btns: dict[str, QPushButton] = {}
         for key, label in [("windows","⊞  Windows"),("mac","  macOS"),("linux","🐧  Linux")]:
             btn = QPushButton(label)
-            btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+            btn.setFont(QFont("Manrope", 9, QFont.Weight.Bold))
             btn.setFixedHeight(32)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _, k=key: self._sel(k))
@@ -1105,7 +1265,7 @@ class SetupOverlay(QWidget):
         layout.addSpacing(12)
 
         init_btn = QPushButton("▸  INITIALISE SYSTEMS")
-        init_btn.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+        init_btn.setFont(QFont("Manrope", 10, QFont.Weight.Bold))
         init_btn.setFixedHeight(36)
         init_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         init_btn.setStyleSheet(f"""
@@ -1247,9 +1407,9 @@ class CustomizeOverlay(QWidget):
     """Floating overlay — change assistant name, user name and UI colour."""
 
     saved = pyqtSignal(str, str, str)   # assistant_name, user_name, ui_color
-    _OW, _OH = 400, 500
+    _OW, _OH = 440, 740
 
-    def __init__(self, assistant_name="JARVIS", user_name="",
+    def __init__(self, assistant_name="Aethelark", user_name="",
                  ui_color=DEFAULT_UI_COLOR, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -1266,7 +1426,7 @@ class CustomizeOverlay(QWidget):
 
         def _lbl(txt, fs=9, bold=False, color=C.PRI, align=Qt.AlignmentFlag.AlignCenter):
             w = QLabel(txt); w.setAlignment(align)
-            w.setFont(QFont("Courier New", fs,
+            w.setFont(QFont("Manrope", fs,
                             QFont.Weight.Bold if bold else QFont.Weight.Normal))
             w.setStyleSheet(f"color: {color}; background: transparent;")
             return w
@@ -1283,7 +1443,7 @@ class CustomizeOverlay(QWidget):
         lay.addWidget(_lbl("ASSISTANT NAME", 8, color=C.TEXT_DIM,
                             align=Qt.AlignmentFlag.AlignLeft))
         self._name_input = QLineEdit(assistant_name)
-        self._name_input.setFont(QFont("Courier New", 10))
+        self._name_input.setFont(QFont("Manrope", 10))
         self._name_input.setFixedHeight(32)
         self._name_input.setStyleSheet(_fs)
         lay.addWidget(self._name_input)
@@ -1293,7 +1453,7 @@ class CustomizeOverlay(QWidget):
                             color=C.TEXT_DIM, align=Qt.AlignmentFlag.AlignLeft))
         self._user_input = QLineEdit(user_name)
         self._user_input.setPlaceholderText("e.g.  Tony   (leave blank for auto)")
-        self._user_input.setFont(QFont("Courier New", 10))
+        self._user_input.setFont(QFont("Manrope", 10))
         self._user_input.setFixedHeight(32)
         self._user_input.setStyleSheet(_fs)
         lay.addWidget(self._user_input)
@@ -1306,7 +1466,7 @@ class CustomizeOverlay(QWidget):
         clr_hdr.addStretch()
         df_btn = QPushButton("DEFAULT")
         df_btn.setFixedSize(64, 20)
-        df_btn.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        df_btn.setFont(QFont("Manrope", 7, QFont.Weight.Bold))
         df_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         df_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1332,18 +1492,144 @@ class CustomizeOverlay(QWidget):
 
         self._hex_input = QLineEdit(self._sel_color)
         self._hex_input.setPlaceholderText("#00d4ff   (custom hex colour)")
-        self._hex_input.setFont(QFont("Courier New", 10))
+        self._hex_input.setFont(QFont("Manrope", 10))
         self._hex_input.setFixedHeight(28)
         self._hex_input.setStyleSheet(_fs)
         self._hex_input.textEdited.connect(self._on_hex_edited)
         lay.addWidget(self._hex_input)
 
-        lay.addSpacing(6)
+        # ── Default Browser ───────────────────────────────────────────────────
+        lay.addSpacing(10)
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
+        lay.addWidget(sep2)
+        lay.addWidget(_lbl("🌐  DEFAULT BROWSER", 10, True))
+        lay.addSpacing(2)
+        lay.addWidget(_lbl(
+            "Aethelark will use this browser for all URL and search commands",
+            8, color=C.TEXT_DIM, align=Qt.AlignmentFlag.AlignLeft
+        ))
+
+        self._browser_combo = QComboBox()
+        self._browser_combo.setFont(QFont("Manrope", 10))
+        self._browser_combo.setFixedHeight(32)
+        self._browser_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._browser_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: #000d12; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 10px;
+            }}
+            QComboBox:focus {{ border: 1px solid {C.PRI}; }}
+            QComboBox::drop-down {{ border: none; width: 20px; }}
+            QComboBox QAbstractItemView {{
+                background: #080e12; color: {C.TEXT};
+                border: 1px solid {C.BORDER_B}; selection-background-color: {C.PRI_GHO};
+            }}
+        """)
+        _browser_options = [
+            ("System Default",  ""),
+            ("Google Chrome",   "chrome"),
+            ("Chromium",        "chromium"),
+            ("Mozilla Firefox", "firefox"),
+            ("Brave",           "brave"),
+            ("Microsoft Edge",  "edge"),
+        ]
+        for label, key in _browser_options:
+            self._browser_combo.addItem(label, userData=key)
+
+        # Pre-select from saved config
+        _saved_browser = _read_full_config().get("default_browser", "").lower().strip()
+        for i, (_, key) in enumerate(_browser_options):
+            if key == _saved_browser:
+                self._browser_combo.setCurrentIndex(i)
+                break
+        lay.addWidget(self._browser_combo)
+
+        # ── Connected Accounts & Integrations ────────────────────────────────
+        lay.addSpacing(10)
+        sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
+        sep3.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
+        lay.addWidget(sep3)
+        lay.addWidget(_lbl("🔗  CONNECTED ACCOUNTS", 10, True))
+        lay.addSpacing(2)
+        lay.addWidget(_lbl(
+            "Connect apps so Aethelark can send emails, post to social media, and more",
+            8, color=C.TEXT_DIM, align=Qt.AlignmentFlag.AlignLeft
+        ))
+        lay.addSpacing(4)
+
+        _acct_style = f"""
+            QFrame {{
+                background: rgba(255,255,255,0.03);
+                border: 1px solid {C.BORDER};
+                border-radius: 6px;
+            }}
+        """
+        _btn_style = f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 3px;
+                padding: 3px 10px;
+            }}
+            QPushButton:hover {{ color: {C.PRI}; border-color: {C.BORDER_B}; }}
+        """
+        _connected_style = f"color: {C.GREEN}; font-size: 8pt; background: transparent; border: none;"
+        _pending_style   = f"color: {C.TEXT_DIM}; font-size: 8pt; background: transparent; border: none;"
+
+        def _make_account_row(icon: str, name: str, desc: str, cfg_key: str) -> QFrame:
+            row = QFrame()
+            row.setStyleSheet(_acct_style)
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(10, 6, 10, 6)
+            rl.setSpacing(8)
+
+            icon_lbl = QLabel(icon)
+            icon_lbl.setFont(QFont("Manrope", 13))
+            icon_lbl.setStyleSheet("background: transparent; border: none;")
+            rl.addWidget(icon_lbl)
+
+            text_col = QVBoxLayout()
+            text_col.setSpacing(1)
+            name_lbl = QLabel(name)
+            name_lbl.setFont(QFont("Manrope", 9, QFont.Weight.Bold))
+            name_lbl.setStyleSheet(f"color: {C.TEXT}; background: transparent; border: none;")
+            desc_lbl = QLabel(desc)
+            desc_lbl.setFont(QFont("Manrope", 8))
+            desc_lbl.setStyleSheet(_pending_style)
+            text_col.addWidget(name_lbl)
+            text_col.addWidget(desc_lbl)
+            rl.addLayout(text_col)
+            rl.addStretch()
+
+            _saved = _read_full_config().get(cfg_key, "")
+            if _saved:
+                status = QLabel("✓ Connected")
+                status.setStyleSheet(_connected_style)
+                rl.addWidget(status)
+
+            cfg_btn = QPushButton("Configure")
+            cfg_btn.setFont(QFont("Manrope", 8))
+            cfg_btn.setFixedHeight(26)
+            cfg_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            cfg_btn.setStyleSheet(_btn_style)
+            cfg_btn.clicked.connect(lambda checked, k=cfg_key, n=name: self._configure_account(k, n))
+            rl.addWidget(cfg_btn)
+            return row
+
+        lay.addWidget(_make_account_row("✉", "Email / SMTP",
+            "Send emails on your behalf", "smtp_config"))
+        lay.addSpacing(4)
+        lay.addWidget(_make_account_row("📸", "Instagram",
+            "Post photos, reels, and stories", "instagram_token"))
+        lay.addSpacing(4)
+        lay.addWidget(_make_account_row("🐦", "Twitter / X",
+            "Post tweets and threads", "twitter_token"))
+        lay.addSpacing(4)
         btn_row = QHBoxLayout(); btn_row.setSpacing(8)
 
         save_btn = QPushButton("▸  APPLY CHANGES")
         save_btn.setFixedHeight(34)
-        save_btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        save_btn.setFont(QFont("Manrope", 9, QFont.Weight.Bold))
         save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         save_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1357,7 +1643,7 @@ class CustomizeOverlay(QWidget):
 
         cancel_btn = QPushButton("CANCEL")
         cancel_btn.setFixedHeight(34)
-        cancel_btn.setFont(QFont("Courier New", 9))
+        cancel_btn.setFont(QFont("Manrope", 9))
         cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1403,16 +1689,112 @@ class CustomizeOverlay(QWidget):
             self._set_color(t, update_wheel=True, preview=True)
 
     def _cancel(self):
-        # Önizleme uygulandıysa açılıştaki renge geri dön
+        # Revert preview if applied
         if self.on_preview and self._sel_color != self._initial_color:
             self.on_preview(self._initial_color)
         self.hide()
 
     def _save(self):
-        name = self._name_input.text().strip() or "JARVIS"
+        name = self._name_input.text().strip() or "Aethelark"
         user = self._user_input.text().strip()
+        # Persist default browser selection to config
+        try:
+            data = _read_full_config()
+            browser_key = self._browser_combo.currentData() or ""
+            data["default_browser"] = browser_key
+            API_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+        except Exception as e:
+            print(f"[Settings] Browser config save error: {e}")
         self.saved.emit(name, user, self._sel_color or DEFAULT_UI_COLOR)
         self.hide()
+
+    def _configure_account(self, cfg_key: str, service_name: str):
+        """Show a simple credential dialog for connecting a service."""
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Configure {service_name}")
+        dlg.setStyleSheet(f"""
+            QDialog {{ background: #060c10; color: {C.TEXT}; }}
+            QLabel  {{ color: {C.TEXT}; background: transparent; }}
+            QLineEdit {{
+                background: #000d12; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+            QDialogButtonBox QPushButton {{
+                background: transparent; color: {C.PRI};
+                border: 1px solid {C.PRI_DIM}; border-radius: 3px; padding: 4px 14px;
+            }}
+            QDialogButtonBox QPushButton:hover {{ background: {C.PRI_GHO}; }}
+        """)
+        dlg_lay = QVBoxLayout(dlg)
+        dlg_lay.setSpacing(8)
+        dlg_lay.setContentsMargins(20, 16, 20, 16)
+
+        dlg_lay.addWidget(QLabel(f"<b>{service_name}</b> credentials"))
+
+        _fs_dlg = (f"QLineEdit {{ background: #000d12; color: {C.TEXT}; "
+                   f"border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px; }}"
+                   f"QLineEdit:focus {{ border: 1px solid {C.PRI}; }}")
+
+        # Load existing values
+        existing = _read_full_config().get(cfg_key, {})
+        if isinstance(existing, str):
+            existing = {"token": existing}
+
+        fields: dict[str, QLineEdit] = {}
+
+        if cfg_key == "smtp_config":
+            for label, key, placeholder, is_pw in [
+                ("SMTP Server",   "host",     "smtp.gmail.com",        False),
+                ("Port",          "port",     "587",                   False),
+                ("Email Address", "email",    "you@gmail.com",          False),
+                ("Password / App Key", "password", "App-specific password", True),
+            ]:
+                dlg_lay.addWidget(QLabel(label))
+                inp = QLineEdit(str(existing.get(key, "")))
+                inp.setPlaceholderText(placeholder)
+                inp.setFont(QFont("Manrope", 10))
+                inp.setFixedHeight(30)
+                inp.setStyleSheet(_fs_dlg)
+                if is_pw:
+                    inp.setEchoMode(QLineEdit.EchoMode.Password)
+                dlg_lay.addWidget(inp)
+                fields[key] = inp
+        else:
+            lbl_map = {
+                "instagram_token": ("Access Token", "Instagram Graph API access token"),
+                "twitter_token":   ("Bearer Token",  "Twitter/X API Bearer token"),
+            }
+            label, placeholder = lbl_map.get(cfg_key, ("Token", "Paste your API token here"))
+            dlg_lay.addWidget(QLabel(label))
+            inp = QLineEdit(existing.get("token", ""))
+            inp.setPlaceholderText(placeholder)
+            inp.setFont(QFont("Manrope", 10))
+            inp.setFixedHeight(30)
+            inp.setStyleSheet(_fs_dlg)
+            inp.setEchoMode(QLineEdit.EchoMode.Password)
+            dlg_lay.addWidget(inp)
+            fields["token"] = inp
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.setFont(QFont("Manrope", 9))
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        dlg_lay.addWidget(btns)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            values = {k: v.text().strip() for k, v in fields.items()}
+            try:
+                data = _read_full_config()
+                data[cfg_key] = values
+                API_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+                print(f"[Settings] {service_name} credentials saved.")
+            except Exception as e:
+                print(f"[Settings] {service_name} save error: {e}")
 
 
 class ClipboardPanel(QWidget):
@@ -1440,12 +1822,12 @@ class ClipboardPanel(QWidget):
 
         hdr = QHBoxLayout(); hdr.setSpacing(4)
         icon_lbl = QLabel("◈  CLIPBOARD DETECTED")
-        icon_lbl.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        icon_lbl.setFont(QFont("Manrope", 7, QFont.Weight.Bold))
         icon_lbl.setStyleSheet(f"color: {C.ACC2}; background: transparent;")
         hdr.addWidget(icon_lbl); hdr.addStretch()
         x_btn = QPushButton("✕")
         x_btn.setFixedSize(16, 16)
-        x_btn.setFont(QFont("Courier New", 8))
+        x_btn.setFont(QFont("Manrope", 8))
         x_btn.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none;")
         x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         x_btn.clicked.connect(self.hide)
@@ -1453,7 +1835,7 @@ class ClipboardPanel(QWidget):
         lay.addLayout(hdr)
 
         self._preview = QLabel()
-        self._preview.setFont(QFont("Courier New", 8))
+        self._preview.setFont(QFont("Manrope", 8))
         self._preview.setStyleSheet(f"""
             color: {C.TEXT}; background: {C.PANEL2};
             border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 6px;
@@ -1474,7 +1856,7 @@ class ClipboardPanel(QWidget):
         ]:
             b = QPushButton(label)
             b.setFixedHeight(22)
-            b.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+            b.setFont(QFont("Manrope", 7, QFont.Weight.Bold))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet(_bs)
             b.clicked.connect(lambda _, c=cmd_fmt: self._trigger(c))
@@ -1532,7 +1914,7 @@ class RemoteKeyOverlay(QWidget):
                  align=Qt.AlignmentFlag.AlignCenter):
             w = QLabel(txt)
             w.setAlignment(align)
-            w.setFont(QFont("Courier New", fs,
+            w.setFont(QFont("Manrope", fs,
                             QFont.Weight.Bold if bold else QFont.Weight.Normal))
             w.setStyleSheet(f"color: {color}; background: transparent;")
             w.setWordWrap(True)
@@ -1568,7 +1950,7 @@ class RemoteKeyOverlay(QWidget):
                            align=Qt.AlignmentFlag.AlignLeft))
 
         self._url_lbl = QLabel(self._manual_url)
-        self._url_lbl.setFont(QFont("Courier New", 8))
+        self._url_lbl.setFont(QFont("Manrope", 8))
         self._url_lbl.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
         self._url_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._url_lbl.setTextInteractionFlags(
@@ -1576,7 +1958,7 @@ class RemoteKeyOverlay(QWidget):
         lay.addWidget(self._url_lbl)
 
         self._key_lbl = QLabel(key)
-        self._key_lbl.setFont(QFont("Courier New", 28, QFont.Weight.Bold))
+        self._key_lbl.setFont(QFont("Manrope", 28, QFont.Weight.Bold))
         self._key_lbl.setStyleSheet(f"""
             color: {C.ACC};
             background: {C.PANEL2};
@@ -1589,7 +1971,7 @@ class RemoteKeyOverlay(QWidget):
         lay.addWidget(self._key_lbl)
 
         self._timer_lbl = QLabel()
-        self._timer_lbl.setFont(QFont("Courier New", 8))
+        self._timer_lbl.setFont(QFont("Manrope", 8))
         self._timer_lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
         self._timer_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._timer_lbl)
@@ -1597,7 +1979,7 @@ class RemoteKeyOverlay(QWidget):
         btn_row = QHBoxLayout(); btn_row.setSpacing(8)
         new_btn = QPushButton("NEW KEY")
         new_btn.setFixedHeight(32)
-        new_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        new_btn.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
         new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         new_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1611,7 +1993,7 @@ class RemoteKeyOverlay(QWidget):
 
         close_btn = QPushButton("DISMISS")
         close_btn.setFixedHeight(32)
-        close_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        close_btn.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1647,7 +2029,10 @@ class RemoteKeyOverlay(QWidget):
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white")
             buf = BytesIO()
-            img.save(buf, format="PNG")
+            try:
+                img.save(buf, **{"format": "PNG"})
+            except TypeError:
+                img.save(buf)
             px = QPixmap()
             px.loadFromData(buf.getvalue())
             self._qr_label.setPixmap(
@@ -1657,13 +2042,13 @@ class RemoteKeyOverlay(QWidget):
             )
         except ImportError:
             self._qr_label.setText("pip install\nqrcode[pil]")
-            self._qr_label.setFont(QFont("Courier New", 8))
+            self._qr_label.setFont(QFont("Manrope", 8))
             self._qr_label.setStyleSheet(
                 "color: #888; background: white; border-radius: 10px; padding: 4px;"
             )
         except Exception:
             self._qr_label.setText(url[:28])
-            self._qr_label.setFont(QFont("Courier New", 7))
+            self._qr_label.setFont(QFont("Manrope", 7))
             self._qr_label.setStyleSheet(
                 f"color: {C.PRI}; background: white; border-radius: 10px; padding: 4px;"
             )
@@ -1688,11 +2073,11 @@ class RemoteKeyOverlay(QWidget):
             letter-spacing: 4px;
         """)
         self._qr_label.setText("✓")
-        self._qr_label.setFont(QFont("Courier New", 54, QFont.Weight.Bold))
+        self._qr_label.setFont(QFont("Manrope", 54, QFont.Weight.Bold))
         self._qr_label.setStyleSheet(
             "color: #00ff88; background: #001a0d; border-radius: 10px;"
         )
-        self._timer_lbl.setText("Phone connected — JARVIS ready")
+        self._timer_lbl.setText("Phone connected — Aethelark ready")
         self._timer_lbl.setStyleSheet(f"color: {C.GREEN}; background: transparent;")
 
     def _refresh_key(self):
@@ -1784,6 +2169,22 @@ class PillWidget(QFrame):
         elif os.path.exists(downloads_svg):
             self.renderer = QSvgRenderer(downloads_svg)
             
+        # Load and decode base64 logo image from the SVG cutout
+        self.logo_image = None
+        if os.path.exists(self.svg_path):
+            try:
+                import re
+                import base64
+                content = Path(self.svg_path).read_text(encoding="utf-8")
+                match = re.search(r'href="data:image/png;base64,([^"]+)"', content)
+                if match:
+                    b64_data = match.group(1)
+                    img_bytes = base64.b64decode(b64_data)
+                    from PyQt6.QtGui import QImage
+                    self.logo_image = QImage.fromData(img_bytes)
+            except Exception as e:
+                print(f"Warning: Failed to parse SVG base64 logo: {e}")
+            
         self.setStyleSheet("background: transparent; border: none;")
         
         # Color & Pulse variables
@@ -1792,16 +2193,34 @@ class PillWidget(QFrame):
         self.pulse_alpha = 110
         self.pulse_grow = True
         
+        # Parallax offset — updated by mouseMoveEvent on the parent window
+        self._parallax_dx: float = 0.0
+        self._pill_base_pos = None   # set on first show
+        
+        # Shadow image cache
+        self._cached_shadow = None
+        self._shadow_rect_key = None
+        
+        # Pre-generate surface micro-texture noise (cached, never regenerated)
+        import random as _rnd
+        _noise_img = QImage(96, 24, QImage.Format.Format_ARGB32)
+        for _nx in range(96):
+            for _ny in range(24):
+                _v = _rnd.randint(0, 255)
+                _a = _rnd.randint(2, 9)
+                _noise_img.setPixelColor(_nx, _ny, QColor(_v, _v, _v, _a))
+        self._noise_px = QPixmap.fromImage(_noise_img)
+        
         # Continuous breathe timer
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_pulse)
         self.timer.start(30)
         
     def sizeHint(self):
-        return QSize(200, 56)
+        return QSize(240, 84)
 
     def minimumSizeHint(self):
-        return QSize(200, 56)
+        return QSize(240, 84)
 
     def set_state(self, state: str):
         state = state.upper()
@@ -1833,6 +2252,27 @@ class PillWidget(QFrame):
                 self.pulse_alpha = 80
                 self.pulse_grow = True
         self.update()
+
+    def mouseMoveEvent(self, event):
+        """Track cursor for live parallax — shifts screen-light bleed with viewing angle."""
+        cx = self.width() / 2
+        raw_dx = (event.position().x() - cx) / max(cx, 1)  # -1.0 … +1.0
+        # Smooth toward target (exponential decay)
+        self._parallax_dx += (raw_dx - self._parallax_dx) * 0.25
+        self.update()
+        super().mouseMoveEvent(event)
+
+    def enterEvent(self, event):
+        self.setMouseTracking(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        # Gently return parallax to center
+        self._parallax_dx *= 0.3
+        self.setMouseTracking(False)
+        self.update()
+        super().leaveEvent(event)
+
         
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1847,85 +2287,288 @@ class PillWidget(QFrame):
         svg_ratio = 1000.0 / 280.0
         widget_w = r.width()
         widget_h = r.height()
-        widget_ratio = widget_w / widget_h
         
-        if widget_ratio > svg_ratio:
-            # Widget is wider than SVG aspect ratio: fit to height
-            render_h = widget_h
-            render_w = widget_h * svg_ratio
-        else:
-            # Widget is taller than SVG aspect ratio: fit to width
-            render_w = widget_w
-            render_h = widget_w / svg_ratio
-            
-        render_x = (widget_w - render_w) / 2
-        render_y = (widget_h - render_h) / 2
+        # Center the pill capsule (192 x 53.76) inside the 240 x 84 canvas to provide 22.24px shadow decay space below
+        render_w = 192.0
+        render_h = 53.76
+        render_x = (widget_w - render_w) / 2.0
+        render_y = 8.0
         render_rect = QRectF(render_x, render_y, render_w, render_h)
         
-        render_cx = render_x + render_w / 2
-        render_cy = render_y + render_h / 2
+        render_cx = render_x + render_w / 2.0
+        render_cy = render_y + render_h / 2.0
         
-        # 1. Volumetric 3D Drop Shadows centered on render_rect
-        for i in range(4):
-            shadow_rect = render_rect.adjusted(i * 1.5, i * 1.5 + 2, -i * 1.5, -i * 1.5 + 2)
-            shadow_radius = shadow_rect.height() / 2
-            shadow_color = QColor(0, 0, 0, int(75 / (i + 1)))
-            painter.setBrush(QBrush(shadow_color))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(shadow_rect, shadow_radius, shadow_radius)
+        # 1. TRUE GAUSSIAN BLURRED DROP SHADOW (Silky smooth 1:1 capsule curvature, zero flat lines/boxiness)
+        shadow_key = (int(render_x), int(render_y), int(render_w), int(render_h), int(widget_w), int(widget_h))
+        if self._cached_shadow is None or self._shadow_rect_key != shadow_key:
+            self._cached_shadow = _make_gaussian_shadow_image(int(widget_w), int(widget_h), render_rect, offset_y=2.0, blur_radius=4.5, alpha=135)
+            self._shadow_rect_key = shadow_key
             
-        # 2. Glowing center background centered on render_rect
-        def qc(h, a):
-            c = QColor(h)
-            c.setAlpha(a)
-            return c
-            
-        glow = QRadialGradient(render_cx, render_cy, render_rect.width() * 0.35)
-        glow.setColorAt(0.0, qc(self.current_color.name(), self.pulse_alpha))
-        glow.setColorAt(0.5, qc(self.current_color.name(), int(self.pulse_alpha * 0.45)))
-        glow.setColorAt(1.0, qc(self.current_color.name(), 0))
-        
-        painter.setBrush(QBrush(glow))
+        if self._cached_shadow and not self._cached_shadow.isNull():
+            painter.drawImage(0, 0, self._cached_shadow)
+
+        # 2. AMBIENT SCREEN-LIGHT BLEED — subtle, natural glow beneath the pill
+        pulse_col = self.current_color
+        bleed_alpha = int((self.pulse_alpha / 140.0) * 14) + 4
+        screen_bleed = QRadialGradient(
+            render_cx + self._parallax_dx * 0.4,
+            render_rect.bottom() - 4.0,
+            render_rect.width() * 0.35
+        )
+        screen_bleed.setColorAt(0.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), bleed_alpha))
+        screen_bleed.setColorAt(0.5, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), int(bleed_alpha * 0.25)))
+        screen_bleed.setColorAt(1.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), 0))
+        bleed_ellipse = QRectF(
+            render_cx - render_rect.width() * 0.35,
+            render_rect.bottom() - 12.0,
+            render_rect.width() * 0.7,
+            24.0
+        )
+        painter.setBrush(QBrush(screen_bleed))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(QPointF(render_cx, render_cy), render_rect.width() * 0.35, render_rect.height() * 0.45)
-        
-        # 3. Soft pulsating outer border glow centered on render_rect
-        glow_opacity = int((self.pulse_alpha / 140.0) * 35) + 10
+        painter.drawEllipse(bleed_ellipse)
+            
+        # 3. Soft pulsating outer border aura
+        glow_opacity = int((self.pulse_alpha / 140.0) * 16) + 4
         outer_color = QColor(self.current_color)
         outer_color.setAlpha(glow_opacity)
         
-        glow_pen = QPen(outer_color, 1.5)
+        glow_pen = QPen(outer_color, 1.0)
         painter.setPen(glow_pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         
-        r_glow = render_rect.adjusted(1, 1, -1, -1)
-        radius = r_glow.height() / 2
+        r_glow = render_rect.adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = r_glow.height() / 2.0
         painter.drawRoundedRect(r_glow, radius, radius)
+
+        # 3B. Draw solid premium 3D piano black polished obsidian base
+        bg_grad = QLinearGradient(render_rect.topLeft(), render_rect.bottomLeft())
+        bg_grad.setColorAt(0.0, QColor("#141419"))
+        bg_grad.setColorAt(0.2, QColor("#08080A"))
+        bg_grad.setColorAt(1.0, QColor("#000000"))
         
-        # 4. Pre-render SVG cutout mask at native high-resolution (1000x280) to avoid scaling pixelation
-        if self.renderer and self.renderer.isValid():
+        painter.setBrush(QBrush(bg_grad))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
+        
+        # Draw inner shadow vignette directly on the solid base (for portal depth)
+        from PyQt6.QtGui import QPainterPath
+        capsule_clip = QPainterPath()
+        capsule_clip.addRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
+        
+        painter.save()
+        painter.setClipPath(capsule_clip)
+        for i in range(6):
+            inner_color = QColor(0, 0, 0, int(195 * (1 - i / 6)))
+            inner_pen = QPen(inner_color, 1.0 + i * 0.9)
+            painter.setPen(inner_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            adj = i * 0.5
+            painter.drawRoundedRect(render_rect.adjusted(adj, adj, -adj, -adj), render_rect.height() / 2 - adj, render_rect.height() / 2 - adj)
+        painter.restore()
+        
+        # 3C. Draw soft ambient glow spill on the capsule surface
+        pulse_col = self.current_color
+        ambient_glow = QRadialGradient(render_cx, render_cy, render_rect.width() * 0.35)
+        ambient_glow.setColorAt(0.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), int(self.pulse_alpha * 0.22)))
+        ambient_glow.setColorAt(0.6, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), int(self.pulse_alpha * 0.05)))
+        ambient_glow.setColorAt(1.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), 0))
+        
+        painter.setBrush(QBrush(ambient_glow))
+        painter.setPen(Qt.PenStyle.NoPen)
+        # Radial ellipse matching the logo proportions
+        painter.drawEllipse(QRectF(render_cx - render_rect.width() * 0.35, render_cy - render_rect.height() * 0.45,
+                                   render_rect.width() * 0.7, render_rect.height() * 0.9))
+        
+        # 4. Draw the smooth tinted logo shape using the high-resolution extracted PNG
+        if self.logo_image:
+            logo_w = render_rect.width() * 0.74
+            logo_h = render_rect.height() * 0.52
+            logo_x = render_rect.x() + (render_rect.width() - logo_w) / 2
+            logo_y = render_rect.y() + (render_rect.height() - logo_h) / 2
+            logo_rect = QRectF(logo_x, logo_y, logo_w, logo_h)
+            
+            img_w = self.logo_image.width()
+            img_h = self.logo_image.height()
+            
+            # Create high-res tinted scratch buffer
             from PyQt6.QtGui import QImage
-            high_res_mask = QImage(1000, 280, QImage.Format.Format_ARGB32_Premultiplied)
+            tinted = QImage(img_w, img_h, QImage.Format.Format_ARGB32_Premultiplied)
+            tinted.fill(Qt.GlobalColor.transparent)
+            
+            tp = QPainter(tinted)
+            tp.setRenderHint(QPainter.RenderHint.Antialiasing)
+            tp.drawImage(0, 0, self.logo_image)
+            
+            # Composite Base Silver-Titanium letters
+            tp.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            logo_grad = QLinearGradient(0, 0, 0, img_h)
+            logo_grad.setColorAt(0.0, QColor(229, 229, 234, 225))
+            logo_grad.setColorAt(0.5, QColor(200, 200, 208, 195))
+            logo_grad.setColorAt(1.0, QColor(176, 176, 180, 210))
+            tp.setBrush(QBrush(logo_grad))
+            tp.setPen(Qt.PenStyle.NoPen)
+            tp.drawRect(0, 0, img_w, img_h)
+            
+            # Composite Pulse Glow inside letters
+            tp.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
+            state_glow = QRadialGradient(img_w / 2, img_h / 2, img_w * 0.4)
+            state_glow.setColorAt(0.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), self.pulse_alpha))
+            state_glow.setColorAt(1.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), 0))
+            tp.setBrush(QBrush(state_glow))
+            tp.drawRect(0, 0, img_w, img_h)
+            tp.end()
+            
+            # Apply PIL Gaussian Blur (radius=1.1) for smooth, non-pixelated logo vector edges
+            blurred_logo = _make_blurred_logo_image(tinted, blur_radius=1.1)
+            painter.drawImage(logo_rect, blurred_logo)
+        elif self.renderer and self.renderer.isValid():
+            from PyQt6.QtGui import QImage, QPainterPath
+            # Render at 2x resolution for crisp high-DPI scaling
+            scale_factor = 2.0
+            mask_w = int(render_rect.width() * scale_factor)
+            mask_h = int(render_rect.height() * scale_factor)
+            
+            high_res_mask = QImage(mask_w, mask_h, QImage.Format.Format_ARGB32_Premultiplied)
             high_res_mask.fill(Qt.GlobalColor.transparent)
             
             mask_painter = QPainter(high_res_mask)
             mask_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            self.renderer.render(mask_painter)
+            mask_painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            
+            # A) Render SVG mask (black capsule with transparent logo)
+            self.renderer.render(mask_painter, QRectF(0, 0, mask_w, mask_h))
+            
+            # B) Composite our rich 3D piano black gradient base onto the capsule body
+            mask_painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            
+            bg_grad_scaled = QLinearGradient(0, 0, 0, mask_h)
+            # 15% darker piano black (obsidian void)
+            bg_grad_scaled.setColorAt(0.0, QColor("#0D0D11"))
+            bg_grad_scaled.setColorAt(0.3, QColor("#040405"))
+            bg_grad_scaled.setColorAt(1.0, QColor("#000000"))
+            
+            mask_painter.setBrush(QBrush(bg_grad_scaled))
+            mask_painter.setPen(Qt.PenStyle.NoPen)
+            mask_painter.drawRect(0, 0, mask_w, mask_h)
+            
+            # C) Draw inner shadow vignette inside the mask (for portal depth)
+            mask_painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
+            for i in range(6):
+                inner_color = QColor(0, 0, 0, int(195 * (1 - i / 6)))
+                # Scale stroke size with resolution
+                inner_pen = QPen(inner_color, (1.0 + i * 0.9) * scale_factor)
+                mask_painter.setPen(inner_pen)
+                mask_painter.setBrush(Qt.BrushStyle.NoBrush)
+                # Draw rounded rectangle scaled to mask dimensions
+                mask_r = QRectF(0, 0, mask_w, mask_h)
+                adj = i * 0.5 * scale_factor
+                mask_painter.drawRoundedRect(mask_r.adjusted(adj, adj, -adj, -adj), mask_h / 2 - adj, mask_h / 2 - adj)
+                
             mask_painter.end()
             
-            # Smoothly draw high-res pre-rendered mask down to target render_rect
-            painter.drawImage(render_rect, high_res_mask)
+            # D) Apply a 5-tap sub-pixel jitter filter (hardware blur) to melt away raster edge artifacts
+            blurred_mask = QImage(mask_w, mask_h, QImage.Format.Format_ARGB32_Premultiplied)
+            blurred_mask.fill(Qt.GlobalColor.transparent)
+            
+            bp = QPainter(blurred_mask)
+            bp.setRenderHint(QPainter.RenderHint.Antialiasing)
+            bp.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            
+            # Offset taps configured to blend sub-pixel shifts cleanly
+            offsets = [
+                (0.0, 0.0, 0.55),
+                (-0.6, -0.6, 0.12),
+                (0.6, -0.6, 0.12),
+                (-0.6, 0.6, 0.12),
+                (0.6, 0.6, 0.12)
+            ]
+            for dx, dy, opacity in offsets:
+                bp.setOpacity(opacity)
+                # Render the mask with a sub-pixel shift to achieve soft, anti-aliased outlines
+                bp.drawImage(QRectF(dx, dy, mask_w, mask_h), high_res_mask)
+            bp.end()
+            
+            # Draw the composite smoothed mask image to the main canvas
+            painter.drawImage(render_rect, blurred_mask)
         else:
-            painter.setBrush(QBrush(QColor("#08080A")))
+            # Fallback when SVG is missing
+            bg_grad = QLinearGradient(render_rect.topLeft(), render_rect.bottomLeft())
+            bg_grad.setColorAt(0.0, QColor("#0D0D11"))
+            bg_grad.setColorAt(0.3, QColor("#040405"))
+            bg_grad.setColorAt(1.0, QColor("#000000"))
+            
+            painter.setBrush(QBrush(bg_grad))
             painter.setPen(QPen(QColor("rgba(255, 255, 255, 0.12)"), 1))
             painter.drawRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
+
+        # 4A. Specular Glass Glossy Curved Reflection Overlay
+        from PyQt6.QtGui import QPainterPath
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
+        
+        painter.save()
+        painter.setClipPath(clip_path)
+        
+        highlight_rect = QRectF(render_rect.x(), render_rect.y(), render_rect.width(), render_rect.height() * 0.46)
+        highlight_grad = QLinearGradient(highlight_rect.topLeft(), highlight_rect.bottomLeft())
+        highlight_grad.setColorAt(0.0, QColor(255, 255, 255, 38))
+        highlight_grad.setColorAt(0.9, QColor(255, 255, 255, 4))
+        highlight_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+        
+        painter.setBrush(QBrush(highlight_grad))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRect(highlight_rect)
+        
+        painter.restore()
+
+        # 4B. TOP-EDGE SPECULAR RIM LIGHT — bright crescent on the very top edge
+        # This is the single biggest trick to make the pill read as a 3D object.
+        # Light source is above-left, so the rim is brightest center-left.
+        from PyQt6.QtGui import QPainterPath as _QPP
+        rim_clip = _QPP()
+        rim_clip.addRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
+        painter.save()
+        painter.setClipPath(rim_clip)
+
+        rim_rect = QRectF(
+            render_rect.x() + render_rect.width() * 0.12,
+            render_rect.y() + 0.8,
+            render_rect.width() * 0.72,
+            render_rect.height() * 0.16,
+        )
+        rim_grad = QLinearGradient(rim_rect.topLeft(), rim_rect.bottomLeft())
+        rim_grad.setColorAt(0.0, QColor(255, 255, 255, 110))   # bright peak
+        rim_grad.setColorAt(0.5, QColor(255, 255, 255, 32))
+        rim_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.setBrush(QBrush(rim_grad))
+        painter.setPen(Qt.PenStyle.NoPen)
+        # Ellipse so it falls off at the sides naturally
+        painter.drawEllipse(rim_rect)
+        painter.restore()
+
+        # 4C. SURFACE MICRO-TEXTURE — cached noise overlay for tactile material feel
+        if self._noise_px and not self._noise_px.isNull():
+            surf_clip = _QPP()
+            surf_clip.addRoundedRect(render_rect, render_rect.height() / 2, render_rect.height() / 2)
+            painter.save()
+            painter.setClipPath(surf_clip)
+            painter.setOpacity(0.12)
+            painter.drawTiledPixmap(render_rect.toRect(), self._noise_px)
+            painter.setOpacity(1.0)
+            painter.restore()
             
-        # 5. Bevel glass highlight ring centered on render_rect
-        highlight_color = QColor(255, 255, 255, 26)
-        painter.setPen(QPen(highlight_color, 1))
+        # 5. Bevel light-bending silver edge highlight ring centered on render_rect
+        border_grad = QLinearGradient(render_rect.topLeft(), render_rect.bottomRight())
+        border_grad.setColorAt(0.0, QColor(255, 255, 255, 75))
+        border_grad.setColorAt(0.4, QColor(255, 255, 255, 20))
+        border_grad.setColorAt(0.8, QColor(255, 255, 255, 5))
+        border_grad.setColorAt(1.0, QColor(255, 255, 255, 35))
+        
+        painter.setPen(QPen(border_grad, 1.2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        r_highlight = render_rect.adjusted(0.5, 0.5, -0.5, -0.5)
-        radius_highlight = r_highlight.height() / 2
+        r_highlight = render_rect.adjusted(0.6, 0.6, -0.6, -0.6)
+        radius_highlight = r_highlight.height() / 2 - 0.6
         painter.drawRoundedRect(r_highlight, radius_highlight, radius_highlight)
 
 
@@ -1945,7 +2588,7 @@ class MainWindow(QMainWindow):
 
         # Load customization from config
         _cfg = _read_full_config()
-        self._assistant_name: str = (_cfg.get("assistant_name") or "JARVIS").strip()
+        self._assistant_name: str = (_cfg.get("assistant_name") or "Aethelark").strip()
         _display = self._assistant_name.upper()
 
         # Kayıtlı UI rengini panel/stylesheet'ler kurulmadan ÖNCE uygula
@@ -1953,7 +2596,7 @@ class MainWindow(QMainWindow):
         if _ui_color and _ui_color.lower() != DEFAULT_UI_COLOR:
             apply_ui_accent(_ui_color)
 
-        self.setWindowTitle(f"{_display} — MARK XLIX")
+        self.setWindowTitle(f"{_display} — AETHELARK")
         # Managed dynamically based on mode
         self.resize(_DEFAULT_W, _DEFAULT_H)
 
@@ -1965,7 +2608,7 @@ class MainWindow(QMainWindow):
 
         self.on_text_command   = None
         self.on_remote_clicked = None   # callable: () -> (url, key) | None
-        self.on_interrupt      = None   # callable: () -> None — stop JARVIS mid-speech
+        self.on_interrupt      = None   # callable: () -> None — stop Aethelark mid-speech
         self._muted            = False
         self._current_file: str | None = None
         self._remote_overlay: RemoteKeyOverlay | None = None
@@ -1991,13 +2634,13 @@ class MainWindow(QMainWindow):
         self._dashboard_container.setObjectName("DashboardContainer")
         self._dashboard_container.setStyleSheet(f"#DashboardContainer {{ background: {C.BG}; border-radius: 12px; }}")
         dash_layout = QVBoxLayout(self._dashboard_container)
-        dash_layout.setContentsMargins(0, 0, 0, 0)
-        dash_layout.setSpacing(0)
+        dash_layout.setContentsMargins(12, 10, 12, 10)
+        dash_layout.setSpacing(10)
         dash_layout.addWidget(self._build_header())
 
         body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
+        body.setContentsMargins(0, 4, 0, 4)
+        body.setSpacing(12)
 
         self._left_panel = self._build_left_panel()
         body.addWidget(self._left_panel, stretch=0)
@@ -2016,12 +2659,12 @@ class MainWindow(QMainWindow):
         _cam_hdr = QHBoxLayout()
         _cam_hdr.setContentsMargins(8, 5, 8, 5)
         _cam_title = QLabel("◈  CAMERA FEED")
-        _cam_title.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        _cam_title.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
         _cam_title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         _cam_hdr.addWidget(_cam_title)
         _cam_hdr.addStretch()
         _cam_x = QPushButton("✕  CLOSE")
-        _cam_x.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        _cam_x.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
         _cam_x.setCursor(Qt.CursorShape.PointingHandCursor)
         _cam_x.setStyleSheet(f"""
             QPushButton {{
@@ -2207,7 +2850,7 @@ class MainWindow(QMainWindow):
     # Icon generation — arc-reactor style, rendered with Pillow
     # ------------------------------------------------------------------
     @staticmethod
-    def _build_jarvis_icon(out_path: Path) -> bool:
+    def _build_aethelark_icon(out_path: Path) -> bool:
         """
         Render a JARVIS arc-reactor icon at 4× resolution and downsample
         for crisp results at all sizes. Saves a multi-res .ico to out_path.
@@ -2464,9 +3107,9 @@ class MainWindow(QMainWindow):
         desktop = self._get_desktop_dir()
 
         # Arc-reactor icon (.ico — also exported as .png for Linux/macOS)
-        ico_path = Path(__file__).resolve().parent / "config" / "jarvis.ico"
+        ico_path = Path(__file__).resolve().parent / "config" / "aethelark.ico"
         if not ico_path.exists():
-            self._build_jarvis_icon(ico_path)
+            self._build_aethelark_icon(ico_path)
 
         try:
             _os = platform.system()
@@ -2476,14 +3119,14 @@ class MainWindow(QMainWindow):
             if _os == "Windows":
                 pythonw  = python.parent / "pythonw.exe"
                 target   = str(pythonw if pythonw.exists() else python)
-                lnk      = str(desktop / "J.A.R.V.I.S.lnk")
+                lnk      = str(desktop / "Aethelark.lnk")
                 icon_loc = str(ico_path) if ico_path.exists() else f"{target},0"
                 self._create_lnk_windows(lnk, target, str(script),
                                          str(script.parent), icon_loc)
 
             # ── macOS — proper .app bundle (no Terminal window) ───────────────
             elif _os == "Darwin":
-                app     = desktop / "J.A.R.V.I.S.app"
+                app     = desktop / "Aethelark.app"
                 mac_dir = app / "Contents" / "MacOS"
                 res_dir = app / "Contents" / "Resources"
                 mac_dir.mkdir(parents=True, exist_ok=True)
@@ -2491,7 +3134,7 @@ class MainWindow(QMainWindow):
 
                 # Launcher executable (bash — runs as background process,
                 # macOS does NOT open Terminal for executables inside .app bundles)
-                launcher = mac_dir / "JARVIS"
+                launcher = mac_dir / "Aethelark"
                 launcher.write_text(
                     "#!/usr/bin/env bash\n"
                     f'cd "{script.parent}"\n'
@@ -2506,10 +3149,10 @@ class MainWindow(QMainWindow):
                     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
                     '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
                     '<plist version="1.0"><dict>\n'
-                    '  <key>CFBundleExecutable</key><string>JARVIS</string>\n'
+                    '  <key>CFBundleExecutable</key><string>Aethelark</string>\n'
                     '  <key>CFBundleIdentifier</key>'
-                    '<string>com.jarvis.assistant</string>\n'
-                    '  <key>CFBundleName</key><string>J.A.R.V.I.S</string>\n'
+                    '<string>com.aethelark.assistant</string>\n'
+                    '  <key>CFBundleName</key><string>Aethelark</string>\n'
                     '  <key>CFBundlePackageType</key><string>APPL</string>\n'
                     '  <key>CFBundleVersion</key><string>1.0</string>\n'
                     '</dict></plist>\n'
@@ -2690,7 +3333,7 @@ class MainWindow(QMainWindow):
 
         self._drawer_btn = QPushButton("⚙")
         self._drawer_btn.setFixedSize(28, 28)
-        self._drawer_btn.setFont(QFont("Courier New", 12))
+        self._drawer_btn.setFont(QFont("Manrope", 12))
         self._drawer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._drawer_btn.setToolTip("Settings & Controls")
         self._drawer_btn.setStyleSheet(f"""
@@ -2709,30 +3352,29 @@ class MainWindow(QMainWindow):
         logo_path = str(BASE_DIR / "assets/images/eagle_white.png")
         if os.path.exists(logo_path):
             px = QPixmap(logo_path)
-            logo_lbl.setPixmap(px.scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            logo_lbl.setPixmap(px.scaled(36, 36, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         else:
             logo_lbl.setText("AE")
-            logo_lbl.setFont(QFont("Doto", 12, QFont.Weight.Bold))
+            logo_lbl.setFont(QFont("Doto", 15, QFont.Weight.Bold))
             logo_lbl.setStyleSheet(f"color: {C.WHITE};")
         logo_lbl.setToolTip("Aethelark System")
         logo_lbl.setStyleSheet("background: transparent;")
         left_layout.addWidget(logo_lbl)
         
-        logo_text_lbl = QLabel("AETHELARK")
-        logo_text_lbl.setFont(QFont("Doto", 10, QFont.Weight.Bold))
-        logo_text_lbl.setStyleSheet(f"color: {C.WHITE}; letter-spacing: 2px; background: transparent;")
-        left_layout.addWidget(logo_text_lbl)
-
         lay.addLayout(left_layout)
         lay.addStretch()
 
         # Center Section: Centered Time Capsule (Date & Time)
         time_capsule = QFrame()
-        time_capsule.setStyleSheet(f"""
-            background: rgba(255, 255, 255, 0.04);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 14px;
-        """)
+        time_capsule.setStyleSheet("background: transparent; border: none;")
+        
+        from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+        tc_shadow = QGraphicsDropShadowEffect()
+        tc_shadow.setBlurRadius(16)
+        tc_shadow.setOffset(0, 1)
+        tc_shadow.setColor(QColor(0, 0, 0, 180))
+        time_capsule.setGraphicsEffect(tc_shadow)
+        
         tc_layout = QHBoxLayout(time_capsule)
         tc_layout.setContentsMargins(14, 4, 14, 4)
         tc_layout.setSpacing(8)
@@ -2822,15 +3464,15 @@ class MainWindow(QMainWindow):
             }}
         """)
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(8, 10, 8, 10)
-        lay.setSpacing(6)
+        lay.setContentsMargins(12, 16, 12, 16)
+        lay.setSpacing(12)
 
         hdr = QLabel("◈ SYS MONITOR")
-        hdr.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        hdr.setFont(QFont("Manrope", 7, QFont.Weight.Bold))
         hdr.setStyleSheet(f"color: {C.PRI}; background: transparent; "
                           f"border-bottom: 1px solid {C.BORDER}; padding-bottom: 4px;")
         lay.addWidget(hdr)
-        lay.addSpacing(2)
+        lay.addSpacing(4)
 
         self._bar_cpu = MetricBar("CPU", C.PRI)
         self._bar_mem = MetricBar("MEM", C.ACC2)
@@ -2845,26 +3487,32 @@ class MainWindow(QMainWindow):
         lay.addSpacing(4)
 
         info_panel = QWidget()
-        info_panel.setStyleSheet(
-            f"background: {C.PANEL2}; border: 1px solid {C.BORDER}; border-radius: 4px;"
-        )
+        info_panel.setStyleSheet("background: transparent; border: none;")
+        
+        from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+        ip_shadow = QGraphicsDropShadowEffect()
+        ip_shadow.setBlurRadius(12)
+        ip_shadow.setOffset(0, 1)
+        ip_shadow.setColor(QColor(0, 0, 0, 150))
+        info_panel.setGraphicsEffect(ip_shadow)
+        
         ip_lay = QVBoxLayout(info_panel)
         ip_lay.setContentsMargins(6, 5, 6, 5)
         ip_lay.setSpacing(3)
 
         self._uptime_lbl = QLabel("UP  --:--")
-        self._uptime_lbl.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._uptime_lbl.setFont(QFont("Manrope", 10, QFont.Weight.Bold))
         self._uptime_lbl.setStyleSheet(f"color: {C.GREEN}; background: transparent; border: none;")
         ip_lay.addWidget(self._uptime_lbl)
 
         self._proc_lbl = QLabel("PROC  --")
-        self._proc_lbl.setFont(QFont("Courier New", 8))
+        self._proc_lbl.setFont(QFont("Manrope", 10, QFont.Weight.Bold))
         self._proc_lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent; border: none;")
         ip_lay.addWidget(self._proc_lbl)
 
         os_name = {"Windows": "WIN", "Darwin": "macOS", "Linux": "LINUX"}.get(_OS, _OS.upper())
         os_lbl = QLabel(f"OS  {os_name}")
-        os_lbl.setFont(QFont("Courier New", 8))
+        os_lbl.setFont(QFont("Manrope", 10, QFont.Weight.Bold))
         os_lbl.setStyleSheet(f"color: {C.ACC2}; background: transparent; border: none;")
         ip_lay.addWidget(os_lbl)
 
@@ -2872,20 +3520,6 @@ class MainWindow(QMainWindow):
         lay.addSpacing(4)
 
         lay.addStretch()
-
-        for txt, col in [
-            ("AI CORE\nACTIVE",  C.GREEN),
-            ("SEC\nCLEARED",     C.PRI),
-            ("PROTOCOL\nXLIX",   C.TEXT_DIM),
-        ]:
-            lbl = QLabel(txt)
-            lbl.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet(
-                f"color: {col}; background: {C.PANEL2};"
-                f"border: 1px solid {C.BORDER_A}; border-radius: 3px; padding: 4px;"
-            )
-            lay.addWidget(lbl)
 
         return w
     def _build_right_panel(self) -> QWidget:
@@ -2900,12 +3534,12 @@ class MainWindow(QMainWindow):
             }}
         """)
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
+        lay.setContentsMargins(12, 16, 12, 16)
+        lay.setSpacing(12)
 
         def _sec(txt):
             l = QLabel(f"▸ {txt}")
-            l.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+            l.setFont(QFont("Manrope", 7, QFont.Weight.Bold))
             l.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
             return l
 
@@ -2923,7 +3557,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._drop_zone)
 
         self._file_hint = QLabel("No file loaded — drop or click above to upload")
-        self._file_hint.setFont(QFont("Courier New", 7))
+        self._file_hint.setFont(QFont("Manrope", 7))
         self._file_hint.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
         self._file_hint.setWordWrap(True)
         lay.addWidget(self._file_hint)
@@ -2937,7 +3571,7 @@ class MainWindow(QMainWindow):
 
         self._interrupt_btn = QPushButton("✋  INTERRUPT  [ESC]")
         self._interrupt_btn.setFixedHeight(34)
-        self._interrupt_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._interrupt_btn.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
         self._interrupt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._interrupt_btn.setStyleSheet(f"""
             QPushButton {{
@@ -2956,7 +3590,7 @@ class MainWindow(QMainWindow):
 
         self._mute_btn = QPushButton("🎙  MICROPHONE ACTIVE")
         self._mute_btn.setFixedHeight(30)
-        self._mute_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._mute_btn.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
         self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._mute_btn.clicked.connect(self._toggle_mute)
         self._style_mute_btn()
@@ -3000,14 +3634,14 @@ class MainWindow(QMainWindow):
         lay.setSpacing(5)
 
         hdr = QLabel("◈ CONTROLS")
-        hdr.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        hdr.setFont(QFont("Manrope", 7, QFont.Weight.Bold))
         hdr.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent; "
                           f"border-bottom: 1px solid {C.BORDER}; padding-bottom: 4px;")
         lay.addWidget(hdr)
 
         remote_btn = QPushButton("◉  REMOTE CONTROL")
         remote_btn.setFixedHeight(30)
-        remote_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        remote_btn.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
         remote_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         remote_btn.setStyleSheet(_BTN_STYLE_PRI)
         remote_btn.clicked.connect(self._open_remote)
@@ -3015,7 +3649,7 @@ class MainWindow(QMainWindow):
 
         fs_btn = QPushButton("⛶  FULLSCREEN  [F11]")
         fs_btn.setFixedHeight(26)
-        fs_btn.setFont(QFont("Courier New", 7))
+        fs_btn.setFont(QFont("Manrope", 7))
         fs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         fs_btn.setStyleSheet(_BTN_STYLE_DIM)
         fs_btn.clicked.connect(self._toggle_fullscreen)
@@ -3023,7 +3657,7 @@ class MainWindow(QMainWindow):
 
         sc_btn = QPushButton("⊞  CREATE DESKTOP SHORTCUT")
         sc_btn.setFixedHeight(26)
-        sc_btn.setFont(QFont("Courier New", 7))
+        sc_btn.setFont(QFont("Manrope", 7))
         sc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         sc_btn.setStyleSheet(_BTN_STYLE_DIM)
         sc_btn.clicked.connect(self._create_desktop_shortcut)
@@ -3031,14 +3665,14 @@ class MainWindow(QMainWindow):
 
         self._autostart_btn = QPushButton("◉  AUTO-START: OFF")
         self._autostart_btn.setFixedHeight(26)
-        self._autostart_btn.setFont(QFont("Courier New", 7))
+        self._autostart_btn.setFont(QFont("Manrope", 7))
         self._autostart_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._autostart_btn.clicked.connect(self._toggle_autostart)
         lay.addWidget(self._autostart_btn)
 
         cust_btn = QPushButton("⚙  CUSTOMISE ASSISTANT")
         cust_btn.setFixedHeight(26)
-        cust_btn.setFont(QFont("Courier New", 7))
+        cust_btn.setFont(QFont("Manrope", 7))
         cust_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cust_btn.setStyleSheet(_BTN_STYLE_DIM)
         cust_btn.clicked.connect(self._open_customize)
@@ -3046,7 +3680,7 @@ class MainWindow(QMainWindow):
 
         self._brief_btn = QPushButton()
         self._brief_btn.setFixedHeight(26)
-        self._brief_btn.setFont(QFont("Courier New", 7))
+        self._brief_btn.setFont(QFont("Manrope", 7))
         self._brief_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._brief_btn.clicked.connect(self._toggle_brief)
         lay.addWidget(self._brief_btn)
@@ -3074,7 +3708,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(); row.setSpacing(5)
         self._input = QLineEdit()
         self._input.setPlaceholderText("Type a command or question…")
-        self._input.setFont(QFont("Courier New", 9))
+        self._input.setFont(QFont("Manrope", 9))
         self._input.setFixedHeight(30)
         self._input.setStyleSheet(f"""
             QLineEdit {{
@@ -3088,7 +3722,7 @@ class MainWindow(QMainWindow):
 
         send = QPushButton("▸")
         send.setFixedSize(30, 30)
-        send.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+        send.setFont(QFont("Manrope", 11, QFont.Weight.Bold))
         send.setCursor(Qt.CursorShape.PointingHandCursor)
         send.setStyleSheet(f"""
             QPushButton {{
@@ -3124,12 +3758,12 @@ class MainWindow(QMainWindow):
         hdr = QHBoxLayout(); hdr.setSpacing(6)
 
         dot = QLabel("◈")
-        dot.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        dot.setFont(QFont("Manrope", 9, QFont.Weight.Bold))
         dot.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         hdr.addWidget(dot)
 
         self._content_title_lbl = QLabel("BRIEFING")
-        self._content_title_lbl.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._content_title_lbl.setFont(QFont("Manrope", 8, QFont.Weight.Bold))
         self._content_title_lbl.setStyleSheet(
             f"color: {C.PRI}; background: transparent; letter-spacing: 1px;"
         )
@@ -3137,12 +3771,12 @@ class MainWindow(QMainWindow):
         hdr.addStretch()
 
         self._content_ts_lbl = QLabel("")
-        self._content_ts_lbl.setFont(QFont("Courier New", 7))
+        self._content_ts_lbl.setFont(QFont("Manrope", 7))
         self._content_ts_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
         hdr.addWidget(self._content_ts_lbl)
 
         dismiss = QPushButton("DISMISS  ✕")
-        dismiss.setFont(QFont("Courier New", 7))
+        dismiss.setFont(QFont("Manrope", 7))
         dismiss.setFixedHeight(18)
         dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
         dismiss.setStyleSheet(f"""
@@ -3163,7 +3797,7 @@ class MainWindow(QMainWindow):
         # ── text display ──────────────────────────────────────────────────────
         self._content_display = QTextEdit()
         self._content_display.setReadOnly(True)
-        self._content_display.setFont(QFont("Courier New", 8))
+        self._content_display.setFont(QFont("Manrope", 8))
         self._content_display.setMinimumHeight(60)
         self._content_display.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -3213,13 +3847,13 @@ class MainWindow(QMainWindow):
         lay = QHBoxLayout(w); lay.setContentsMargins(14, 0, 14, 0)
 
         def _fl(txt, color=C.TEXT_MED):
-            l = QLabel(txt); l.setFont(QFont("Courier New", 7))
+            l = QLabel(txt); l.setFont(QFont("Manrope", 7))
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
         lay.addWidget(_fl("[F4] Mute  ·  [F11] Fullscreen"))
         lay.addStretch()
-        lay.addWidget(_fl("By FatihMakes", C.PRI_DIM))
+        lay.addWidget(_fl("Space-Eagle", C.PRI_DIM))
         return w
 
     def _on_file_selected(self, path: str):
@@ -3282,7 +3916,7 @@ class MainWindow(QMainWindow):
                 key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                     r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_READ)
                 try:
-                    winreg.QueryValueEx(key, "JARVIS_AI")
+                    winreg.QueryValueEx(key, "Aethelark_AI")
                     return True
                 except FileNotFoundError:
                     return False
@@ -3290,9 +3924,9 @@ class MainWindow(QMainWindow):
                     winreg.CloseKey(key)
             elif _OS == "Darwin":
                 return (Path.home() / "Library" / "LaunchAgents"
-                        / "com.jarvis.assistant.plist").exists()
+                        / "com.aethelark.assistant.plist").exists()
             else:
-                return (Path.home() / ".config" / "autostart" / "jarvis.desktop").exists()
+                return (Path.home() / ".config" / "autostart" / "aethelark.desktop").exists()
         except Exception:
             return False
 
@@ -3305,17 +3939,17 @@ class MainWindow(QMainWindow):
                 reg = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                     r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_ALL_ACCESS)
                 if currently_on:
-                    winreg.DeleteValue(reg, "JARVIS_AI")
+                    winreg.DeleteValue(reg, "Aethelark_AI")
                 else:
                     pythonw = Path(sys.executable).parent / "pythonw.exe"
                     exe = str(pythonw if pythonw.exists() else sys.executable)
-                    winreg.SetValueEx(reg, "JARVIS_AI", 0, winreg.REG_SZ,
+                    winreg.SetValueEx(reg, "Aethelark_AI", 0, winreg.REG_SZ,
                                       f'"{exe}" "{script}"')
                 winreg.CloseKey(reg)
             elif _OS == "Darwin":
                 plist_dir = Path.home() / "Library" / "LaunchAgents"
                 plist_dir.mkdir(parents=True, exist_ok=True)
-                plist = plist_dir / "com.jarvis.assistant.plist"
+                plist = plist_dir / "com.aethelark.assistant.plist"
                 if currently_on:
                     plist.unlink(missing_ok=True)
                 else:
@@ -3324,7 +3958,7 @@ class MainWindow(QMainWindow):
                         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
                         '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
                         '<plist version="1.0"><dict>\n'
-                        '  <key>Label</key><string>com.jarvis.assistant</string>\n'
+                        '  <key>Label</key><string>com.aethelark.assistant</string>\n'
                         '  <key>ProgramArguments</key><array>\n'
                         f'    <string>{sys.executable}</string>\n'
                         f'    <string>{script}</string>\n'
@@ -3335,7 +3969,7 @@ class MainWindow(QMainWindow):
             else:
                 desk_dir = Path.home() / ".config" / "autostart"
                 desk_dir.mkdir(parents=True, exist_ok=True)
-                desk = desk_dir / "jarvis.desktop"
+                desk = desk_dir / "aethelark.desktop"
                 if currently_on:
                     desk.unlink(missing_ok=True)
                 else:
@@ -3413,7 +4047,7 @@ class MainWindow(QMainWindow):
             self._customize_overlay.hide()
         cw = self.centralWidget()
         ov = CustomizeOverlay(
-            cfg.get("assistant_name", "JARVIS") or "JARVIS",
+            cfg.get("assistant_name", "Aethelark") or "Aethelark",
             cfg.get("user_name", ""),
             cfg.get("ui_color", "") or DEFAULT_UI_COLOR,
             parent=cw,
@@ -3438,11 +4072,13 @@ class MainWindow(QMainWindow):
 
     def _apply_name_update(self, name: str, user_name: str, ui_color: str = ""):
         """Update all name/theme-dependent UI elements and persist to config."""
-        self._assistant_name = name.strip() or "JARVIS"
+        self._assistant_name = name.strip() or "Aethelark"
         display = self._assistant_name.upper()
-        self.setWindowTitle(f"{display} — MARK XLIX")
+        self.setWindowTitle(f"{display} — AETHELARK")
         self._title_lbl.setText(display)
-        if display in ("JARVIS", "J.A.R.V.I.S"):
+        if display in ("AETHELARK", "A.E.T.H.E.L.A.R.K"):
+            self._sub_lbl.setText("Autonomous Agentic Development Core")
+        elif display in ("JARVIS", "J.A.R.V.I.S"):
             self._sub_lbl.setText("Just A Rather Very Intelligent System")
         else:
             self._sub_lbl.setText("Personal AI Assistant")
@@ -3583,7 +4219,7 @@ class MainWindow(QMainWindow):
             self._overlay.hide()
             self._overlay = None
         self._apply_state("LISTENING")
-        self._assistant_name = _read_full_config().get("assistant_name", "JARVIS") or "JARVIS"
+        self._assistant_name = _read_full_config().get("assistant_name", "Aethelark") or "Aethelark"
         self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. {self._assistant_name} online.")
 
 
@@ -3615,7 +4251,7 @@ class MainWindow(QMainWindow):
             self._pill_widget.show()
             self._stacked.setCurrentIndex(1)
             
-            target_w, target_h = 200, 56
+            target_w, target_h = 240, 84
             if self._normal_geom:
                 target_x = self.x() + (self.width() - target_w) // 2
                 target_y = max(10, self.y())
@@ -3667,10 +4303,14 @@ class MainWindow(QMainWindow):
         if self._anim:
             self._anim.stop()
         self._anim = QPropertyAnimation(self, b"geometry")
-        self._anim.setDuration(400)
+        self._anim.setDuration(300)  # Snappy, springy duration
         self._anim.setStartValue(self.geometry())
         self._anim.setEndValue(target_rect)
-        self._anim.setEasingCurve(QEasingCurve.Type.OutBack)
+        
+        # Snappy responsive Apple-style overshoot curve
+        curve = QEasingCurve(QEasingCurve.Type.OutBack)
+        curve.setOvershoot(0.95)
+        self._anim.setEasingCurve(curve)
         
         def on_finished():
             if self._ui_mode == "DASHBOARD":
@@ -3689,7 +4329,12 @@ class MainWindow(QMainWindow):
                     self.set_ui_mode("PILL")
 
     def mousePressEvent(self, event):
-        if hasattr(self, "_ui_mode") and self._ui_mode == "PILL" and event.button() == Qt.MouseButton.LeftButton:
+        is_header_click = False
+        if hasattr(self, "_ui_mode") and self._ui_mode == "DASHBOARD":
+            if event.position().y() <= 54:
+                is_header_click = True
+
+        if hasattr(self, "_ui_mode") and (self._ui_mode == "PILL" or is_header_click) and event.button() == Qt.MouseButton.LeftButton:
             self._drag_active = True
             from PyQt6.QtGui import QCursor
             self._drag_pos = QCursor.pos() - self.frameGeometry().topLeft()
@@ -3698,7 +4343,7 @@ class MainWindow(QMainWindow):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if hasattr(self, "_ui_mode") and self._ui_mode == "PILL" and self._drag_active:
+        if self._drag_active:
             from PyQt6.QtGui import QCursor
             self.move(QCursor.pos() - self._drag_pos)
             event.accept()
@@ -3713,9 +4358,20 @@ class MainWindow(QMainWindow):
             super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        if hasattr(self, "_ui_mode") and self._ui_mode == "PILL" and event.button() == Qt.MouseButton.LeftButton:
-            self.set_ui_mode("DASHBOARD")
-            event.accept()
+        is_header_click = False
+        if hasattr(self, "_ui_mode") and self._ui_mode == "DASHBOARD":
+            if event.position().y() <= 54:
+                is_header_click = True
+
+        if hasattr(self, "_ui_mode") and event.button() == Qt.MouseButton.LeftButton:
+            if self._ui_mode == "PILL":
+                self.set_ui_mode("DASHBOARD")
+                event.accept()
+            elif is_header_click:
+                self.set_ui_mode("PILL")
+                event.accept()
+            else:
+                super().mouseDoubleClickEvent(event)
         else:
             super().mouseDoubleClickEvent(event)
 
@@ -3726,11 +4382,14 @@ class _RootShim:
         self._app.exec()
     def protocol(self, *_):
         pass
+    def quit(self):
+        self._app.quit()
 
 
-class JarvisUI:
+class AethelarkUI:
     def __init__(self, face_path: str, size=None):
         self._app = QApplication.instance() or QApplication(sys.argv)
+        load_manrope_font()
         self._app.setStyle("Fusion")
         self._win = MainWindow(face_path)
         self._win.show()

@@ -8,7 +8,9 @@ if _platform.system() == "Windows":
 
     class _Popen(_OrigPopen):
         def __init__(self, args, **kw):
-            kw["creationflags"] = kw.get("creationflags", 0) | _subprocess.CREATE_NO_WINDOW
+            # CREATE_NO_WINDOW is 0x08000000 on Windows
+            creation_flags = getattr(_subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            kw["creationflags"] = kw.get("creationflags", 0) | creation_flags
             kw.pop("startupinfo", None)   # drop any stale/shared STARTUPINFO
             super().__init__(args, **kw)
 
@@ -22,13 +24,15 @@ import time
 import json
 import sys
 import traceback
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 import sounddevice as sd
+import queue
 from google import genai
 from google.genai import types
-from ui import JarvisUI
+from ui import AethelarkUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
 )
@@ -421,11 +425,11 @@ TOOL_DECLARATIONS = [
         }
     },
     {
-        "name": "shutdown_jarvis",
+        "name": "shutdown_aethelark",
         "description": (
             "Shuts down the assistant completely. "
             "Call this when the user expresses intent to end the conversation, "
-            "close the assistant, say goodbye, or stop Jarvis. "
+            "close the assistant, say goodbye, or stop Aethelark. "
             "The user can say this in ANY language."
         ),
         "parameters": {
@@ -524,7 +528,7 @@ TOOL_DECLARATIONS = [
                     )
                 },
                 "key":   {"type": "STRING", "description": "Short snake_case key (e.g. name, favorite_food, sister_name)"},
-                "value": {"type": "STRING", "description": "Concise value in English (e.g. Fatih, pizza, older sister)"},
+                "value": {"type": "STRING", "description": "Concise value in English (e.g. Alex, pizza, older sister)"},
             },
             "required": ["category", "key", "value"]
         }
@@ -534,15 +538,50 @@ TOOL_DECLARATIONS = [
 # --- Plugin system ---
 
 
-class JarvisLive:
+class ToolSpec:
+    def __init__(self, reads=None, writes=None, exclusive=False, priority=1, timeout_s=30.0):
+        self.reads = set(reads or [])
+        self.writes = set(writes or [])
+        self.exclusive = exclusive
+        self.priority = priority
+        self.timeout_s = timeout_s
 
-    def __init__(self, ui: JarvisUI):
+TOOL_SPECS = {
+    "save_memory": ToolSpec(writes=["memory"], priority=2),
+    "open_app": ToolSpec(writes=["desktop"], priority=1),
+    "weather_report": ToolSpec(reads=["web"], priority=1),
+    "browser_control": ToolSpec(writes=["desktop"], priority=1),
+    "file_controller": ToolSpec(writes=["file"], priority=1),
+    "send_message": ToolSpec(writes=["desktop"], exclusive=True, priority=1, timeout_s=60.0),
+    "reminder": ToolSpec(writes=["system"], priority=1),
+    "youtube_video": ToolSpec(writes=["desktop"], priority=1),
+    "screen_process": ToolSpec(reads=["camera", "desktop"], priority=1),
+    "close_camera": ToolSpec(writes=["camera"], priority=2),
+    "computer_settings": ToolSpec(writes=["system"], priority=1),
+    "desktop_control": ToolSpec(writes=["desktop"], exclusive=True, priority=1),
+    "code_helper": ToolSpec(reads=["memory"], writes=["file"], priority=1, timeout_s=45.0),
+    "dev_agent": ToolSpec(reads=["memory"], writes=["file"], priority=1, timeout_s=45.0),
+    "developer_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=120.0),
+    "web_search": ToolSpec(reads=["web"], priority=1),
+    "file_processor": ToolSpec(reads=["file"], writes=["file"], priority=1),
+    "computer_control": ToolSpec(writes=["desktop"], exclusive=True, priority=1),
+    "game_updater": ToolSpec(reads=["web"], writes=["file"], priority=1),
+    "flight_finder": ToolSpec(reads=["web"], priority=1),
+    "system_status": ToolSpec(reads=["system"], priority=2),
+    "shutdown_aethelark": ToolSpec(writes=["system"], exclusive=True, priority=3),
+}
+
+
+class AethelarkLive:
+
+    def __init__(self, ui: AethelarkUI):
         self.ui             = ui
         self._asst_name     = "Aethelark"   # updated each session from config
         self.session              = None
         self.audio_in_queue       = None
         self.out_queue            = None
         self._loop                = None
+        self._play_stop_event     = None
         self._is_speaking         = False
         self._speaking_lock       = threading.Lock()
         self._phone_active        = False   # True while phone mic is streaming; pauses PC mic
@@ -561,6 +600,14 @@ class JarvisLive:
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
         self._proactive        = ProactiveEngine()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
+
+        # ── Phase 1: Observability & Turn Identity ────────────────────────────
+        self._session_id:  str = ""              # unique per live-session connection
+        self._turn_epoch:  int = 0               # monotonic counter; incremented on barge-in and turn_complete
+        self._shutdown_requested = False          # graceful shutdown flag
+
+        # ── Phase 2: Audio Queue Bounds ───────────────────────────────────────
+        self._mic_drops: int = 0                  # count of oldest-mic-frames dropped due to overflow
 
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
@@ -589,25 +636,35 @@ class JarvisLive:
     def set_speaking(self, value: bool):
         with self._speaking_lock:
             self._is_speaking = value
-        if value:
-            self.ui.set_state("SPEAKING")
-        elif not self.ui.muted:
-            self.ui.set_state("LISTENING")
+        
+        def _update_gui():
+            if value:
+                self.ui.set_state("SPEAKING")
+            elif not self.ui.muted:
+                self.ui.set_state("LISTENING")
+                
+        if self._loop:
+            self._loop.call_soon_threadsafe(_update_gui)
+        else:
+            _update_gui()
 
     def interrupt(self) -> None:
         """Stop Aethelark mid-speech: drain queued audio and open mic immediately."""
         self._interrupted = True
+        old_epoch = self._turn_epoch
+        self._turn_epoch += 1  # advance epoch — stale results from this turn will be discarded
+        new_epoch = self._turn_epoch
         q = self.audio_in_queue
         if q:
             drained = 0
             while True:
                 try:
-                    q.get_nowait()
+                    item = q.get_nowait()
                     drained += 1
                 except Exception:
                     break
             if drained:
-                print(f"[Aethelark] ✋ Interrupted — {drained} audio chunks discarded")
+                print(f"[Aethelark] ✋ Interrupted (epoch {old_epoch}→{new_epoch}) — {drained} playback frames discarded")
         self.set_speaking(False)
         if self._turn_done_event:
             self._turn_done_event.clear()
@@ -627,7 +684,7 @@ class JarvisLive:
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:120]
         self.ui.write_log(f"ERR: {tool_name} — {short}")
-        self.speak(f"Sir, {tool_name} encountered an error. {short}")
+        self.speak(f"There was an issue executing {tool_name}: {short}")
 
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
@@ -638,6 +695,7 @@ class JarvisLive:
             self._asst_name = (_cfg.get("assistant_name") or "Aethelark").strip()
             _user_name = (_cfg.get("user_name") or "").strip()
         except Exception:
+            _cfg = {}
             self._asst_name = "Aethelark"
             _user_name = ""
 
@@ -667,6 +725,8 @@ class JarvisLive:
             parts.append(mem_str)
         parts.append(sys_prompt)
 
+        _voice = (_cfg.get("voice_name") or "Puck").strip()
+
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
@@ -677,17 +737,21 @@ class JarvisLive:
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Charon"
+                        voice_name=_voice
                     )
                 )
             ),
         )
 
-    async def _execute_tool(self, fc) -> types.FunctionResponse:
+    async def _execute_tool(self, fc, call_epoch: int = -1) -> types.FunctionResponse:
         name = fc.name
         args = dict(fc.args or {})
+        # Record the epoch at dispatch time so we can detect stale completions
+        if call_epoch < 0:
+            call_epoch = self._turn_epoch
 
-        print(f"[Aethelark] 🔧 {name}  {args}")
+        _t0 = time.monotonic()
+        print(f"[Aethelark] 🔧 {name} (epoch={call_epoch})  {args}")
         self.ui.set_state("THINKING")
 
         if name == "save_memory":
@@ -827,14 +891,33 @@ class JarvisLive:
                 r = await loop.run_in_executor(None, get_system_status)
                 result = str(r)
 
-            elif name == "shutdown_jarvis":
-                self.ui.write_log("SYS: Shutdown requested.")
+            elif name == "shutdown_aethelark":
+                self.ui.write_log("SYS: Shutdown requested — graceful shutdown in progress.")
+                self._shutdown_requested = True
                 self.speak("Goodbye.")
-                def _shutdown():
-                    import time, os
-                    time.sleep(1)
-                    os._exit(0)
-                threading.Thread(target=_shutdown, daemon=True).start()
+                # Schedule graceful shutdown: wait for goodbye audio, then clean exit
+                async def _graceful_shutdown():
+                    await asyncio.sleep(2.5)  # let goodbye audio play
+                    print("[Aethelark] 🔴 Graceful shutdown: closing session...")
+                    self.ui.write_log("SYS: Shutting down...")
+                    # Stop audio streams
+                    self.set_speaking(False)
+                    # Close dashboard
+                    if self._dashboard:
+                        try:
+                            await self._dashboard.broadcast({"type": "status", "state": "offline"})
+                        except Exception:
+                            pass
+                    # Signal the UI to close (runs on Qt thread)
+                    try:
+                        self.ui.root.quit()
+                    except Exception:
+                        pass
+                    # Final fallback — if Qt doesn't exit cleanly within 3s
+                    await asyncio.sleep(3)
+                    print("[Aethelark] 🔴 Fallback exit.")
+                    sys.exit(0)
+                asyncio.create_task(_graceful_shutdown())
 
             else:
                 result = f"Unknown tool: {name}"
@@ -842,35 +925,161 @@ class JarvisLive:
         except Exception as e:
             result = f"Tool '{name}' failed: {e}"
             traceback.print_exc()
-            self.speak_error(name, e)
+            self.speak_error(name, str(e))
 
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-        print(f"[Aethelark] 📤 {name} → {str(result)[:80]}")
+        _elapsed_ms = (time.monotonic() - _t0) * 1000
+        # Check for stale result — epoch may have advanced during execution
+        if call_epoch != self._turn_epoch:
+            print(f"[Aethelark] ⚠️ {name} result STALE (epoch {call_epoch} → {self._turn_epoch}, {_elapsed_ms:.0f}ms) — returning anyway for protocol")
+        else:
+            print(f"[Aethelark] 📤 {name} → {str(result)[:80]} ({_elapsed_ms:.0f}ms)")
         return types.FunctionResponse(
             id=fc.id, name=name,
             response={"result": result}
         )
 
+    async def _schedule_tool_calls(self, tool_calls, call_epoch: int) -> list[types.FunctionResponse]:
+        """Scoreboard scheduler with RAW, WAW, WAR hazard detection.
+        Runs disjoint, read-only/independent tools concurrently,
+        while sequencing conflicting or exclusive tools.
+        """
+        running = {}  # task -> (tool_call, spec)
+        results = {}  # tool_call_id -> FunctionResponse
+        pending = list(tool_calls)
+        
+        # Sort pending by priority
+        pending.sort(key=lambda fc: TOOL_SPECS.get(fc.name, ToolSpec()).priority, reverse=True)
+        
+        while pending or running:
+            # 1. Identify which pending tools can be issued now
+            issued = []
+            for fc in list(pending):
+                spec = TOOL_SPECS.get(fc.name, ToolSpec(exclusive=True))
+                
+                # Check for conflict with any currently running tools
+                conflict = False
+                for r_task, (r_fc, r_spec) in running.items():
+                    if spec.exclusive or r_spec.exclusive:
+                        conflict = True
+                        break
+                    # RAW: running writes what pending reads
+                    if r_spec.writes & spec.reads:
+                        conflict = True
+                        break
+                    # WAR: running reads what pending writes
+                    if r_spec.reads & spec.writes:
+                        conflict = True
+                        break
+                    # WAW: running writes what pending writes
+                    if r_spec.writes & spec.writes:
+                        conflict = True
+                        break
+                
+                # Check conflict with other already-selected tools in the issued list
+                for i_fc in issued:
+                    i_spec = TOOL_SPECS.get(i_fc.name, ToolSpec(exclusive=True))
+                    if spec.exclusive or i_spec.exclusive:
+                        conflict = True
+                        break
+                    if i_spec.writes & spec.reads:
+                        conflict = True
+                        break
+                    if i_spec.reads & spec.writes:
+                        conflict = True
+                        break
+                    if i_spec.writes & spec.writes:
+                        conflict = True
+                        break
+                
+                if not conflict:
+                    issued.append(fc)
+                    pending.remove(fc)
+            
+            # 2. Start all issued tool calls
+            for fc in issued:
+                spec = TOOL_SPECS.get(fc.name, ToolSpec(exclusive=True))
+                
+                async def run_with_timeout(f_call=fc, f_spec=spec):
+                    try:
+                        return await asyncio.wait_for(
+                            self._execute_tool(f_call, call_epoch=call_epoch),
+                            timeout=f_spec.timeout_s
+                        )
+                    except asyncio.TimeoutError:
+                        print(f"[Aethelark] ⚠️ Tool {f_call.name} TIMED OUT after {f_spec.timeout_s}s")
+                        return types.FunctionResponse(
+                            id=f_call.id,
+                            name=f_call.name,
+                            response={"result": f"Error: Tool execution timed out after {f_spec.timeout_s} seconds."}
+                        )
+                    except Exception as e:
+                        return types.FunctionResponse(
+                            id=f_call.id,
+                            name=f_call.name,
+                            response={"result": f"Error: Tool execution failed: {e}"}
+                        )
+                
+                task = asyncio.create_task(run_with_timeout())
+                running[task] = (fc, spec)
+            
+            if not running:
+                break
+                
+            # 3. Wait for at least one running task to complete
+            done, _ = await asyncio.wait(running.keys(), return_when=asyncio.FIRST_COMPLETED)
+            
+            for task in done:
+                fc, spec = running.pop(task)
+                res = task.result()
+                results[fc.id] = res
+
+        # Reassemble results in the original order of tool_calls
+        return [results[fc.id] for fc in tool_calls if fc.id in results]
+
     async def _send_realtime(self):
+        out_queue = self.out_queue
+        session = self.session
+        if out_queue is None or session is None:
+            return
         while True:
-            msg = await self.out_queue.get()
-            await self.session.send_realtime_input(media=msg)
+            msg = await out_queue.get()
+            # msg is a dict {"data": bytes, "mime_type": str}
+            await session.send_realtime_input(media=msg)
 
     async def _listen_audio(self):
         print("[Aethelark] 🎤 Mic started")
         loop = asyncio.get_event_loop()
 
+        def _enqueue_mic_frame(msg):
+            """Run on the event loop thread via call_soon_threadsafe.
+            Implements drop-oldest overflow to keep mic latency bounded."""
+            out_queue = self.out_queue
+            if out_queue is None:
+                return
+            try:
+                out_queue.put_nowait(msg)
+            except asyncio.QueueFull:
+                try:
+                    out_queue.get_nowait()  # discard oldest stale frame
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    out_queue.put_nowait(msg)
+                except asyncio.QueueFull:
+                    pass
+                self._mic_drops += 1
+
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
-                jarvis_speaking = self._is_speaking
-            if not jarvis_speaking and not self.ui.muted and not self._phone_active:
+                aethelark_speaking = self._is_speaking
+            if not aethelark_speaking and not self.ui.muted and not self._phone_active:
                 data = indata.tobytes()
-                loop.call_soon_threadsafe(
-                    self.out_queue.put_nowait,
-                    {"data": data, "mime_type": "audio/pcm"}
-                )
+                msg = {"data": data, "mime_type": "audio/pcm"}
+                # Schedule on event loop thread — never block the PortAudio callback
+                loop.call_soon_threadsafe(_enqueue_mic_frame, msg)
 
         try:
             with sd.InputStream(
@@ -890,10 +1099,13 @@ class JarvisLive:
     async def _receive_audio(self):
         print("[Aethelark] 👂 Recv started")
         out_buf, in_buf = [], []
+        session = self.session
+        if session is None:
+            return
 
         try:
             while True:
-                async for response in self.session.receive():
+                async for response in session.receive():
 
                     if response.data:
                         if self._interrupted:
@@ -903,10 +1115,21 @@ class JarvisLive:
                                 self._turn_done_event.clear()
                             # Split into ~50 ms chunks so interrupt() stops audio within 50 ms
                             # (24000 Hz × 2 bytes/sample × 0.05 s = 2400 bytes per slice)
+                            # Tag each frame with the current turn_epoch for epoch-aware barge-in
                             _audio_data = response.data
                             _SLICE = 2400
+                            _epoch = self._turn_epoch
                             for _i in range(0, len(_audio_data), _SLICE):
-                                self.audio_in_queue.put_nowait(_audio_data[_i : _i + _SLICE])
+                                frame = (_epoch, _audio_data[_i : _i + _SLICE])
+                                audio_q = self.audio_in_queue
+                                if audio_q is not None:
+                                    try:
+                                        audio_q.put_nowait(frame)
+                                    except queue.Full:
+                                        # With 200-frame buffer this should be extremely rare.
+                                        # Log instead of drop-oldest — dropping output frames
+                                        # corrupts speech and causes R2D2 glitches.
+                                        print(f"[Aethelark] ⚠️ Playback queue overflow — frame dropped (epoch={_epoch})")
 
                     if response.server_content:
                         sc = response.server_content
@@ -923,6 +1146,7 @@ class JarvisLive:
                                 self._last_user_speech = time.monotonic()
 
                         if sc.turn_complete:
+                            self._turn_epoch += 1
                             if self._turn_done_event:
                                 self._turn_done_event.set()
 
@@ -950,24 +1174,23 @@ class JarvisLive:
                                 self.ui.write_log(f"{self._asst_name}: {full_out}")
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
-                                        "type": "log", "speaker": "jarvis",
+                                        "type": "log", "speaker": "aethelark",
                                         "text": full_out,
                                         "ts": datetime.now().isoformat(),
                                     }))
                             out_buf = []
 
                             # Vision injection: model finished tool-response turn → now send the image
-                            if self._pending_vision and self.session:
+                            if self._pending_vision and session:
                                 import base64 as _b64
                                 img_b, mime_t, question, angle = self._pending_vision
                                 self._pending_vision = None
-                                b64 = _b64.b64encode(img_b).decode("ascii")
-                                print(f"[Vision] 📤 {len(img_b):,} bytes (angle={angle}) → main session")
-                                await self.session.send_client_content(
-                                    turns={"parts": [
-                                        {"inline_data": {"mime_type": mime_t, "data": b64}},
-                                        {"text": question},
-                                    ]},
+                                print(f"[Vision] 📤 {len(img_b):,} bytes (angle={angle}) → main session via send_realtime_input")
+                                await session.send_realtime_input(
+                                    media=types.Blob(data=img_b, mime_type=mime_t)
+                                )
+                                await session.send_client_content(
+                                    turns={"parts": [{"text": question}]},
                                     turn_complete=True,
                                 )
                                 # Mark next turn_complete behaviour depending on angle
@@ -988,58 +1211,92 @@ class JarvisLive:
                                 asyncio.create_task(_cam_close())
 
                     if response.tool_call:
-                        fn_responses = []
-                        for fc in response.tool_call.function_calls:
-                            print(f"[Aethelark] 📞 {fc.name}")
-                            fr = await self._execute_tool(fc)
-                            fn_responses.append(fr)
-                        await self.session.send_tool_response(
-                            function_responses=fn_responses
+                        # Schedule tool calls through our Scoreboard Scheduler
+                        fn_responses = await self._schedule_tool_calls(
+                            response.tool_call.function_calls,
+                            call_epoch=self._turn_epoch
                         )
+                        if fn_responses:
+                            await session.send_tool_response(
+                                function_responses=fn_responses
+                            )
         except Exception as e:
             print(f"[Aethelark] ❌ Recv: {e}")
             traceback.print_exc()
             raise
 
-    async def _play_audio(self):
-        print("[Aethelark] 🔊 Play started")
-
+    def _play_audio_loop(self):
+        print("[Aethelark] 🔊 Playback thread started")
+        # Open output stream at 48000 Hz to ensure universal Linux compatibility
+        playback_rate = 48000
         stream = sd.RawOutputStream(
-            samplerate=RECEIVE_SAMPLE_RATE,
+            samplerate=playback_rate,
             channels=CHANNELS,
             dtype="int16",
-            blocksize=CHUNK_SIZE,
+            blocksize=2400,  # fixed block = one resampled frame (50ms at 48kHz)
         )
         stream.start()
 
+        # Pre-fill with ~100ms of silence to prime the hardware ring buffer.
+        # Without this, the first few write() calls race the DAC read pointer,
+        # causing audible clicks, pops, and garbled speed-up on the first response.
+        _prefill_bytes = b'\x00' * (playback_rate * 2 * 100 // 1000)  # 100ms of int16 silence
         try:
-            while True:
+            stream.write(_prefill_bytes)
+        except Exception:
+            pass  # non-fatal — worst case is the old behaviour
+        
+        audio_in_queue = self.audio_in_queue
+        play_stop_event = self._play_stop_event
+        loop = self._loop
+        
+        if audio_in_queue is None or play_stop_event is None or loop is None:
+            return
+        
+        try:
+            while not play_stop_event.is_set() and not self._shutdown_requested:
                 try:
-                    chunk = await asyncio.wait_for(
-                        self.audio_in_queue.get(),
-                        timeout=0.1
-                    )
-                except asyncio.TimeoutError:
+                    item = audio_in_queue.get(timeout=0.05)
+                except queue.Empty:
                     if (
                         self._turn_done_event
                         and self._turn_done_event.is_set()
-                        and self.audio_in_queue.empty()
+                        and audio_in_queue.empty()
                     ):
                         self.set_speaking(False)
-                        self._turn_done_event.clear()
+                        loop.call_soon_threadsafe(self._turn_done_event.clear)
                     continue
+                
+                frame_epoch, chunk = item
+                if frame_epoch < self._turn_epoch:
+                    continue
+                    
                 self.set_speaking(True)
+                
+                # Resample 24kHz raw PCM to 48kHz by repeating each 16-bit sample twice
                 try:
-                    await asyncio.to_thread(stream.write, chunk)
-                except (RuntimeError, asyncio.CancelledError):
-                    break   # executor shutting down — exit cleanly
+                    import numpy as np
+                    samples = np.frombuffer(chunk, dtype=np.int16)
+                    resampled_chunk = np.repeat(samples, 2).tobytes()
+                except Exception as re_err:
+                    print(f"[Aethelark] Resampling error: {re_err}")
+                    resampled_chunk = chunk
+                
+                try:
+                    stream.write(resampled_chunk if len(resampled_chunk) != len(chunk) else chunk)
+                except Exception as e:
+                    print(f"[Aethelark] ❌ Stream write: {e}")
+                    break
         except Exception as e:
-            print(f"[Aethelark] ❌ Play: {e}")
-            raise
+            print(f"[Aethelark] ❌ Playback thread error: {e}")
         finally:
             self.set_speaking(False)
-            stream.stop()
-            stream.close()
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+            print("[Aethelark] 🔊 Playback thread stopped")
 
     # ── Morning briefing ────────────────────────────────────────────────────────
 
@@ -1198,7 +1455,10 @@ class JarvisLive:
 
     async def _relay_phone_audio(self) -> None:
         """Forward phone mic PCM chunks from dashboard queue into the Gemini Live session."""
-        q = self._dashboard._phone_audio_queue
+        dashboard = self._dashboard
+        if dashboard is None:
+            return
+        q = dashboard._phone_audio_queue
         while True:
             try:
                 chunk = await asyncio.wait_for(q.get(), timeout=1.0)
@@ -1209,11 +1469,20 @@ class JarvisLive:
             self._phone_active = True   # phone is streaming — silence PC mic
             with self._speaking_lock:
                 speaking = self._is_speaking
-            if not speaking and not self.ui.muted:
+            out_queue = self.out_queue
+            if not speaking and not self.ui.muted and out_queue is not None:
                 try:
-                    self.out_queue.put_nowait(chunk)
+                    out_queue.put_nowait(chunk)
                 except asyncio.QueueFull:
-                    pass
+                    try:
+                        out_queue.get_nowait()  # Discard oldest stale frame
+                    except asyncio.QueueEmpty:
+                        pass
+                    try:
+                        out_queue.put_nowait(chunk)
+                    except asyncio.QueueFull:
+                        pass
+                    self._mic_drops += 1
 
     def _on_phone_connected(self) -> None:
         self.ui.write_log("SYS: Phone connected via Remote Dashboard.")
@@ -1222,10 +1491,13 @@ class JarvisLive:
     # ── dashboard command relay ─────────────────────────────────────────────
 
     async def _process_dashboard_commands(self) -> None:
+        dashboard = self._dashboard
+        if dashboard is None:
+            return
         while True:
             try:
                 text = await asyncio.wait_for(
-                    self._dashboard._command_queue.get(), timeout=0.5
+                    dashboard._command_queue.get(), timeout=0.5
                 )
                 if not text:
                     continue
@@ -1234,8 +1506,9 @@ class JarvisLive:
                     if self.session:
                         break
                     await asyncio.sleep(0.1)
-                if self.session:
-                    await self.session.send_client_content(
+                session = self.session
+                if session:
+                    await session.send_client_content(
                         turns={"parts": [{"text": text}]},
                         turn_complete=True,
                     )
@@ -1247,6 +1520,28 @@ class JarvisLive:
             except Exception as e:
                 print(f"[Dashboard] Command error: {e}")
                 await asyncio.sleep(0.5)
+
+    # ── Queue depth monitor ───────────────────────────────────────────────────
+
+    async def _monitor_queue_depth(self) -> None:
+        """Background task: logs queue depths every 30s for observability."""
+        while True:
+            await asyncio.sleep(30)
+            out_queue = self.out_queue
+            audio_in_queue = self.audio_in_queue
+            if out_queue is None or audio_in_queue is None:
+                continue
+            mic_q = out_queue.qsize()
+            play_q = audio_in_queue.qsize()
+            mic_age_ms = mic_q * 64  # each frame ≈ 64ms at 16kHz/1024 samples
+            play_age_ms = play_q * 50  # each frame ≈ 50ms at 24kHz/2400 bytes
+            drops = self._mic_drops
+            print(
+                f"[Telemetry] sid={self._session_id} epoch={self._turn_epoch} "
+                f"mic_q={mic_q}/{out_queue.maxsize}(~{mic_age_ms}ms) "
+                f"play_q={play_q}/200(~{play_age_ms}ms) "
+                f"mic_drops={drops}"
+            )
 
     # ── main loop ───────────────────────────────────────────────────────────
 
@@ -1277,43 +1572,62 @@ class JarvisLive:
                     http_options={"api_version": "v1beta"}
                 )
 
-                async with (
-                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
-                    asyncio.TaskGroup() as tg,
-                ):
-                    self.session          = session
-                    self.audio_in_queue   = asyncio.Queue()
-                    self.out_queue        = asyncio.Queue(maxsize=200)
-                    self._turn_done_event = asyncio.Event()
+                if self._play_stop_event:
+                    self._play_stop_event.set()
+                self._play_stop_event = threading.Event()
 
-                    # Reset transient state that must not carry over from a previous session
-                    self._pending_vision       = None
-                    self._vision_cam_active    = False
-                    self._vision_close_pending = False
-                    self._vision_busy          = False
-                    self._vision_last_time     = 0.0
-                    self._interrupted          = False
+                try:
+                    async with (
+                        client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
+                        asyncio.TaskGroup() as tg,
+                    ):
+                        self.session          = session
+                        self.audio_in_queue   = queue.Queue(maxsize=2000)  # ~100s at 50ms/frame — burst-safe buffer
+                        self.out_queue        = asyncio.Queue(maxsize=10)   # ~640ms at 64ms/frame
+                        self._mic_drops       = 0
+                        self._turn_done_event = asyncio.Event()
 
-                    print("[Aethelark] Connected.")
-                    self.ui.set_state("LISTENING")
-                    self.ui.write_log("SYS: Aethelark online.")
+                        # Reset transient state that must not carry over from a previous session
+                        self._pending_vision       = None
+                        self._vision_cam_active    = False
+                        self._vision_close_pending = False
+                        self._vision_busy          = False
+                        self._vision_last_time     = 0.0
+                        self._interrupted          = False
+                        self._session_id           = str(uuid.uuid4())[:8]
+                        self._turn_epoch           = 0
 
-                    if self._dashboard:
-                        await self._dashboard.broadcast({"type": "status", "state": "active"})
+                        print(f"[Aethelark] Connected. (session={self._session_id})")
+                        self.ui.set_state("LISTENING")
+                        self.ui.write_log(f"SYS: Aethelark online. (sid={self._session_id})")
 
-                    tg.create_task(self._send_realtime())
-                    tg.create_task(self._listen_audio())
-                    tg.create_task(self._receive_audio())
-                    tg.create_task(self._play_audio())
-                    tg.create_task(self._run_system_monitor())
-                    tg.create_task(self._run_proactive_mode())
-                    if self._dashboard:
-                        tg.create_task(self._relay_phone_audio())
+                        if self._dashboard:
+                            await self._dashboard.broadcast({"type": "status", "state": "active"})
 
-                    # Morning briefing — fires once per process launch (if enabled)
-                    if not self._briefing_sent and get_brief_enabled():
-                        self._briefing_sent = True
-                        tg.create_task(self._send_startup_briefing())
+                        # Start playback thread
+                        play_thread = threading.Thread(
+                            target=self._play_audio_loop,
+                            name="AethelarkPlaybackThread",
+                            daemon=True
+                        )
+                        play_thread.start()
+
+                        tg.create_task(self._send_realtime())
+                        tg.create_task(self._listen_audio())
+                        tg.create_task(self._receive_audio())
+                        tg.create_task(self._run_system_monitor())
+                        tg.create_task(self._run_proactive_mode())
+                        tg.create_task(self._monitor_queue_depth())
+                        if self._dashboard:
+                            tg.create_task(self._relay_phone_audio())
+
+                        # Morning briefing — fires once per process launch (if enabled)
+                        if not self._briefing_sent and get_brief_enabled():
+                            self._briefing_sent = True
+                            tg.create_task(self._send_startup_briefing())
+                finally:
+                    if self._play_stop_event:
+                        self._play_stop_event.set()
 
             except KeyboardInterrupt:
                 raise
@@ -1368,13 +1682,13 @@ class JarvisLive:
             await asyncio.sleep(delay)
 
 def main():
-    ui = JarvisUI("face.png")
+    ui = AethelarkUI("face.png")
 
     def runner():
         ui.wait_for_api_key()
-        jarvis = JarvisLive(ui)
+        aethelark = AethelarkLive(ui)
         try:
-            asyncio.run(jarvis.run())
+            asyncio.run(aethelark.run())
         except KeyboardInterrupt:
             print("\n🔴 Shutting down...")
 

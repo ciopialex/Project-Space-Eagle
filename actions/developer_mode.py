@@ -74,86 +74,13 @@ async def developer_mode(parameters: dict, player=None) -> str:
         return err_msg
 
     # Clean old logs
-    log_path = Path(f"/tmp/agy_developer_mode_{project_name}.log")
-    if log_path.exists():
-        try:
-            log_path.unlink()
-        except Exception:
-            pass
-
-    # Escape prompt for single quotes in bash
-    esc_prompt = prompt.replace("'", "'\\''")
-    
-    # We use the 'script' utility to force flush PTY output into the log file in real-time
-    bash_command = (
-        f"script -f -q -c \"agy -i '{esc_prompt}' --dangerously-skip-permissions\" {log_path}; exec bash"
-    )
-
-    cmd = [
-        "gnome-terminal",
-        "--title=Aethelark Developer Console",
-        f"--working-directory={project_dir}",
-        "--",
-        "bash", "-c",
-        bash_command
-    ]
-
-    if player:
-        player.write_log(f"SYS: Entering Developer Mode in '{project_dir}'...")
-        player.write_log(f"SYS: Spawning terminal and starting Antigravity CLI...")
-
-    try:
-        subprocess.Popen(cmd)
-    except Exception as e:
-        err_msg = f"Failed to spawn terminal: {e}"
+    agent_key = parameters.get("agent", "antigravity_cli").strip().lower()
+    from actions.agent_delegation import AGENT_REGISTRY
+    agent = AGENT_REGISTRY.get(agent_key)
+    if not agent:
+        err_msg = f"Unknown agent: {agent_key}. Available: {list(AGENT_REGISTRY.keys())}"
         if player:
             player.write_log(f"ERR: {err_msg}")
         return err_msg
-
-    # Wait for the log file to be created
-    for _ in range(20):
-        if log_path.exists():
-            break
-        await asyncio.sleep(0.5)
-
-    if not log_path.exists():
-        err_msg = "Log file was not created. Terminal or agy may have failed to start."
-        if player:
-            player.write_log(f"ERR: {err_msg}")
-        return err_msg
-
-    # Tail the log file
-    if player:
-        player.write_log("SYS: Antigravity CLI stream connected. Monitoring progress...")
-
-    try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-            f.seek(0)
-            printed_lines = set()
-            
-            while True:
-                line = f.readline()
-                if line:
-                    cleaned = clean_ansi_line(line)
-                    if cleaned and cleaned not in printed_lines:
-                        if len(cleaned) > 3:
-                            printed_lines.add(cleaned)
-                            if len(printed_lines) > 500:
-                                printed_lines.clear()
-                                
-                        if player:
-                            player.write_log(f"[DevConsole] {cleaned}")
-                        print(f"[DevConsole] {cleaned}")
-                else:
-                    await asyncio.sleep(0.2)
-    except asyncio.CancelledError:
-        if player:
-            player.write_log("SYS: Developer Mode task cancelled.")
-        raise
-    except Exception as e:
-        err_msg = f"Log tailing error: {e}"
-        if player:
-            player.write_log(f"ERR: {err_msg}")
-        return err_msg
-
-    return "Done"
+        
+    return await agent.run(prompt=prompt, project_dir=project_dir, project_name=project_name, player=player)
