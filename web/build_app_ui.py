@@ -23,8 +23,10 @@ OVERRIDE_STYLE = """
 <style id="app-shell-overrides">
   html, body { padding:0 !important; margin:0 !important; overflow:hidden !important;
                background:transparent !important; width:100%; height:100%; }
-  /* Presentation-only chrome from the artifact — hidden in the real app */
-  .eyebrow, .hint, .island-wrap, .notes { display:none !important; }
+  /* Presentation-only chrome from the artifact — hidden in the real app.
+     The starfield was the web page's void; on the desktop the card floats on
+     the real desktop, so it's dropped here. */
+  .eyebrow, .hint, .island-wrap, .notes, #stars { display:none !important; }
   .wrap { max-width:none !important; width:100vw !important; height:100vh !important;
           gap:0 !important; padding:0 !important; margin:0 !important; }
   /* The dashboard is a floating rounded card at the artifact's proportions.
