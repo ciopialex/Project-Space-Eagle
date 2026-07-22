@@ -411,15 +411,16 @@ draw();
 
 <style id="app-shell-overrides">
   html, body { padding:0 !important; margin:0 !important; overflow:hidden !important;
-               background:#050506 !important; width:100%; height:100%; }
+               background:transparent !important; width:100%; height:100%; }
   /* Presentation-only chrome from the artifact — hidden in the real app */
   .eyebrow, .hint, .island-wrap, .notes { display:none !important; }
   .wrap { max-width:none !important; width:100vw !important; height:100vh !important;
           gap:0 !important; padding:0 !important; margin:0 !important; }
-  /* The dashboard window fills the OS window */
-  .app { width:100vw !important; height:100vh !important; max-width:none !important;
-         border-radius:0 !important; outline:none !important;
-         box-shadow:none !important; backdrop-filter:none !important; }
+  /* The dashboard is a floating rounded card at the artifact's proportions.
+     A small margin lets its own shadow + the starfield void show around it —
+     exactly like the artifact — so the collapse morph keeps the same ratio. */
+  .app { width:calc(100vw - 44px) !important; height:calc(100vh - 44px) !important;
+         max-width:none !important; margin:22px !important; }
 </style>
 
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
