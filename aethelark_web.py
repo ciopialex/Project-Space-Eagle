@@ -16,7 +16,7 @@ import time
 import pathlib
 
 from PyQt6.QtCore import (Qt, QObject, pyqtSlot, pyqtSignal, QUrl, QEvent, QTimer,
-                          QRect, QPropertyAnimation)
+                          QRect, QPropertyAnimation, QEasingCurve)
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import QApplication, QMainWindow
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -29,7 +29,7 @@ BASE = pathlib.Path(__file__).resolve().parent
 DASHBOARD_HTML = BASE / "web" / "dashboard.html"
 PILL_HTML = BASE / "web" / "pill.html"
 API_KEYS = BASE / "config" / "api_keys.json"
-PILL_W, PILL_H = 340, 120
+PILL_W, PILL_H = 400, 170   # generous so the pill's drop-shadow isn't clipped
 
 
 class _RootShim:
@@ -67,6 +67,18 @@ class WebBridge(QObject):
     def halt_swarm(self): self._ui._fire_interrupt()
     @pyqtSlot()
     def toggle_mute(self): self._ui.toggle_mute()
+
+    @pyqtSlot(int, int)
+    def begin_drag(self, sx, sy):
+        w = self._ui.dashboard
+        w._drag_origin = (sx, sy, w.x(), w.y())
+
+    @pyqtSlot(int, int)
+    def drag_to(self, sx, sy):
+        w = self._ui.dashboard
+        o = getattr(w, "_drag_origin", None)
+        if o:
+            w.move(o[2] + (sx - o[0]), o[3] + (sy - o[1]))
 
 
 class DashWindow(QMainWindow):
@@ -219,28 +231,32 @@ class WebShellUI(QObject):
 
     def open_dashboard(self):
         self.pill_win.hide()
-        self.dashboard.setGeometry(self._pill_geo)
+        self.dashboard.setGeometry(self._expanded_geo)
+        self.dashboard.setWindowOpacity(0.0)
         self.dashboard.show()
         self.dashboard.activateWindow(); self.dashboard.raise_()
-        self._animate_dash(self._pill_geo, self._expanded_geo)
         self._push_all()
+        self._fade(1.0)
 
     def collapse_to_pill(self):
-        self._animate_dash(self.dashboard.geometry(), self._pill_geo, on_done=self._after_collapse)
+        self._fade(0.0, on_done=self._after_collapse)
 
     def _after_collapse(self):
         self.dashboard.hide()
+        self.dashboard.setWindowOpacity(1.0)
         self.show_pill()
 
-    def _animate_dash(self, start, end, on_done=None):
-        """Snappy iOS spring morph between the pill and the full dashboard."""
+    def _fade(self, to, on_done=None):
+        """Clean GPU-composited crossfade. A live QWebEngine view can't be
+        shape-morphed smoothly (per-frame resize janks; .grab() is unreliable
+        on GPU), so we fade — snappy and glitch-free."""
         if self._anim is not None:
             self._anim.stop()
-        self._anim = QPropertyAnimation(self.dashboard, b"geometry")
-        self._anim.setDuration(550)   # matches the artifact's .55s collapse
-        self._anim.setStartValue(QRect(start))
-        self._anim.setEndValue(QRect(end))
-        self._anim.setEasingCurve(make_spring_curve(260.0, 24.0))  # the artifact's exact spring
+        self._anim = QPropertyAnimation(self.dashboard, b"windowOpacity")
+        self._anim.setDuration(190)
+        self._anim.setStartValue(self.dashboard.windowOpacity())
+        self._anim.setEndValue(to)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         if on_done:
             self._anim.finished.connect(on_done)
         self._anim.start()

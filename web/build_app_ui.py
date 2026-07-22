@@ -44,6 +44,10 @@ BRIDGE = """
 (function () {
   window.aethelark = window.aethelark || {};
 
+  // Stop the artifact's starfield RAF loop — the desktop is the background now
+  // (also saves CPU, which helps voice latency).
+  try { var _r = requestAnimationFrame(function(){}); while (_r--) cancelAnimationFrame(_r); } catch (e) {}
+
   // ---- API the daemon calls to drive the UI (per message contract) ----
   function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];}); }
 
@@ -159,6 +163,19 @@ BRIDGE = """
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && window.pybridge) window.pybridge.interrupt();
     });
+
+    // Drag the whole dashboard window from any non-interactive area
+    var DRAG_SKIP = 'button,input,textarea,select,a,.chip,.wbtn,.stud,.modeseg,.opbtn,.cmd,.searchbar,[onclick]';
+    var ddrag = false;
+    document.addEventListener('mousedown', function (e) {
+      if (e.button !== 0 || (e.target.closest && e.target.closest(DRAG_SKIP))) return;
+      ddrag = true;
+      if (window.pybridge) window.pybridge.begin_drag(e.screenX, e.screenY);
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (ddrag && window.pybridge) window.pybridge.drag_to(e.screenX, e.screenY);
+    });
+    document.addEventListener('mouseup', function () { ddrag = false; });
   }
 
   wireButtons();  // safe even before the channel connects
