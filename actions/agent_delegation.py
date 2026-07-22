@@ -185,5 +185,26 @@ AGENT_REGISTRY = {
     "opencode": AgentAdapter("OpenCode", "opencode -i '{prompt}'"),
 }
 
+AGENT_ALIASES = {
+    "antigravity": "antigravity_cli",
+    "anti-gravity": "antigravity_cli",
+    "agy": "antigravity_cli",
+    "antigravity_cli": "antigravity_cli",
+    "claude": "claude_code",
+    "cloud": "claude_code",
+    "clawed": "claude_code",
+    "claude_code": "claude_code",
+    "opencode": "opencode",
+    "open_code": "opencode",
+    "kimi": "kimi",
+}
+
+def resolve_agent_key(name: str) -> str:
+    """Normalize user voice inputs ('claude', 'cloud', 'antigravity') to registry keys."""
+    if not name:
+        return ""
+    clean = name.strip().lower().replace(" ", "_")
+    return AGENT_ALIASES.get(clean, clean)
+
 for _key, _adapter in AGENT_REGISTRY.items():
     _adapter.registry_key = _key

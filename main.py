@@ -70,6 +70,36 @@ BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+
+
+class _ReconnectSignal(Exception):
+    """Raised to intentionally collapse the live-session TaskGroup for a clean,
+    context-preserving reconnect (e.g. on a server GoAway). Not an error —
+    the run loop treats it as a graceful, fast reconnect using the resume handle."""
+
+
+def _flatten_exc(exc: BaseException) -> list[BaseException]:
+    """Flatten an exception into itself plus any nested ExceptionGroup members
+    and __cause__/__context__ links. TaskGroup wraps failures in a
+    BaseExceptionGroup, so the real cause (e.g. a 1011 APIError) is only
+    reachable by unwrapping — plain str(group) hides it."""
+    seen: set[int] = set()
+    out: list[BaseException] = []
+
+    def _walk(e: BaseException | None) -> None:
+        if e is None or id(e) in seen:
+            return
+        seen.add(id(e))
+        out.append(e)
+        for sub in getattr(e, "exceptions", None) or ():
+            _walk(sub)
+        _walk(getattr(e, "__cause__", None))
+        _walk(getattr(e, "__context__", None))
+
+    _walk(exc)
+    return out
+
+
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
@@ -640,6 +670,13 @@ class AethelarkLive:
         # ── Phase 2: Audio Queue Bounds ───────────────────────────────────────
         self._mic_drops: int = 0                  # count of oldest-mic-frames dropped due to overflow
 
+        # ── Phase 9: Session Resumption ───────────────────────────────────────
+        # Gemini Live streams a rolling resumption token; on a dropped connection
+        # (1011, GoAway, network blip) we reconnect WITH this handle so the server
+        # restores full conversation context instead of a cold restart.
+        self._resume_handle: str | None = None
+        self._go_away_reconnect  = False          # set when server signals imminent GoAway
+
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
         if self._dashboard is None:
@@ -764,7 +801,9 @@ class AethelarkLive:
             input_audio_transcription={},
             system_instruction="\n".join(parts),
             tools=[{"function_declarations": TOOL_DECLARATIONS}],
-            session_resumption=types.SessionResumptionConfig(),
+            session_resumption=types.SessionResumptionConfig(
+                handle=self._resume_handle
+            ),
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -1153,6 +1192,23 @@ class AethelarkLive:
             while True:
                 async for response in session.receive():
 
+                    # ── Session resumption: capture the rolling handle ────────
+                    # The server emits a fresh handle at safe checkpoints. Store
+                    # the latest resumable one so a reconnect restores context.
+                    sru = response.session_resumption_update
+                    if sru is not None and sru.resumable and sru.new_handle:
+                        self._resume_handle = sru.new_handle
+
+                    # ── GoAway: server is about to close this connection ─────
+                    # Reconnecting proactively (with the handle we already hold)
+                    # avoids a hard 1011 mid-turn. Break out to trigger reconnect.
+                    if response.go_away is not None:
+                        _left = getattr(response.go_away, "time_left", None)
+                        print(f"[Aethelark] 🔻 GoAway received (time_left={_left}) — reconnecting with resume handle")
+                        self.ui.write_log("NET: Session refreshing — reconnecting…")
+                        self._go_away_reconnect = True
+                        raise _ReconnectSignal("go_away")
+
                     if response.data:
                         if self._interrupted:
                             pass  # discard: interrupted
@@ -1266,9 +1322,17 @@ class AethelarkLive:
                             await session.send_tool_response(
                                 function_responses=fn_responses
                             )
+        except _ReconnectSignal:
+            raise  # intentional graceful reconnect — no error logging
         except Exception as e:
-            print(f"[Aethelark] ❌ Recv: {e}")
-            traceback.print_exc()
+            # Known transient server drops are reported cleanly by the run-loop
+            # handler; skip the redundant traceback to keep the console readable.
+            _es = str(e)
+            if "1011" in _es or "ConnectionClosed" in _es:
+                print(f"[Aethelark] Recv: connection closed by server ({_es[:80]})")
+            else:
+                print(f"[Aethelark] ❌ Recv: {e}")
+                traceback.print_exc()
             raise
 
     def _play_audio_loop(self):
@@ -1613,8 +1677,10 @@ class AethelarkLive:
             self._dashboard = None
 
         while True:
+            connected_ok = False   # True once a live session is actually established
             try:
-                print("[Aethelark] Connecting...")
+                _resuming = self._resume_handle is not None
+                print(f"[Aethelark] Connecting...{' (resuming session)' if _resuming else ''}")
                 self.ui.set_state("THINKING")
                 config = self._build_config()
 
@@ -1649,6 +1715,7 @@ class AethelarkLive:
                         self._session_id           = str(uuid.uuid4())[:8]
                         self._turn_epoch           = 0
 
+                        connected_ok = True
                         print(f"[Aethelark] Connected. (session={self._session_id})")
                         self.ui.set_state("LISTENING")
                         self.ui.write_log(f"SYS: Aethelark online. (sid={self._session_id})")
@@ -1691,35 +1758,67 @@ class AethelarkLive:
                 # externally, which `except Exception` would miss, letting the
                 # exception escape the while-loop and causing asyncio.run() to
                 # start shutdown — resulting in "executor after shutdown" errors).
-                err_str = str(e)
-                print(f"[Aethelark] Error ({type(e).__name__}): {e}")
-                traceback.print_exc()
+                # Unwrap the group so the true cause (1011 APIError, GoAway signal,
+                # bad key) is visible for classification.
+                all_excs = _flatten_exc(e)
+                err_blob = " | ".join(s for s in (str(x) for x in all_excs) if s)
 
-                # Invalid API key — stop hammering the API, prompt re-configuration
-                if "API key not valid" in err_str or "1007" in err_str:
+                graceful = self._go_away_reconnect or any(
+                    isinstance(x, _ReconnectSignal) for x in all_excs
+                )
+                self._go_away_reconnect = False
+
+                if graceful:
+                    # Server asked us to migrate connections (GoAway). Expected —
+                    # resume immediately with the handle we already hold.
+                    print("[Aethelark] Graceful reconnect — resuming session with handle.")
+                    self._conn_backoff = 1
+
+                elif "API key not valid" in err_blob or "1007" in err_blob:
+                    # Invalid API key — stop hammering the API, prompt re-configuration
+                    print(f"[Aethelark] Error: invalid API key — {err_blob[:200]}")
                     self.ui.write_log("ERR: API key invalid — please re-enter your key.")
                     self.ui.set_state("SLEEPING")
                     self.ui.prompt_reconfig()
                     while not self.ui._win._ready:
                         await asyncio.sleep(1)
                     print("[Aethelark] New API key saved — reconnecting...")
-                    _conn_backoff = 3
+                    self._conn_backoff = 3
+                    self.session = None
                     continue
 
-                # Network / timeout errors — log clearly and back off
-                is_net_err = any(k in err_str for k in (
-                    "TimeoutError", "timed out", "getaddrinfo", "CancelledError",
-                    "ConnectionRefusedError", "OSError", "Cannot connect",
-                ))
-                if is_net_err:
-                    _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
-                    self._conn_backoff = _conn_backoff
-                    self.ui.write_log(
-                        f"NET: Bağlantı kurulamadı — {_conn_backoff}s sonra tekrar deneniyor. "
-                        "(VPN gerekiyor olabilir)"
-                    )
+                elif "1011" in err_blob or "ConnectionClosedError" in err_blob:
+                    # Server-side internal error / connection drop — transient.
+                    # Reconnect quickly WITH the resume handle to restore context.
+                    print(f"[Aethelark] Gemini connection dropped (1011/closed) — resuming. {err_blob[:160]}")
+                    self.ui.write_log("NET: Gemini dropped the connection — resuming…")
+                    self._conn_backoff = 2
+
                 else:
-                    self._conn_backoff = 3
+                    is_net_err = any(k in err_blob for k in (
+                        "TimeoutError", "timed out", "getaddrinfo", "CancelledError",
+                        "ConnectionRefusedError", "OSError", "Cannot connect",
+                    ))
+                    if is_net_err:
+                        _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
+                        self._conn_backoff = _conn_backoff
+                        print(f"[Aethelark] Network error — retrying in {_conn_backoff}s. {err_blob[:160]}")
+                        self.ui.write_log(
+                            f"NET: Bağlantı kurulamadı — {_conn_backoff}s sonra tekrar deneniyor. "
+                            "(VPN gerekiyor olabilir)"
+                        )
+                    else:
+                        # Genuinely unexpected — keep the full traceback for debugging.
+                        print(f"[Aethelark] Error ({type(e).__name__}): {e}")
+                        traceback.print_exc()
+                        self._conn_backoff = 3
+
+                # Stale-handle recovery: if we were resuming but never reached a live
+                # session, the handle is likely expired/rejected — drop it so the next
+                # attempt is a clean cold start rather than looping on a dead handle.
+                if self._resume_handle is not None and not connected_ok:
+                    print("[Aethelark] Resume handle unusable — clearing for cold reconnect.")
+                    self._resume_handle = None
             finally:
                 self.session = None
 
