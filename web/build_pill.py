@@ -22,7 +22,7 @@ HTML = f"""<title>Aethelark — Dynamic Island</title>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{background:transparent !important;width:100%;height:100%;overflow:hidden;
   font-family:'Manrope',sans-serif;-webkit-font-smoothing:antialiased}}
-.stage{{width:100vw;height:100vh;display:flex;align-items:center;justify-content:center}}
+.stage{{width:100vw;height:100vh;display:flex;align-items:flex-start;justify-content:center;padding-top:20px}}
 .pill{{width:300px;height:62px;border-radius:31px;position:relative;overflow:hidden;display:flex;align-items:center;gap:14px;padding:0 22px;cursor:pointer;
   background:linear-gradient(180deg,#141419,#0a0a0d 55%,#000);
   box-shadow:0 16px 34px rgba(0,0,0,.7),inset 0 1px 0 rgba(255,255,255,.07),inset 0 0 22px rgba(0,0,0,.6)}}
@@ -62,21 +62,20 @@ html,body{{background:transparent !important;width:100%;height:100%;overflow:hid
 var EAGLE = "data:image/png;base64,{eagle}";
 function fillWave(el){{ var n=22; for(var i=0;i<n;i++){{var b=document.createElement('i');b.style.animationDelay=(i*0.045)+'s';b.style.animationDuration=(0.75+Math.random()*0.7)+'s';el.appendChild(b);}} }}
 
-// ── drag anywhere + double-click to expand (web captures the mouse, so we
-//    route window moves through the bridge) ──────────────────────────────
+// ── drag from ANYWHERE in the window + double-click to expand (web captures
+//    the mouse, so we route window moves through the bridge) ──────────────
 (function(){{
-  var pill = document.getElementById('pill');
   var dragging = false, moved = false;
-  pill.addEventListener('mousedown', function(e){{
+  document.addEventListener('mousedown', function(e){{
     if (e.button !== 0) return;
     dragging = true; moved = false;
     if (window.pybridge) window.pybridge.begin_drag(e.screenX, e.screenY);
   }});
-  window.addEventListener('mousemove', function(e){{
+  document.addEventListener('mousemove', function(e){{
     if (dragging && window.pybridge) {{ moved = true; window.pybridge.drag_to(e.screenX, e.screenY); }}
   }});
-  window.addEventListener('mouseup', function(){{ dragging = false; }});
-  pill.addEventListener('dblclick', function(){{ if (!moved && window.pybridge) window.pybridge.expand(); }});
+  document.addEventListener('mouseup', function(){{ dragging = false; }});
+  document.addEventListener('dblclick', function(){{ if (!moved && window.pybridge) window.pybridge.expand(); }});
 }})();
 
 window.pill = {{
