@@ -75,7 +75,10 @@ class DashWindow(QMainWindow):
         self._ui = ui
         self.setWindowTitle("AETHELARK")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.view = QWebEngineView()
+        self.view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.view.page().setBackgroundColor(Qt.GlobalColor.transparent)
         self.setCentralWidget(self.view)
         self.channel = QWebChannel()
         self.bridge = WebBridge(ui)
@@ -171,6 +174,7 @@ class WebShellUI(QObject):
         self.mode = "casual"
         self.pinned = False
         self._muted = False
+        self._last_state = None      # dedupe: backend re-asserts SPEAKING per audio frame
         self._log_lines = []
         self._assistant_name = "Aethelark"
         self._ui_ready = False
@@ -187,8 +191,12 @@ class WebShellUI(QObject):
         self.dashboard.hide()
 
         geo = QApplication.primaryScreen().availableGeometry()
-        self._pill_geo = QRect((geo.width() - PILL_W) // 2, 6, PILL_W, PILL_H)
-        self._screen_geo = geo
+        self._pill_geo = QRect(geo.x() + (geo.width() - PILL_W) // 2, geo.y() + 6, PILL_W, PILL_H)
+        # Expanded = a centered card at the artifact's screen proportions (~0.63 × 0.70),
+        # NOT fullscreen — so the collapse morph keeps the artifact's exact ratio & feel.
+        ew, eh = int(geo.width() * 0.63), int(geo.height() * 0.70)
+        self._expanded_geo = QRect(geo.x() + (geo.width() - ew) // 2,
+                                   geo.y() + (geo.height() - eh) // 2, ew, eh)
         self._anim = None
 
         self._state_sig.connect(self._on_state)
@@ -214,7 +222,7 @@ class WebShellUI(QObject):
         self.dashboard.setGeometry(self._pill_geo)
         self.dashboard.show()
         self.dashboard.activateWindow(); self.dashboard.raise_()
-        self._animate_dash(self._pill_geo, self._screen_geo)
+        self._animate_dash(self._pill_geo, self._expanded_geo)
         self._push_all()
 
     def collapse_to_pill(self):
@@ -358,7 +366,15 @@ class WebShellUI(QObject):
         print("[aethelark_web] API key required — set config/api_keys.json, then relaunch.")
 
     # ---- the interface AethelarkLive expects (thread-safe) ----
-    def set_state(self, state): self._state_sig.emit(state)
+    def set_state(self, state):
+        # The playback loop re-asserts SPEAKING on EVERY audio frame (~20/s).
+        # In the web app each change rebuilds the pill DOM via runJavaScript, so
+        # firing 20x/s glitched the waveform and stole CPU from audio (the old
+        # QPainter UI didn't care). Only act on real transitions.
+        if state == self._last_state:
+            return
+        self._last_state = state
+        self._state_sig.emit(state)
     def write_log(self, text): self._log_sig.emit(text)
     def set_audio_level(self, level): pass  # web pill waveform is CSS-animated
     def show_content(self, title, text): self._content_sig.emit(str(title)[:48], str(text)[:4000])
