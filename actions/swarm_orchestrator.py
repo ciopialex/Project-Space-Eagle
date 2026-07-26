@@ -203,17 +203,51 @@ class Blackboard:
 
 
 def _swarm_preamble(agent: str, task: str, branch: str, project_dir: Path,
-                    repo_map: str = "") -> str:
+                    repo_map: str = "", *, coupled: bool = True,
+                    contract: dict | None = None, owns=None,
+                    acceptance=None) -> str:
+    """Build the marching orders handed to a swarm member.
+
+    Coupling flips how the agent is told to coordinate:
+      • coupled   → build to the frozen shared contract, watch the blackboard.
+      • independent → ignore other agents entirely, build straight to acceptance.
+    """
     board = Path(project_dir) / STATE_DIR / "swarm_state.json"
-    text = (
+    head = (
         f"You are '{agent}', one member of a coordinated multi-agent engineering "
         f"swarm working on this project. You work in an isolated git worktree on "
         f"branch '{branch}' — commit your work to this branch as you reach "
-        f"working milestones; never switch branches. The shared team blackboard "
-        f"is at {board}; consult it before structural decisions and align with "
-        f"decisions recorded there. Messages prefixed [SWARM UPDATE] are live "
-        f"context from teammates — adapt to them. YOUR TASK: {task}"
+        f"working milestones; never switch branches."
     )
+    if coupled:
+        coord = (
+            f" The shared team blackboard is at {board}; consult it before "
+            f"structural decisions and align with decisions recorded there. "
+            f"Messages prefixed [SWARM UPDATE] are live context from teammates — "
+            f"adapt to them."
+        )
+    else:
+        coord = (
+            " You work INDEPENDENTLY — there is no shared blackboard and no other "
+            "agent depends on you. Do not wait on, coordinate with, or block on "
+            "anyone; build strictly to YOUR TASK and the acceptance criteria below."
+        )
+    text = f"{head}{coord} YOUR TASK: {task}"
+
+    # The frozen interface — so coupled agents never have to negotiate live.
+    if contract:
+        public = {k: v for k, v in contract.items() if k != "ownership"}
+        if public:
+            text += ("\n\nFROZEN INTERFACE CONTRACT (build EXACTLY to this; do not "
+                     "change its shape):\n" + json.dumps(public, indent=2)[:1800])
+    # Ownership boundary — the files this agent may touch and no other will.
+    if owns:
+        text += ("\n\nYOU EXCLUSIVELY OWN these paths (edit only inside them; other "
+                 "agents own the rest):\n  " + "\n  ".join(str(o) for o in owns))
+    # Definition of done — what the reviewer will check the branch against.
+    if acceptance:
+        text += ("\n\nACCEPTANCE CRITERIA — your branch is not done until ALL pass:\n"
+                 + "\n".join(f"  - {a}" for a in acceptance))
     # Inject accumulated lessons up front so a fresh agent starts already knowing
     # the mistakes the swarm has hit — it never has to re-learn them the hard way.
     try:
@@ -318,6 +352,77 @@ class SwarmOrchestrator:
             self._log(f"SYS: Swarm member '{agent_key}' live on {branch}.")
 
         report = f"Swarm launched: {', '.join(started) or 'none'}."
+        if errors:
+            report += f" Issues: {'; '.join(errors)}."
+        return report
+
+    async def execute_plan(self, plan: dict) -> str:
+        """Turn a validated Chief-Architect plan into a live swarm.
+
+        One isolated worktree per WORKSTREAM (keyed by workstream id, not agent
+        key — so two same-brand agents never share a branch), each spawned with a
+        coupling-aware, contract-bound preamble. Assumes human approval already
+        happened at the front door; this only executes.
+        """
+        from actions.agent_delegation import AGENT_REGISTRY, agent_available
+        from actions.chief_architect import validate_plan
+
+        # Defensive gate — never execute a malformed plan even if a caller skipped
+        # validation. Size the check to the plan's own agent_count.
+        available = [k for k in AGENT_REGISTRY if agent_available(k)]
+        ok, why = validate_plan(plan, plan.get("agent_count", len(available) or 1),
+                                available)
+        if not ok:
+            return f"Plan rejected: {why}."
+
+        self.ensure_repo()
+        coupled = bool(plan.get("coupled"))
+        contract = plan.get("contract") or {}
+        try:
+            from actions.repo_map import build_repo_map
+            repo_map = await asyncio.to_thread(build_repo_map, self.project_dir, 4000)
+        except Exception:
+            repo_map = ""
+
+        # Freeze the contract onto the blackboard up front so every coupled agent
+        # reads the same interface from a single source of truth.
+        if coupled and contract:
+            public = {k: v for k, v in contract.items() if k != "ownership"}
+            self.board.add_decision(
+                "chief", "FROZEN CONTRACT: " + json.dumps(public)[:1500])
+
+        started, errors = [], []
+        for w in plan.get("workstreams", []):
+            ws_id = w["id"]
+            agent_key = w["assignee"]
+            adapter = AGENT_REGISTRY.get(agent_key)
+            if not adapter:
+                errors.append(f"{ws_id}: unknown agent '{agent_key}'")
+                continue
+            try:
+                wt = await asyncio.to_thread(self.ensure_worktree, ws_id)
+            except Exception as e:
+                errors.append(f"{ws_id}: {e}")
+                continue
+            branch = f"swarm/{ws_id}"
+            prompt = _swarm_preamble(
+                ws_id, w["task"], branch, self.project_dir, repo_map=repo_map,
+                coupled=coupled, contract=contract if coupled else None,
+                owns=w.get("owns"), acceptance=w.get("acceptance"))
+            result = await adapter.run(prompt, wt, self.project_dir.name,
+                                       player=self.player)
+            if "session" not in result.lower():
+                errors.append(f"{ws_id} ({agent_key}): {result}")
+                continue
+            self.board.register_agent(ws_id, w["task"], str(wt), branch)
+            self.board.set_agent(ws_id, assignee=agent_key)
+            self._wire_thoughts(adapter, ws_id, wt)
+            started.append(f"{ws_id}→{agent_key} on {branch}")
+            self._log(f"SYS: 🐝 Swarm member '{ws_id}' ({agent_key}) live on {branch}.")
+
+        mode = "coupled (shared contract)" if coupled else "independent"
+        report = (f"Swarm executing [{mode}]: {', '.join(started) or 'none'}. "
+                  f"Merge order: {' → '.join(plan.get('merge_order') or [w['id'] for w in plan.get('workstreams', [])])}.")
         if errors:
             report += f" Issues: {'; '.join(errors)}."
         return report
@@ -447,8 +552,25 @@ def get_orchestrator(project_dir, player=None) -> SwarmOrchestrator:
     return orch
 
 
+async def execute_plan(plan: dict, project_dir, player=None) -> str:
+    """Module-level entry: execute a validated Chief-Architect plan on a project.
+
+    The front door (voice dispatch) calls this AFTER the human approves the spoken
+    plan summary. Enforces the Space-Eagle self-edit safeguard, then delegates to
+    the project's orchestrator.
+    """
+    project_dir = Path(project_dir).expanduser().resolve()
+    if project_dir == SPACE_EAGLE_HOME or SPACE_EAGLE_HOME in project_dir.parents:
+        return ("Blocked: Space-Eagle safeguard — the swarm cannot operate on "
+                "Aethelark's own codebase.")
+    project_dir.mkdir(parents=True, exist_ok=True)
+    orch = get_orchestrator(project_dir, player)
+    return await orch.execute_plan(plan)
+
+
 async def swarm_orchestrate(parameters: dict, player=None) -> str:
-    """Voice-tool entry point. Actions: launch | status | broadcast | stop."""
+    """Voice-tool entry point. Actions: plan | execute | launch | status |
+    broadcast | review | stop."""
     action = (parameters.get("action") or "status").strip().lower()
     directory = (parameters.get("directory") or "").strip()
     if not directory:
@@ -461,6 +583,39 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
     project_dir.mkdir(parents=True, exist_ok=True)
 
     orch = get_orchestrator(project_dir, player)
+    if action == "plan":
+        # Spawn the chief architect; return the spoken plan summary for the
+        # approval gate. The validated plan is left at .space_eagle/plan.json.
+        from actions.chief_architect import run_chief, render_plan_summary
+        goal = (parameters.get("goal") or parameters.get("mission") or "").strip()
+        if not goal:
+            return "Ask: What should the swarm build?"
+        max_agents = int(parameters.get("max_agents") or 2)
+        plan, status = await run_chief(goal, project_dir, max_agents=max_agents,
+                                       player=player)
+        if not plan:
+            return f"Chief architect could not produce a plan: {status}."
+        return ("PLAN READY (awaiting your approval). "
+                + render_plan_summary(plan))
+    if action == "execute":
+        plan = parameters.get("plan")
+        if isinstance(plan, str):
+            try:
+                plan = json.loads(plan)
+            except ValueError:
+                return "Invalid plan: expected a JSON object."
+        if not plan:
+            # Fall back to the last plan the chief wrote for this project.
+            pf = project_dir / STATE_DIR / "plan.json"
+            if pf.exists():
+                try:
+                    plan = json.loads(pf.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    plan = None
+        if not plan:
+            return ("Ask: No plan provided or found — run the chief architect "
+                    "first (action 'plan').")
+        return await orch.execute_plan(plan)
     if action == "launch":
         assignments = parameters.get("assignments") or {}
         if isinstance(assignments, str):
