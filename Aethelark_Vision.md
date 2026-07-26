@@ -61,7 +61,7 @@ This is expressed in the product as **two states of one adaptive surface** (prog
 - **CASUAL** — the 90%. Calm, voice‑first, ambient. It visibly *remembers you* ("Aethelark Remembers"). A normie can use it forever and never learn the word "swarm": play music, read email, make a PDF, ask anything.
 - **HARDCORE** — the power user's war room. The instant real work starts, the surface escalates: the Eagle Crest Core steps aside to *conduct*, and live agent lanes show every sub‑agent thinking, editing, and coordinating through a shared blackboard.
 
-Same window, same identity, one that knows which one you need right now. The design language is the "7EVEN / Premium Frost Titanium Glass" tech‑noir of the WEB7 site, with a single titanium‑silver accent (deliberately **not** Jarvis cyan) and the Eagle crest replacing the arc reactor. **Naming is CASUAL / HARDCORE** — no borrowed Batman vocabulary; the eagle earns its own words.
+Same window, same identity, one that knows which one you need right now. The design language is the "7EVEN / Premium Frost Titanium Glass" tech‑noir of the WEB7 site, with a single titanium‑silver accent (deliberately **not** the borrowed cyan) and the Eagle crest replacing the arc reactor. **Naming is CASUAL / HARDCORE** — no borrowed Batman vocabulary; the eagle earns its own words.
 
 > The pitch line: **CLI‑grade swarm without ever touching a command line.** For the 90%: plug‑and‑play, don't worry about anything. For the hardcore: 90% of the friction removed — and you get to feel like Batman and Alfred at once.
 
@@ -140,7 +140,7 @@ The build discipline that got us here and should continue:
 The design was pitched as HTML mockups, approved ("captured my vision perfectly"), and is being ported into the real PyQt app (`ui.py`), verified by offscreen screenshots:
 
 - iOS‑grade **spring motion system** (real spring physics sampled into a Qt easing curve) — window/pill transitions.
-- **Eagle Crest Core** replaces the JARVIS arc reactor — the eagle emblem breathing in titanium rings under a radar sweep.
+- **Eagle Crest Core** replaces the old arc‑reactor motif — the eagle emblem breathing in titanium rings under a radar sweep.
 - **Flight‑strip header** with the AETHELARK wordmark and a **CASUAL / HARDCORE** title‑bar toggle.
 - **"Aethelark Remembers"** memory rail (surfacing long‑term memory), functional **starter chips**, bigger readable text.
 - **HARDCORE swarm view** — conductor badge + live agent lanes (status‑striped) + blackboard, fed by a `set_swarm_agents()` API.

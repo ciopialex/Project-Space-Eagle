@@ -36,8 +36,8 @@ def weather_action(
     if session_memory:
         try:
             session_memory.set_last_search(query=search_query, response=msg)
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[weather_report.py] Non-fatal error at line 39: {_e}")
 
     return msg
 
@@ -47,5 +47,5 @@ def _log(message: str, player=None) -> None:
     if player:
         try:
             player.write_log(f"Aethelark: {message}")
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[weather_report.py] Non-fatal error at line 50: {_e}")

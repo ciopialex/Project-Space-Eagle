@@ -1,7 +1,6 @@
-import base64, pathlib, math
-
-SP = pathlib.Path("/tmp/claude-1000/-home-shennyonthebeat-Projects-Space-Eagle/331b169e-18c6-4589-854b-d37a250b3a8e/scratchpad")
-FONTS = pathlib.Path("/home/shennyonthebeat/Projects/Space-Eagle/assets/fonts")
+BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
+SP = BASE_DIR / "assets" / "images"
+FONTS = BASE_DIR / "assets" / "fonts"
 b64 = lambda p: base64.b64encode(pathlib.Path(p).read_bytes()).decode()
 doto, manrope, eagle = b64(FONTS/"Doto.ttf"), b64(FONTS/"Manrope-Variable.ttf"), b64(SP/"eagle_white.png")
 

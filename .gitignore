@@ -8,8 +8,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# User configurations (private keys)
+# User configurations (private keys & tokens)
 config/api_keys.json
+config/google_token.json
+config/certs/*.key
+config/certs/*.crt
+
 
 # Local databases and runtime state
 memory/long_term.json
@@ -23,3 +27,11 @@ actions/__pycache__/
 .idea/
 .DS_Store
 scratch/
+
+# Secrets — OAuth tokens & TLS keys (must never be committed)
+config/google_token.json
+config/certs/*.key
+config/certs/*.crt
+
+# debug screenshots
+screenshot_*.png

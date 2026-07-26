@@ -69,8 +69,15 @@ def _get_api_key() -> str:
     return key
 
 
+def _platform_os() -> str:
+    import platform
+    return {"Windows": "windows", "Darwin": "mac", "Linux": "linux"}.get(
+        platform.system(), "linux"
+    )
+
+
 def _get_os() -> str:
-    return _load_config().get("os_system", "windows").lower()
+    return _load_config().get("os_system", _platform_os()).lower()
 
 _LIVE_MODEL         = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 _CHANNELS           = 1
@@ -360,8 +367,8 @@ class _VisionSession:
                             await asyncio.sleep(2.0)
                             try:
                                 self._player.stop_camera_stream()
-                            except Exception:
-                                pass
+                            except Exception as _e:
+                                print(f"[screen_processor.py] Non-fatal error at line 370: {_e}")
                         asyncio.create_task(_deferred_close())
 
         except Exception as e:

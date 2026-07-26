@@ -9,8 +9,10 @@ PTY session, so the swarm adapts in real time.
 """
 
 import asyncio
+import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -117,9 +119,79 @@ class Blackboard:
                 del s["file_claims"][rel_path]
         self.update(m)
 
+    # -------------------------------------------------------- lessons (wisdom)
+    # A caught error becomes a SHARED, DURABLE lesson so no agent repeats it —
+    # "one agent's scar vaccinates the swarm." Kept in a SEPARATE lessons.json so
+    # it survives even when swarm_state.json is reset between missions; deduped by
+    # a fingerprint of the error so the same mistake is recorded once.
+    @property
+    def _lessons_path(self) -> Path:
+        return self.dir / "lessons.json"
+
+    @staticmethod
+    def _fingerprint(error: str) -> str:
+        norm = re.sub(r"\s+", " ", (error or "").lower()).strip()
+        # Drop line numbers / hex / paths so "same class of error" collapses to one.
+        norm = re.sub(r"(line \d+|0x[0-9a-f]+|/[\w./-]+)", "", norm)
+        return hashlib.sha1(norm.encode()).hexdigest()[:12]
+
+    def read_lessons(self) -> list[dict]:
+        try:
+            return json.loads(self._lessons_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+
+    def add_lesson(self, agent: str, error: str, fix: str = "", tag: str = "") -> bool:
+        """Record a caught error as a lesson. Returns True if NEW (worth
+        broadcasting), False if we'd already learned it."""
+        error = (error or "").strip()
+        if not error:
+            return False
+        fp = self._fingerprint(error)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._acquire()
+        try:
+            lessons = self.read_lessons()
+            for L in lessons:
+                if L.get("fp") == fp:
+                    L["seen"] = L.get("seen", 1) + 1
+                    L["last_ts"] = time.time()
+                    self._write_lessons(lessons)
+                    return False
+            lessons.append({
+                "fp": fp, "agent": agent, "tag": tag or "error",
+                "error": error[:400], "fix": (fix or "")[:400],
+                "ts": time.time(), "last_ts": time.time(), "seen": 1,
+            })
+            del lessons[:-80]  # cap; keep the most recent 80
+            self._write_lessons(lessons)
+            return True
+        finally:
+            self._release()
+
+    def _write_lessons(self, lessons: list[dict]):
+        tmp = self._lessons_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(lessons, indent=2), encoding="utf-8")
+        os.replace(tmp, self._lessons_path)
+
+    def lessons_text(self, limit: int = 25) -> str:
+        lessons = self.read_lessons()
+        if not lessons:
+            return ""
+        lines = []
+        for L in lessons[-limit:]:
+            line = f"• [{L.get('tag', 'error')}] {L['error']}"
+            if L.get("fix"):
+                line += f" → FIX: {L['fix']}"
+            lines.append(line)
+        return "\n".join(lines)
+
     def summary(self) -> str:
         s = self.read()
         lines = []
+        nles = len(self.read_lessons())
+        if nles:
+            lines.append(f"lessons learned (shared, do-not-repeat): {nles}")
         for name, a in s["agents"].items():
             thought = a.get("last_thought", "")[:80]
             lines.append(f"{name} [{a.get('status')}] on {a.get('branch')}: "
@@ -142,6 +214,15 @@ def _swarm_preamble(agent: str, task: str, branch: str, project_dir: Path,
         f"decisions recorded there. Messages prefixed [SWARM UPDATE] are live "
         f"context from teammates — adapt to them. YOUR TASK: {task}"
     )
+    # Inject accumulated lessons up front so a fresh agent starts already knowing
+    # the mistakes the swarm has hit — it never has to re-learn them the hard way.
+    try:
+        lessons = Blackboard(project_dir).lessons_text()
+        if lessons:
+            text += ("\n\nLESSONS LEARNED — mistakes the swarm already made; DO NOT "
+                     "REPEAT these:\n" + lessons)
+    except Exception:
+        pass
     if repo_map:
         text += f"\nCONDENSED CODEBASE MAP:\n{repo_map}"
     return text
@@ -272,6 +353,25 @@ class SwarmOrchestrator:
                 pass
         return (f"Decision recorded on blackboard and delivered live to: "
                 f"{', '.join(delivered) or 'no other live agents'}.")
+
+    def record_lesson(self, agent: str, error: str, fix: str = "", tag: str = "") -> str:
+        """A caught error → durable shared lesson, streamed LIVE to every running
+        agent so they stop repeating it immediately, and baked into the preamble
+        so future agents never learn it the hard way."""
+        is_new = self.board.add_lesson(agent, error, fix, tag)
+        if not is_new:
+            return "lesson already known (count incremented)"
+        note = f"⚠ LESSON [{tag or 'error'}] — {error[:200]}" + (f" → FIX: {fix[:160]}" if fix else "")
+        self._log(f"SYS: 📌 Swarm lesson recorded: {error[:100]}")
+        delivered = []
+        for agent_key, sess in self._live_sessions().items():
+            try:
+                sess.send_line(f"[SWARM LESSON — do not repeat] {note}")
+                delivered.append(agent_key)
+            except OSError:
+                pass
+        return (f"Lesson recorded (shared, durable) and streamed to: "
+                f"{', '.join(delivered) or 'no live agents'}.")
 
     def status(self) -> str:
         live = set(self._live_sessions())

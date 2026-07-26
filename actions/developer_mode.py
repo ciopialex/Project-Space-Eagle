@@ -18,7 +18,7 @@ async def developer_mode(parameters: dict, player=None) -> str:
     directory = parameters.get("directory", "").strip()
 
     # Determine project directory
-    space_eagle_dir = Path("/home/shennyonthebeat/Projects/Space-Eagle").resolve()
+    space_eagle_dir = Path(__file__).resolve().parent.parent
 
     if directory:
         # User specified an explicit path
@@ -62,7 +62,7 @@ async def developer_mode(parameters: dict, player=None) -> str:
             print(msg)
             return "Blocked: Space-Eagle safeguard. Please specify a different folder target."
     except Exception as e:
-        pass
+        print(f"[developer_mode.py] Non-fatal error at line 64: {e}")
 
     # Ensure project directory exists
     try:
@@ -73,9 +73,20 @@ async def developer_mode(parameters: dict, player=None) -> str:
             player.write_log(f"ERR: {err_msg}")
         return err_msg
 
-    # Clean old logs
-    agent_key = parameters.get("agent", "antigravity_cli").strip().lower()
-    from actions.agent_delegation import AGENT_REGISTRY
+    # Pick the agent. If none was named, choose the first INSTALLED one (the old
+    # default 'antigravity_cli' isn't installed here, so 'start development' just
+    # silently failed). If a specific one was named, honor it — the binary
+    # pre-check in agent.run reports honestly when it isn't installed.
+    from actions.agent_delegation import AGENT_REGISTRY, first_available_agent
+    agent_key = (parameters.get("agent") or "").strip().lower()
+    if not agent_key:
+        agent_key = first_available_agent()
+        if not agent_key:
+            err_msg = ("No coding-agent CLI is installed (looked for claude, agy, "
+                       "opencode, kimi). Install one — e.g. Claude Code — then try again.")
+            if player:
+                player.write_log(f"ERR: {err_msg}")
+            return err_msg
     agent = AGENT_REGISTRY.get(agent_key)
     if not agent:
         err_msg = f"Unknown agent: {agent_key}. Available: {list(AGENT_REGISTRY.keys())}"

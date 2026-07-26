@@ -142,8 +142,8 @@ def _get_steam_libraries(steam_path: Path) -> list[Path]:
             lib = Path(raw_path.replace("\\\\", "/")) / "steamapps"
             if lib.exists() and lib not in libraries:
                 libraries.append(lib)
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[game_updater.py] Non-fatal error at line 145: {_e}")
     return libraries
 
 
@@ -188,8 +188,8 @@ def _get_steam_window_rect() -> tuple[int, int, int, int] | None:
         for w in gw.getAllWindows():
             if "steam" in w.title.lower() and w.width > 200 and w.visible:
                 return w.left, w.top, w.width, w.height
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[game_updater.py] Non-fatal error at line 191: {_e}")
     return None
 
 
@@ -270,8 +270,8 @@ def _handle_steam_profile_selection() -> bool:
             return False
     except ImportError:
         pass
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[game_updater.py] Non-fatal error at line 273: {_e}")
 
     print("[GameUpdater] 👤 Profil seçimi tespit edildi — ilk profile tıklanıyor")
     return _click_first_profile_by_screenshot()
@@ -314,16 +314,16 @@ def _select_drive_in_dialog(dialog, drive_letter: str) -> bool:
                 combo.collapse()
             except Exception:
                 continue
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[game_updater.py] Non-fatal error at line 317: {_e}")
     try:
         for ctrl in dialog.descendants():
             txt = ctrl.window_text().upper()
             if f"{target}:" in txt and len(txt) < 80:
                 ctrl.click_input()
                 return True
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[game_updater.py] Non-fatal error at line 325: {_e}")
     return False
 
 
@@ -337,8 +337,8 @@ def _click_button(window, keywords: list[str]) -> bool:
                     return True
             except Exception:
                 continue
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[game_updater.py] Non-fatal error at line 340: {_e}")
     return False
 
 
@@ -370,8 +370,8 @@ def _handle_install_dialog_pyautogui(game_name: str, best_drive: dict) -> str:
     try:
         install_win.activate()
         time.sleep(0.4)
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[game_updater.py] Non-fatal error at line 373: {_e}")
 
     wx, wy = install_win.left, install_win.top
     ww, wh = install_win.width, install_win.height
@@ -417,8 +417,8 @@ def _handle_install_dialog(game_name: str) -> str:
                                 break
                     except Exception:
                         continue
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[game_updater.py] Non-fatal error at line 420: {_e}")
             if dialog:
                 break
 
@@ -821,13 +821,13 @@ def _schedule_windows(hour: int, minute: int) -> str:
 def _schedule_mac(hour: int, minute: int) -> str:
     plist_dir   = Path.home() / "Library" / "LaunchAgents"
     plist_dir.mkdir(parents=True, exist_ok=True)
-    plist_path  = plist_dir / "com.jarvis.gameupdater.plist"
+    plist_path  = plist_dir / "com.aethelark.gameupdater.plist"
     script_path = Path(__file__).resolve()
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-    <key>Label</key><string>com.jarvis.gameupdater</string>
+    <key>Label</key><string>com.aethelark.gameupdater</string>
     <key>ProgramArguments</key>
     <array>
         <string>{sys.executable}</string>
@@ -881,7 +881,7 @@ def _cancel_scheduled_update() -> str:
         return ("Scheduled update cancelled."
                 if result.returncode == 0 else "No scheduled update found.")
     if is_mac():
-        plist_path = Path.home() / "Library" / "LaunchAgents" / "com.jarvis.gameupdater.plist"
+        plist_path = Path.home() / "Library" / "LaunchAgents" / "com.aethelark.gameupdater.plist"
         if plist_path.exists():
             subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
             plist_path.unlink()
@@ -914,7 +914,7 @@ def _get_schedule_status() -> str:
         return "Game update is scheduled."
     if is_mac():
         plist_path = (Path.home() / "Library" / "LaunchAgents"
-                      / "com.jarvis.gameupdater.plist")
+                      / "com.aethelark.gameupdater.plist")
         return ("Game update is scheduled via launchd."
                 if plist_path.exists() else "No scheduled game update found.")
 

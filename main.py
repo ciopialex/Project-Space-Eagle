@@ -36,6 +36,7 @@ from ui import AethelarkUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
 )
+from core.tool_result import ToolResult, normalize
 
 from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
@@ -55,6 +56,8 @@ from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.system_monitor    import SystemMonitor, get_system_status
+from actions.autostart         import autostart
+from actions.messages_brief    import messages_brief, gmail_mark_read
 from actions.proactive         import ProactiveEngine
 from actions.web_search        import _news as _fetch_news_sync
 from memory.config_manager     import get_brief_enabled
@@ -121,11 +124,37 @@ def _load_system_prompt() -> str:
         )
 
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
+_SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 
-def _clean_transcript(text: str) -> str:    
+def _clean_transcript(text: str) -> str:
     text = _CTRL_RE.sub("", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text)
     return text.strip()
+
+
+def _collapse_repeats(text: str) -> str:
+    """The native-audio transcription sometimes emits an utterance twice in a row
+    ('X. X.'), so a spoken reply logs doubled. Collapse (1) an exact whole-string
+    doubling and (2) consecutive duplicate sentences, so it reads once."""
+    text = (text or "").strip()
+    if not text:
+        return text
+    # 1) Whole-string doubling: two identical halves (word-for-word).
+    words = text.split()
+    n = len(words)
+    if n >= 2 and n % 2 == 0:
+        h = n // 2
+        if [w.lower() for w in words[:h]] == [w.lower() for w in words[h:]]:
+            return " ".join(words[:h])
+    # 2) Consecutive duplicate sentences.
+    out: list[str] = []
+    last = ""
+    for part in _SENT_SPLIT.split(text):
+        norm = part.strip().lower()
+        if norm and norm != last:
+            out.append(part.strip())
+            last = norm
+    return " ".join(out) if out else text
 
 TOOL_DECLARATIONS = [
     {
@@ -293,7 +322,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "go_to | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | get_url | press | new_tab | close_tab | screenshot | back | forward | reload | switch | list_browsers | close | close_all"},
+                "action":      {"type": "STRING", "description": "go_to | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | get_url | press | new_tab | close_tab | screenshot | back | forward | reload | switch | set_default (persist the user's preferred/default browser) | list_browsers | close | close_all"},
                 "browser":     {"type": "STRING", "description": "Target browser: chrome | edge | firefox | opera | operagx | brave | vivaldi | safari. Omit to use the currently active browser."},
                 "url":         {"type": "STRING", "description": "URL for go_to / new_tab action"},
                 "query":       {"type": "STRING", "description": "Search query for search action"},
@@ -484,6 +513,57 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "autostart",
+        "description": (
+            "Enable, disable, or check auto-start on boot — whether Aethelark "
+            "launches automatically when the user logs into their computer. "
+            "Use when the user says things like 'start yourself when my PC boots', "
+            "'launch on startup', 'stop auto-starting', or asks if you start on boot. "
+            "Works on Windows, macOS, and Linux."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "enable | disable | toggle | status (default: status)"}
+            },
+        }
+    },
+    {
+        "name": "messages_brief",
+        "description": (
+            "Brief the user on their UNREAD messages across channels (Gmail + "
+            "WhatsApp). Use when the user asks things like 'what did I miss', "
+            "'any new messages', 'catch me up', 'read my unread', 'check my inbox', "
+            "'brief me on my messages'. Returns a short spoken-ready summary of who "
+            "messaged and how many are unread. Gmail requires Google connected in "
+            "Settings; WhatsApp requires WhatsApp Web logged in."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "source": {"type": "STRING", "description": "gmail | whatsapp | all (default: all)"}
+            },
+        }
+    },
+    {
+        "name": "mark_emails_read",
+        "description": (
+            "Mark Gmail messages as read (clears the unread flag). Use when the user "
+            "says 'mark the marketing ones as read', 'clear the promotions', 'mark "
+            "those as read', 'archive the junk from my unread'. Pass a Gmail search "
+            "`query` (e.g. 'category:promotions is:unread', 'from:olx.ro is:unread', "
+            "'is:unread -is:important') OR specific message `ids` from a prior brief. "
+            "Confirm with the user before clearing anything that might include real "
+            "people. Needs Google connected with modify permission."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {"type": "STRING", "description": "Gmail search query selecting the mail to mark read"},
+            },
+        }
+    },
+    {
         "name": "shutdown_aethelark",
         "description": (
             "Shuts down the assistant completely. "
@@ -611,7 +691,7 @@ TOOL_SPECS = {
     "weather_report": ToolSpec(reads=["web"], priority=1),
     "browser_control": ToolSpec(writes=["desktop"], priority=1),
     "file_controller": ToolSpec(writes=["file"], priority=1),
-    "send_message": ToolSpec(writes=["desktop"], exclusive=True, priority=1, timeout_s=60.0),
+    "send_message": ToolSpec(writes=["desktop"], exclusive=True, priority=1, timeout_s=130.0),
     "reminder": ToolSpec(writes=["system"], priority=1),
     "youtube_video": ToolSpec(writes=["desktop"], priority=1),
     "screen_process": ToolSpec(reads=["camera", "desktop"], priority=1),
@@ -629,6 +709,9 @@ TOOL_SPECS = {
     "game_updater": ToolSpec(reads=["web"], writes=["file"], priority=1),
     "flight_finder": ToolSpec(reads=["web"], priority=1),
     "system_status": ToolSpec(reads=["system"], priority=2),
+    "autostart": ToolSpec(writes=["system"], priority=2),
+    "messages_brief": ToolSpec(reads=["web", "desktop"], priority=1, timeout_s=100.0),
+    "mark_emails_read": ToolSpec(writes=["web"], priority=1, timeout_s=40.0),
     "shutdown_aethelark": ToolSpec(writes=["system"], exclusive=True, priority=3),
 }
 
@@ -924,8 +1007,12 @@ class AethelarkLive:
             elif name == "developer_mode":
                 from actions.developer_mode import developer_mode
                 self.ui.set_state("WORKING")
-                asyncio.create_task(developer_mode(parameters=args, player=self.ui))
-                result = "Developer Mode started in background terminal console."
+                # AWAIT the real launch result — agent.run() verifies the session
+                # actually spawned and is alive (~1-2s), then returns. The old
+                # fire-and-forget hardcoded "started" even when nothing launched
+                # (the "hallucination"). Now the eagle reports the truth.
+                r = await developer_mode(parameters=args, player=self.ui)
+                result = r or "Developer session started."
 
             elif name == "swarm_mode":
                 from actions.swarm_orchestrator import swarm_orchestrate
@@ -976,6 +1063,18 @@ class AethelarkLive:
                 r = await loop.run_in_executor(None, get_system_status)
                 result = str(r)
 
+            elif name == "autostart":
+                r = await loop.run_in_executor(None, lambda: autostart(parameters=args, player=self.ui))
+                result = r or "Done."
+
+            elif name == "mark_emails_read":
+                r = await loop.run_in_executor(None, lambda: gmail_mark_read(query=args.get("query", "")))
+                result = r or "Done."
+
+            elif name == "messages_brief":
+                r = await loop.run_in_executor(None, lambda: messages_brief(parameters=args, player=self.ui))
+                result = r or "Nothing to report."
+
             elif name == "shutdown_aethelark":
                 self.ui.write_log("SYS: Shutdown requested — graceful shutdown in progress.")
                 self._shutdown_requested = True
@@ -991,13 +1090,13 @@ class AethelarkLive:
                     if self._dashboard:
                         try:
                             await self._dashboard.broadcast({"type": "status", "state": "offline"})
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            print(f"[main.py] Non-fatal error at line 1065: {_e}")
                     # Signal the UI to close (runs on Qt thread)
                     try:
                         self.ui.root.quit()
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        print(f"[main.py] Non-fatal error at line 1070: {_e}")
                     # Final fallback — if Qt doesn't exit cleanly within 3s
                     await asyncio.sleep(3)
                     print("[Aethelark] 🔴 Fallback exit.")
@@ -1008,22 +1107,30 @@ class AethelarkLive:
                 result = f"Unknown tool: {name}"
 
         except Exception as e:
-            result = f"Tool '{name}' failed: {e}"
+            result = ToolResult.failure(
+                f"Tool '{name}' failed: {e}",
+                guidance="Tell the user this action failed; do not claim it worked.")
             traceback.print_exc()
             self.speak_error(name, str(e))
 
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
+        # Normalize ANY tool return (ToolResult or legacy string) into the
+        # structured contract, so the model gets an explicit ok/guidance signal
+        # instead of parsing prose. Legacy string tools are unaffected.
+        tr = normalize(result)
+
         _elapsed_ms = (time.monotonic() - _t0) * 1000
         # Check for stale result — epoch may have advanced during execution
         if call_epoch != self._turn_epoch:
             print(f"[Aethelark] ⚠️ {name} result STALE (epoch {call_epoch} → {self._turn_epoch}, {_elapsed_ms:.0f}ms) — returning anyway for protocol")
         else:
-            print(f"[Aethelark] 📤 {name} → {str(result)[:80]} ({_elapsed_ms:.0f}ms)")
+            _flag = "✓" if tr.ok else "✗"
+            print(f"[Aethelark] 📤 {name} {_flag} → {tr.message[:80]} ({_elapsed_ms:.0f}ms)")
         return types.FunctionResponse(
             id=fc.id, name=name,
-            response={"result": result}
+            response=tr.to_response()
         )
 
     async def _schedule_tool_calls(self, tool_calls, call_epoch: int) -> list[types.FunctionResponse]:
@@ -1096,16 +1203,19 @@ class AethelarkLive:
                     except asyncio.TimeoutError:
                         print(f"[Aethelark] ⚠️ Tool {f_call.name} TIMED OUT after {f_spec.timeout_s}s")
                         return types.FunctionResponse(
-                            id=f_call.id,
-                            name=f_call.name,
-                            response={"result": f"Error: Tool execution timed out after {f_spec.timeout_s} seconds."}
-                        )
+                            id=f_call.id, name=f_call.name,
+                            response=ToolResult.failure(
+                                f"Tool timed out after {f_spec.timeout_s}s.",
+                                guidance="It may still be running in the background; "
+                                         "don't retry blindly — tell the user it timed out."
+                            ).to_response())
                     except Exception as e:
                         return types.FunctionResponse(
-                            id=f_call.id,
-                            name=f_call.name,
-                            response={"result": f"Error: Tool execution failed: {e}"}
-                        )
+                            id=f_call.id, name=f_call.name,
+                            response=ToolResult.failure(
+                                f"Tool execution failed: {e}",
+                                guidance="Report the failure honestly; do not claim success."
+                            ).to_response())
                 
                 task = asyncio.create_task(run_with_timeout())
                 running[task] = (fc, spec)
@@ -1260,7 +1370,7 @@ class AethelarkLive:
                                 out_buf = []
                                 continue
 
-                            full_in = " ".join(in_buf).strip()
+                            full_in = _collapse_repeats(" ".join(in_buf).strip())
                             if full_in:
                                 self.ui.write_log(f"You: {full_in}")
                                 if self._dashboard:
@@ -1271,7 +1381,7 @@ class AethelarkLive:
                                     }))
                             in_buf = []
 
-                            full_out = " ".join(out_buf).strip()
+                            full_out = _collapse_repeats(" ".join(out_buf).strip())
                             if full_out:
                                 self.ui.write_log(f"{self._asst_name}: {full_out}")
                                 if self._dashboard:
@@ -1337,32 +1447,57 @@ class AethelarkLive:
 
     def _play_audio_loop(self):
         print("[Aethelark] 🔊 Playback thread started")
-        # Open output stream at 48000 Hz to ensure universal Linux compatibility
-        playback_rate = 48000
-        stream = sd.RawOutputStream(
-            samplerate=playback_rate,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=2400,  # fixed block = one resampled frame (50ms at 48kHz)
-        )
-        stream.start()
-
-        # Pre-fill with ~100ms of silence to prime the hardware ring buffer.
-        # Without this, the first few write() calls race the DAC read pointer,
-        # causing audible clicks, pops, and garbled speed-up on the first response.
-        _prefill_bytes = b'\x00' * (playback_rate * 2 * 100 // 1000)  # 100ms of int16 silence
+        # Play at the model's NATIVE 24 kHz so we don't resample every 50 ms
+        # frame. The previous path opened at 48 kHz and upsampled each frame with
+        # numpy (plus an RMS envelope the web pill discards) — ~20×/second of
+        # GIL-holding CPU fighting the live-audio pipeline, which is exactly what
+        # made voice feel sluggish. Fall back to 48 kHz + resample only if the
+        # device refuses 24 kHz.
+        native_rate = RECEIVE_SAMPLE_RATE  # 24000
+        resample = False
+        stream = None
         try:
-            stream.write(_prefill_bytes)
-        except Exception:
-            pass  # non-fatal — worst case is the old behaviour
-        
+            stream = sd.RawOutputStream(samplerate=native_rate, channels=CHANNELS,
+                                        dtype="int16", blocksize=1200)  # 50ms @ 24kHz
+            stream.start()
+            playback_rate = native_rate
+        except Exception as e_native:
+            print(f"[Aethelark] ⚠️ 24kHz output unavailable ({e_native}); using 48kHz+resample")
+            # Close the half-opened 24kHz stream (if the failure was in start())
+            # so we don't leak a device handle before retrying.
+            try:
+                if stream is not None:
+                    stream.close()
+            except Exception as _e:
+                print(f"[main.py] Non-fatal error at line 1432: {_e}")
+            playback_rate = 48000
+            resample = True
+            stream = sd.RawOutputStream(samplerate=playback_rate, channels=CHANNELS,
+                                        dtype="int16", blocksize=2400)
+            stream.start()
+
+        # Prime the ring buffer with a little silence so the first write doesn't
+        # race the DAC read pointer (was causing first-word clicks / speed-up).
+        try:
+            stream.write(b'\x00' * (playback_rate * 2 * 80 // 1000))  # 80ms silence
+        except Exception as _e:
+            print(f"[main.py] Non-fatal error at line 1444: {_e}")
+
         audio_in_queue = self.audio_in_queue
         play_stop_event = self._play_stop_event
         loop = self._loop
-        
+
         if audio_in_queue is None or play_stop_event is None or loop is None:
             return
-        
+
+        # Only compute the audio-level envelope when the UI actually renders it
+        # (classic QPainter pill does; the web pill is CSS-animated → no-op).
+        wants_level = getattr(self.ui, "consumes_audio_level", True)
+
+        def _is_speaking_now() -> bool:
+            with self._speaking_lock:
+                return self._is_speaking
+
         try:
             while not play_stop_event.is_set() and not self._shutdown_requested:
                 try:
@@ -1373,33 +1508,42 @@ class AethelarkLive:
                         and self._turn_done_event.is_set()
                         and audio_in_queue.empty()
                     ):
-                        self.set_speaking(False)
+                        # End of turn: drop the SPEAKING state once (skips the GUI
+                        # reschedule if we're already not speaking, e.g. after a
+                        # barge-in interrupt already flipped it).
+                        if _is_speaking_now():
+                            self.set_speaking(False)
                         loop.call_soon_threadsafe(self._turn_done_event.clear)
                     continue
-                
+
                 frame_epoch, chunk = item
                 if frame_epoch < self._turn_epoch:
                     continue
-                    
-                self.set_speaking(True)
-                
-                # Resample 24kHz raw PCM to 48kHz by repeating each 16-bit sample twice
-                try:
-                    import numpy as np
-                    samples = np.frombuffer(chunk, dtype=np.int16)
-                    resampled_chunk = np.repeat(samples, 2).tobytes()
-                    # Voice envelope → audio-reactive pill breathing (~20 Hz)
+
+                # Edge-trigger SPEAKING off the SHARED flag, not a local bool, so
+                # it correctly re-arms after interrupt() externally forced it False
+                # (a local latch would stay stale-True and leave the mic ungated).
+                if not _is_speaking_now():
+                    self.set_speaking(True)
+
+                out = chunk
+                # Skip numpy entirely on the common path (native rate + web UI):
+                # just hand the raw PCM straight to the device.
+                if resample or wants_level:
                     try:
-                        rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
-                        self.ui.set_audio_level(min(rms / 9000.0, 1.0))
-                    except Exception:
-                        pass
-                except Exception as re_err:
-                    print(f"[Aethelark] Resampling error: {re_err}")
-                    resampled_chunk = chunk
-                
+                        import numpy as np
+                        samples = np.frombuffer(chunk, dtype=np.int16)
+                        if resample:
+                            out = np.repeat(samples, 2).tobytes()
+                        if wants_level:
+                            rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+                            self.ui.set_audio_level(min(rms / 9000.0, 1.0))
+                    except Exception as re_err:
+                        print(f"[Aethelark] Resampling error: {re_err}")
+                        out = chunk
+
                 try:
-                    stream.write(resampled_chunk if len(resampled_chunk) != len(chunk) else chunk)
+                    stream.write(out)
                 except Exception as e:
                     print(f"[Aethelark] ❌ Stream write: {e}")
                     break
@@ -1410,8 +1554,8 @@ class AethelarkLive:
             try:
                 stream.stop()
                 stream.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[main.py] Non-fatal error at line 1518: {_e}")
             print("[Aethelark] 🔊 Playback thread stopped")
 
     # ── Morning briefing ────────────────────────────────────────────────────────
@@ -1774,8 +1918,12 @@ class AethelarkLive:
                     print("[Aethelark] Graceful reconnect — resuming session with handle.")
                     self._conn_backoff = 1
 
-                elif "API key not valid" in err_blob or "1007" in err_blob:
-                    # Invalid API key — stop hammering the API, prompt re-configuration
+                elif "API key not valid" in err_blob or "API_KEY_INVALID" in err_blob:
+                    # Genuinely invalid key — stop hammering the API, prompt re-config.
+                    # NOTE: a WebSocket 1007 is NOT an API-key signal (it's a generic
+                    # "invalid frame payload" close — e.g. the audio-content-type
+                    # hiccup below), so it must never land here or a transient blip
+                    # tears the whole app down demanding a relaunch.
                     print(f"[Aethelark] Error: invalid API key — {err_blob[:200]}")
                     self.ui.write_log("ERR: API key invalid — please re-enter your key.")
                     self.ui.set_state("SLEEPING")
@@ -1787,10 +1935,20 @@ class AethelarkLive:
                     self.session = None
                     continue
 
-                elif "1011" in err_blob or "ConnectionClosedError" in err_blob:
+                elif "CONTENT_TYPE_AUDIO" in err_blob or "audio content type" in err_blob:
+                    # The native-audio model sometimes rejects audio right after a
+                    # RESUMED reconnect (server returns 1007). It is not a key or a
+                    # fatal error — the resume handle is the trigger. Drop it and do
+                    # a clean COLD reconnect; a fresh session accepts audio again.
+                    print(f"[Aethelark] Audio content-type rejected on resume — cold reconnecting. {err_blob[:160]}")
+                    self.ui.write_log("NET: Refreshing the audio session…")
+                    self._resume_handle = None
+                    self._conn_backoff = 2
+
+                elif "1011" in err_blob or "1007" in err_blob or "ConnectionClosedError" in err_blob:
                     # Server-side internal error / connection drop — transient.
                     # Reconnect quickly WITH the resume handle to restore context.
-                    print(f"[Aethelark] Gemini connection dropped (1011/closed) — resuming. {err_blob[:160]}")
+                    print(f"[Aethelark] Gemini connection dropped (1011/1007/closed) — resuming. {err_blob[:160]}")
                     self.ui.write_log("NET: Gemini dropped the connection — resuming…")
                     self._conn_backoff = 2
 

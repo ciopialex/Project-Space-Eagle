@@ -155,8 +155,8 @@ class WebWatcher:
         if self.player:
             try:
                 self.player.show_camera_frame(result["screenshot"])
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[visual_verifier.py] Non-fatal error at line 158: {_e}")
 
         errors = result["console_errors"] + result["page_errors"]
         if errors:

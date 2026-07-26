@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AETHELARK — Ignition</title>
+<style>
+@font-face{font-family:'Manrope';src:url(../assets/fonts/Manrope-Variable.ttf) format('truetype');font-weight:200 800;font-display:swap}
+@font-face{font-family:'Doto';src:url(../assets/fonts/Doto.ttf) format('truetype');font-weight:400 900;font-display:swap}
+:root{
+  --void:#0A0A0A;--void2:#050506;--text:#E5E5EA;--text2:#C8C8D0;--muted:#7C7C86;
+  --silver:#C8C8D0;--silver-hi:#ECECF2;--green:#4ee08a;--blue:#8fb7ff;--red:#ef4d5c;
+  --stroke:rgba(200,200,208,.14);--glass:linear-gradient(135deg,rgba(48,48,56,.42),rgba(12,12,15,.05));
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:transparent;color:var(--text);
+  font-family:'Manrope',sans-serif;font-weight:350;letter-spacing:.02em;overflow:hidden;user-select:none}
+.frame{position:fixed;inset:0;display:grid;place-items:center;
+  background:radial-gradient(circle at 50% 38%,#17171e,#0b0b10 42%,#060608 72%,#040405)}
+.quit{position:fixed;top:18px;right:20px;width:30px;height:30px;border-radius:8px;display:grid;place-items:center;
+  color:var(--muted);cursor:pointer;background:rgba(255,255,255,.03);box-shadow:inset 0 0 0 1px var(--stroke);z-index:20;font-size:15px}
+.quit:hover{color:#fff;box-shadow:inset 0 0 0 1px var(--silver)}
+.skip{position:fixed;top:20px;left:24px;font-family:'Doto';font-weight:700;font-size:11px;letter-spacing:.18em;
+  color:var(--muted);cursor:pointer;z-index:20;padding:7px 12px;border-radius:8px;transition:.16s}
+.skip:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.card{position:relative;width:min(680px,92vw);min-height:520px;border-radius:22px;padding:46px 52px 40px;
+  background:linear-gradient(180deg,rgba(20,20,26,.92),rgba(8,8,12,.94));
+  box-shadow:0 30px 80px rgba(0,0,0,.7),inset 0 1px 0 rgba(255,255,255,.05),inset 0 0 70px rgba(0,0,0,.5);
+  overflow:hidden}
+.card::before{content:"";position:absolute;inset:0;border-radius:22px;padding:1px;
+  background:linear-gradient(160deg,rgba(200,200,208,.35),transparent 40%,transparent 70%,rgba(200,200,208,.12));
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none}
+.corner{position:absolute;width:15px;height:15px;border:1px solid rgba(200,200,208,.22)}
+.corner.tl{top:16px;left:16px;border-right:0;border-bottom:0}.corner.tr{top:16px;right:16px;border-left:0;border-bottom:0}
+.corner.bl{bottom:16px;left:16px;border-right:0;border-top:0}.corner.br{bottom:16px;right:16px;border-left:0;border-top:0}
+
+.crest{width:64px;height:64px;margin:0 auto 22px;display:grid;place-items:center;position:relative}
+.crest::after{content:"";position:absolute;inset:-30px;border-radius:50%;z-index:-1;
+  background:radial-gradient(circle at 50% 44%,rgba(200,200,208,.16),rgba(200,200,208,.04) 46%,transparent 66%)}
+.crest img{width:52px;filter:drop-shadow(0 0 16px rgba(200,200,208,.45));animation:breathe 3.4s ease-in-out infinite}
+.crest .ring{position:absolute;inset:0;border-radius:50%;border:1px dashed rgba(200,200,208,.28);animation:spin 11s linear infinite}
+@keyframes breathe{0%,100%{transform:scale(1);opacity:.92}50%{transform:scale(1.06);opacity:1}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+.eyebrow{text-align:center;font-family:'Doto';font-weight:700;font-size:10px;letter-spacing:.42em;color:var(--silver);opacity:.75;margin-bottom:14px}
+h1{text-align:center;font-weight:300;font-size:30px;line-height:1.22;margin:0 0 14px;letter-spacing:.01em}
+h1 b{font-weight:600;color:#fff}
+.sub{text-align:center;font-size:14px;line-height:1.7;color:var(--muted);max-width:460px;margin:0 auto 30px}
+
+.screen{display:none;animation:fade .45s ease both}
+.screen.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+.btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;height:50px;border:0;border-radius:13px;cursor:pointer;
+  font-family:'Manrope';font-size:14px;font-weight:600;letter-spacing:.06em;color:var(--void);
+  background:linear-gradient(135deg,#ECECF2,#B0B0B8);box-shadow:0 10px 26px rgba(200,200,208,.18),inset 0 1px 0 rgba(255,255,255,.5);transition:.18s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 14px 32px rgba(200,200,208,.28)}
+.btn.ghost{background:rgba(255,255,255,.04);color:var(--text2);box-shadow:inset 0 0 0 1px var(--stroke)}
+.btn.ghost:hover{color:#fff;box-shadow:inset 0 0 0 1px var(--silver)}
+.btn:disabled{opacity:.4;cursor:default;transform:none}
+.btnrow{display:flex;gap:12px;margin-top:8px}
+
+.opt{display:flex;gap:14px;align-items:flex-start;padding:16px 18px;border-radius:14px;cursor:pointer;margin-bottom:12px;
+  background:rgba(255,255,255,.025);box-shadow:inset 0 0 0 1px var(--stroke);transition:.16s}
+.opt:hover{box-shadow:inset 0 0 0 1px rgba(200,200,208,.4)}
+.opt.sel{box-shadow:inset 0 0 0 1.5px var(--silver-hi),0 0 0 3px rgba(200,200,208,.08);background:rgba(255,255,255,.05)}
+.opt .ic{flex:none;width:38px;height:38px;border-radius:10px;display:grid;place-items:center;font-family:'Doto';font-weight:700;font-size:15px;
+  background:linear-gradient(135deg,#2a2a32,#141419);color:var(--silver-hi);box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+.opt.sel .ic{background:linear-gradient(135deg,#ECECF2,#B0B0B8);color:var(--void)}
+.opt .tt{flex:1}
+.opt .tt .t{font-size:14.5px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:9px}
+.opt .tt .d{font-size:12px;color:var(--muted);line-height:1.55;margin-top:4px}
+.badge{font-family:'Doto';font-weight:700;font-size:8px;letter-spacing:.14em;padding:3px 8px;border-radius:6px;color:var(--green);box-shadow:inset 0 0 0 1px rgba(78,224,138,.45)}
+.badge.warn{color:var(--blue);box-shadow:inset 0 0 0 1px rgba(143,183,255,.4)}
+
+.specs{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;padding:14px 18px;border-radius:12px;margin-bottom:22px;
+  background:rgba(0,0,0,.32);box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+.specs .r{display:flex;justify-content:space-between;font-size:12px}
+.specs .r .k{color:var(--muted);letter-spacing:.06em}
+.specs .r .v{color:var(--text2);font-family:'Doto';font-weight:700;font-variant-numeric:tabular-nums;text-align:right;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.field{width:100%;height:48px;border:0;border-radius:12px;padding:0 16px;margin-top:6px;
+  background:rgba(255,255,255,.04);color:var(--text);font-family:'Manrope';font-size:14px;
+  box-shadow:inset 0 0 0 1px var(--stroke);outline:none}
+.field:focus{box-shadow:inset 0 0 0 1px var(--silver)}
+.field::placeholder{color:var(--muted)}
+.sublabel{font-size:11px;letter-spacing:.14em;color:var(--muted);font-family:'Doto';font-weight:700;margin:18px 0 2px;text-transform:uppercase}
+.reveal{max-height:0;overflow:hidden;transition:max-height .3s ease}
+.reveal.open{max-height:240px}
+
+.chips{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-bottom:8px}
+.chip{padding:10px 18px;border-radius:22px;font-size:13px;color:var(--text2);cursor:pointer;
+  background:rgba(255,255,255,.03);box-shadow:inset 0 0 0 1px var(--stroke);transition:.16s}
+.chip:hover{color:#fff;box-shadow:inset 0 0 0 1px var(--silver)}
+.chip.sel{color:var(--void);background:linear-gradient(135deg,#ECECF2,#B0B0B8);box-shadow:none;font-weight:600}
+
+.status{text-align:center;font-size:12.5px;color:var(--muted);min-height:18px;margin-top:14px;letter-spacing:.02em}
+.status.ok{color:var(--green)}.status.err{color:var(--red)}
+
+.gbtn{gap:12px}
+.gicon{width:20px;height:20px;flex:none;display:grid;place-items:center;background:#fff;border-radius:4px;font-weight:800;color:#4285F4;font-family:'Doto';font-size:13px}
+
+.dots{display:flex;gap:8px;justify-content:center;margin-top:30px}
+.dot{width:6px;height:6px;border-radius:50%;background:rgba(200,200,208,.22);transition:.25s}
+.dot.on{background:var(--silver-hi);box-shadow:0 0 8px rgba(200,200,208,.6);width:20px;border-radius:3px}
+
+.ignite h1{font-size:34px}
+.ignite .spark{width:80px;height:80px;margin:0 auto 26px;border-radius:50%;position:relative;
+  background:radial-gradient(circle,rgba(236,236,242,.9),rgba(200,200,208,.15) 55%,transparent 70%);animation:pulse 2s ease-in-out infinite}
+</style>
+</head>
+<body>
+<div class="quit" id="quit" title="Quit">✕</div>
+<div class="skip" id="skip" title="Skip setup — I've got everything set">SKIP →</div>
+<div class="frame">
+  <div class="card" id="card">
+    <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+
+    <!-- 1 · WELCOME -->
+    <section class="screen active" data-step="0">
+      <div class="crest"><span class="ring"></span><img src="../assets/images/eagle_white.png" alt=""></div>
+      <div class="eyebrow">AETHELARK · IGNITION</div>
+      <h1>Finally, <b>it all begins here.</b></h1>
+      <p class="sub">You're about to hand a pair of eyes, hands and a voice to your machine — an eagle that sees your screen, works your tools, and answers when you speak. Three breaths to set it awake.</p>
+      <button class="btn" onclick="go(1)">BEGIN</button>
+    </section>
+
+    <!-- 2 · BRAIN -->
+    <section class="screen" data-step="1">
+      <div class="eyebrow">STEP ONE · THE BRAIN</div>
+      <h1>Where should the eagle <b>think?</b></h1>
+      <p class="sub">Detected your machine. Keep everything local, or route thought through a cloud model — your call.</p>
+      <div class="specs" id="specs">
+        <div class="r"><span class="k">SYSTEM</span><span class="v" data-s="os">—</span></div>
+        <div class="r"><span class="k">MEMORY</span><span class="v" data-s="ram">—</span></div>
+        <div class="r"><span class="k">CPU</span><span class="v" data-s="cpu">—</span></div>
+        <div class="r"><span class="k">GPU</span><span class="v" data-s="gpu">—</span></div>
+      </div>
+
+      <div class="opt" id="opt-local" onclick="pickBrain('local')">
+        <div class="ic">◐</div>
+        <div class="tt"><div class="t">Local Brain <span class="badge" id="local-badge">RECOMMENDED</span></div>
+          <div class="d" id="local-desc">Runs on your hardware. Nothing leaves the machine.</div></div>
+      </div>
+      <div class="opt" id="opt-api" onclick="pickBrain('api')">
+        <div class="ic">⛁</div>
+        <div class="tt"><div class="t">Cloud Brain <span class="badge warn">API KEY</span></div>
+          <div class="d">Route thought through a frontier model. Bring any lab's key — the smarter, the better.</div></div>
+      </div>
+
+      <div class="reveal" id="api-reveal">
+        <div class="sublabel">Provider</div>
+        <div class="chips" id="provider-chips">
+          <span class="chip sel" data-prov="google">Google (Gemini)</span>
+          <span class="chip" data-prov="anthropic">Anthropic (Opus)</span>
+          <span class="chip" data-prov="openai">OpenAI</span>
+          <span class="chip" data-prov="other">Other</span>
+        </div>
+        <div class="sublabel">API key</div>
+        <input class="field" id="api-key" type="password" placeholder="Paste your API key" oninput="validate()">
+      </div>
+
+      <div class="btnrow">
+        <button class="btn ghost" onclick="go(0)">BACK</button>
+        <button class="btn" id="brain-next" disabled onclick="go(2)">CONTINUE</button>
+      </div>
+    </section>
+
+    <!-- 3 · SIGN IN -->
+    <section class="screen" data-step="2">
+      <div class="eyebrow">STEP TWO · ACCESS</div>
+      <h1>Unlock the <b>full experience.</b></h1>
+      <p class="sub">Sign in so the eagle can read your inbox, brief you, and act on your behalf. Guest mode works for light testing — but the real power needs your accounts.</p>
+      <button class="btn gbtn" id="google-btn" onclick="googleLogin()"><span class="gicon">G</span> CONTINUE WITH GOOGLE</button>
+      <div class="status" id="auth-status"></div>
+      <div class="btnrow">
+        <button class="btn ghost" onclick="go(1)">BACK</button>
+        <button class="btn ghost" onclick="guest()">CONTINUE AS GUEST</button>
+      </div>
+      <p class="sub" style="font-size:11.5px;margin:16px auto 0;color:#5f5f68">Guest mode: internal voice reminders work, but real calendar &amp; email briefings need a connected account. You can connect later in Settings.</p>
+    </section>
+
+    <!-- 4 · NAME -->
+    <section class="screen" data-step="3">
+      <div class="eyebrow">STEP THREE · IDENTITY</div>
+      <h1>The eagle should <b>call you…</b></h1>
+      <p class="sub">Pick how it addresses you. This becomes your name in every reply.</p>
+      <div class="chips" id="addr-chips">
+        <span class="chip" data-addr="Sir">Sir</span>
+        <span class="chip" data-addr="Miss">Miss</span>
+        <span class="chip" data-addr="Captain">Captain</span>
+        <span class="chip" data-addr="Boss">Boss</span>
+        <span class="chip" data-addr="Master">Master</span>
+      </div>
+      <div class="sublabel" style="text-align:center">or type your own</div>
+      <input class="field" id="name-input" placeholder="e.g. Shenny" oninput="onName()" style="text-align:center">
+      <div class="btnrow" style="margin-top:20px">
+        <button class="btn ghost" onclick="go(2)">BACK</button>
+        <button class="btn" id="name-next" disabled onclick="go(4)">CONTINUE</button>
+      </div>
+    </section>
+
+    <!-- 5 · IGNITE -->
+    <section class="screen ignite" data-step="4">
+      <div class="spark"></div>
+      <div class="eyebrow">SYSTEMS ONLINE</div>
+      <h1 id="ignite-title">Awake.</h1>
+      <p class="sub" id="ignite-sub">The eagle is ready.</p>
+      <button class="btn" onclick="finish()">ENTER</button>
+    </section>
+
+    <div class="dots" id="dots">
+      <span class="dot on"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    </div>
+  </div>
+</div>
+
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script>
+(function(){
+  var bridge = null;
+  var state = {
+    brain_mode: null, provider: "google", api_key: "",
+    auth: "guest", email: "", user_name: "", address_style: ""
+  };
+  var step = 0, STEPS = 5;
+  var localCapable = true;
+
+  window.go = function(n){
+    if (n < 0 || n >= STEPS) return;
+    document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('active'); });
+    document.querySelector('.screen[data-step="'+n+'"]').classList.add('active');
+    document.querySelectorAll('#dots .dot').forEach(function(d,i){ d.classList.toggle('on', i<=n); });
+    var sk = document.getElementById('skip'); if (sk) sk.style.display = (n === 4) ? 'none' : '';
+    step = n;
+    if (n === 4) renderIgnite();
+  };
+
+  window.pickBrain = function(mode){
+    state.brain_mode = mode;
+    document.getElementById('opt-local').classList.toggle('sel', mode==='local');
+    document.getElementById('opt-api').classList.toggle('sel', mode==='api');
+    document.getElementById('api-reveal').classList.toggle('open', mode==='api');
+    validate();
+  };
+
+  window.validate = function(){
+    var ok = false;
+    if (state.brain_mode === 'local') ok = true;
+    else if (state.brain_mode === 'api') {
+      state.api_key = (document.getElementById('api-key').value || '').trim();
+      ok = state.api_key.length >= 8;
+    }
+    document.getElementById('brain-next').disabled = !ok;
+  };
+
+  document.getElementById('provider-chips').addEventListener('click', function(e){
+    var c = e.target.closest('.chip'); if(!c) return;
+    this.querySelectorAll('.chip').forEach(function(x){ x.classList.remove('sel'); });
+    c.classList.add('sel'); state.provider = c.dataset.prov; validate();
+  });
+
+  document.getElementById('addr-chips').addEventListener('click', function(e){
+    var c = e.target.closest('.chip'); if(!c) return;
+    this.querySelectorAll('.chip').forEach(function(x){ x.classList.remove('sel'); });
+    c.classList.add('sel');
+    state.address_style = c.dataset.addr; state.user_name = c.dataset.addr;
+    document.getElementById('name-input').value = '';
+    document.getElementById('name-next').disabled = false;
+  });
+
+  window.onName = function(){
+    var v = (document.getElementById('name-input').value || '').trim();
+    if (v){
+      document.querySelectorAll('#addr-chips .chip').forEach(function(x){ x.classList.remove('sel'); });
+      state.user_name = v; state.address_style = 'custom';
+    }
+    document.getElementById('name-next').disabled = (state.user_name || '').length < 1;
+  };
+
+  window.googleLogin = function(){
+    var st = document.getElementById('auth-status');
+    st.className = 'status'; st.textContent = 'Opening Google sign-in in your browser…';
+    document.getElementById('google-btn').disabled = true;
+    if (bridge && bridge.google_login) bridge.google_login();
+    else { st.className='status err'; st.textContent='Bridge unavailable.'; document.getElementById('google-btn').disabled=false; }
+  };
+
+  window.guest = function(){ state.auth = 'guest'; go(3); };
+
+  // Python → JS callbacks
+  window.onboarding = {
+    setMachine: function(m){
+      m = m || {};
+      var q = function(k){ return document.querySelector('.specs .v[data-s="'+k+'"]'); };
+      if (q('os')) q('os').textContent = (m.os||'—');
+      if (q('ram')) q('ram').textContent = m.ram_gb ? (m.ram_gb + ' GB') : '—';
+      if (q('cpu') && m.cpu) q('cpu').textContent = (m.cpu.cores||'?') + 'C / ' + (m.cpu.threads||'?') + 'T';
+      if (q('gpu') && m.gpu) q('gpu').textContent = m.gpu.name + (m.gpu.vram_gb ? ' · ' + m.gpu.vram_gb + 'GB' : '');
+      localCapable = !!m.local_capable;
+      var rec = m.recommended || {};
+      var badge = document.getElementById('local-badge');
+      var desc = document.getElementById('local-desc');
+      if (localCapable){
+        badge.textContent = 'RECOMMENDED'; badge.className = 'badge';
+        desc.textContent = 'Runs on your hardware — nothing leaves the machine. Suggested model: ' + (rec.model||'a local model') + '.';
+      } else {
+        badge.textContent = 'LIMITED'; badge.className = 'badge warn';
+        desc.textContent = 'Your machine can run a small local model (' + (rec.model||'') + '), but Cloud Brain will feel far smarter here.';
+        // Gently pre-select API when local is weak.
+        pickBrain('api');
+      }
+    },
+    setAuth: function(r){
+      r = r || {}; var st = document.getElementById('auth-status');
+      document.getElementById('google-btn').disabled = false;
+      if (r.status === 'ok'){
+        state.auth = 'google'; state.email = r.email || '';
+        st.className = 'status ok'; st.textContent = 'Connected' + (r.email ? ' · ' + r.email : '') + '. Continuing…';
+        if (r.name && !state.user_name) state.user_name = r.name.split(' ')[0];
+        setTimeout(function(){ go(3); }, 900);
+      } else if (r.status === 'not_configured'){
+        state.auth = 'guest';
+        st.className = 'status'; st.textContent = r.message || 'Google sign-in not configured yet — continuing as Guest.';
+        setTimeout(function(){ go(3); }, 2200);
+      } else {
+        st.className = 'status err'; st.textContent = r.message || 'Sign-in failed. Try Guest for now.';
+      }
+    }
+  };
+
+  function renderIgnite(){
+    var nm = state.user_name || 'operator';
+    document.getElementById('ignite-title').innerHTML = 'Awake, <b>' + esc(nm) + '.</b>';
+    var brain = state.brain_mode === 'local' ? 'thinking locally' : 'wired to your cloud brain';
+    var acc = state.auth === 'google' ? 'your account connected' : 'guest mode';
+    document.getElementById('ignite-sub').textContent = 'The eagle is ' + brain + ', with ' + acc + '. Say the word.';
+  }
+
+  window.finish = function(){
+    if (bridge && bridge.complete) bridge.complete(JSON.stringify(state));
+  };
+
+  function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];}); }
+
+  document.getElementById('quit').onclick = function(){ if (bridge && bridge.quit) bridge.quit(); };
+
+  // SKIP — for users who already have everything set. Advances one step per
+  // click ("skip skip skip"); on the Name step or later it just enters. The
+  // Python side preserves any existing config, so skipping never wipes settings.
+  window.skipStep = function(){ if (step >= 3) finish(); else go(step + 1); };
+  document.getElementById('skip').onclick = window.skipStep;
+
+  // Drag the frameless window from empty areas of the card.
+  var drag=false;
+  document.addEventListener('mousedown', function(e){
+    if (e.button!==0 || e.target.closest('button,input,.chip,.opt,.quit')) return;
+    drag=true; if (bridge && bridge.begin_drag) bridge.begin_drag(e.screenX,e.screenY);
+  });
+  document.addEventListener('mousemove', function(e){ if(drag && bridge && bridge.drag_to) bridge.drag_to(e.screenX,e.screenY); });
+  document.addEventListener('mouseup', function(){ drag=false; });
+
+  if (typeof QWebChannel !== 'undefined' && typeof qt !== 'undefined'){
+    new QWebChannel(qt.webChannelTransport, function(ch){
+      bridge = ch.objects.pybridge;
+      if (bridge && bridge.onboard_ready) bridge.onboard_ready();
+    });
+  }
+})();
+</script>
+</body>
+</html>
