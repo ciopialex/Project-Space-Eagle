@@ -29,3 +29,4 @@ pywin32; sys_platform == "win32"
 qrcode[pil]
 pyte
 pywinpty; sys_platform == "win32"
+nvidia-ml-py  # optional GPU metrics (nvmlInit fails gracefully if no NVIDIA GPU)

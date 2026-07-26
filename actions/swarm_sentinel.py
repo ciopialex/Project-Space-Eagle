@@ -60,8 +60,8 @@ class SwarmSentinel:
             time.sleep(POLL_S)
             try:
                 self._scan()
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[swarm_sentinel.py] Non-fatal error at line 63: {_e}")
 
     def _scan(self):
         # The nudge's own echo resets screen activity, so escalation is a
@@ -128,6 +128,19 @@ class SwarmSentinel:
         context_tail = sess.snapshot_tail(2000).decode("utf-8", "replace")
         sess.close()
         board.set_agent(agent_key, status="failed")
+
+        # Turn the stall into a shared lesson so teammates surface blockers early
+        # instead of silently freezing.
+        try:
+            from actions.swarm_orchestrator import SwarmOrchestrator
+            SwarmOrchestrator(root, player=player).record_lesson(
+                agent_key,
+                f"agent stalled with no progress on: {task[:120]}",
+                fix="if blocked, state the blocker on the blackboard immediately "
+                    "instead of going idle",
+                tag="stall")
+        except Exception as _e:
+            print(f"[swarm_sentinel.py] lesson capture skipped: {_e}")
 
         fallback = next(
             (k for k in FALLBACK_ORDER

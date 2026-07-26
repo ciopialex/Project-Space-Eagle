@@ -62,7 +62,7 @@ _SAFE_SCREENSHOT_ROOTS = (
 )
 
 def _safe_screenshot_path(requested: str | None) -> Path:
-    fallback = Path.home() / "Desktop" / "jarvis_screenshot.png"
+    fallback = Path.home() / "Desktop" / "aethelark_screenshot.png"
     if not requested:
         return fallback
     try:
@@ -71,13 +71,34 @@ def _safe_screenshot_path(requested: str | None) -> Path:
             if p.is_relative_to(root.resolve()):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 return p
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[computer_control.py] Non-fatal error at line 74: {_e}")
     return fallback
 
 def _require_pyautogui():
     if not _PYAUTOGUI:
         raise RuntimeError("PyAutoGUI not installed. Run: pip install pyautogui")
+
+
+def _grab_screen():
+    """Cross-platform full-screen capture → PIL.Image.
+
+    Prefers mss — it grabs directly (X11 / Windows / macOS) with NO external
+    helper, unlike pyautogui.screenshot() which needs scrot or gnome-screenshot
+    on Linux (often missing, which silently broke screenshot/screen_find here).
+    Falls back to pyautogui only if mss is unavailable."""
+    try:
+        import mss
+        from PIL import Image
+        with mss.mss() as sct:
+            mons   = sct.monitors
+            target = mons[1] if len(mons) > 1 else mons[0]
+            shot   = sct.grab(target)
+            return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+    except Exception as e:
+        print(f"[ComputerControl] mss capture failed ({e}); falling back to pyautogui")
+        _require_pyautogui()
+        return pyautogui.screenshot()
 
 _FIRST_NAMES = [
     "Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Drew", "Quinn",
@@ -150,8 +171,8 @@ def _user_profile() -> dict:
             data     = json.loads(_MEMORY_PATH.read_text(encoding="utf-8"))
             identity = data.get("identity", {})
             return {k: v.get("value", "") for k, v in identity.items()}
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[computer_control.py] Non-fatal error at line 174: {_e}")
     return {}
 
 def _type(text: str, interval: float = 0.03) -> str:
@@ -240,9 +261,8 @@ def _clipboard_paste(text: str) -> str:
 
 
 def _screenshot(save_path: str | None = None) -> str:
-    _require_pyautogui()
     path = _safe_screenshot_path(save_path)
-    img  = pyautogui.screenshot()
+    img  = _grab_screen()
     img.save(str(path))
     return f"Screenshot saved: {path}"
 
@@ -320,9 +340,8 @@ def _screen_find(description: str) -> tuple[int, int] | None:
         from google import genai
         from google.genai import types as gtypes
 
-        _require_pyautogui()
-        w, h  = pyautogui.size()
-        img   = pyautogui.screenshot()
+        img   = _grab_screen()
+        w, h  = img.size
         buf   = io.BytesIO()
         img.save(buf, format="PNG")
         image_bytes = buf.getvalue()
@@ -336,7 +355,7 @@ def _screen_find(description: str) -> tuple[int, int] | None:
         )
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash-lite",
+            model="gemini-2.5-flash",
             contents=[
                 gtypes.Part.from_bytes(data=image_bytes, mime_type="image/png"),
                 prompt,

@@ -79,6 +79,25 @@ def _user_agent() -> str:
     )
 
 
+_AUTOMATION_BASE = Path.home() / ".aethelark_profiles"
+_LEGACY_AUTOMATION_BASE = Path.home() / ".jarvis_profiles"
+
+
+def _automation_base() -> Path:
+    """Root for Aethelark's persistent automation profiles (where a one-time
+    login like the WhatsApp QR is remembered). Renamed from the old
+    ~/.jarvis_profiles — we migrate the existing dir in place on first run so
+    accounts already signed in there keep working."""
+    try:
+        if _LEGACY_AUTOMATION_BASE.exists() and not _AUTOMATION_BASE.exists():
+            _LEGACY_AUTOMATION_BASE.rename(_AUTOMATION_BASE)
+            print(f"[Browser] migrated automation profiles → {_AUTOMATION_BASE}")
+    except Exception as e:
+        print(f"[Browser] profile migration skipped: {e}")
+    _AUTOMATION_BASE.mkdir(parents=True, exist_ok=True)
+    return _AUTOMATION_BASE
+
+
 def _real_profile_dir(browser: str) -> str:
     home  = Path.home()
     local = os.environ.get("LOCALAPPDATA", "")
@@ -115,13 +134,18 @@ def _real_profile_dir(browser: str) -> str:
 
     elif _OS == "Linux":
         cfg = home / ".config"
+        snap = home / "snap"
         m = {
             "chrome":   [cfg / "google-chrome"],
-            "chromium": [cfg / "chromium", cfg / "chromium-browser"],
+            # Snap Chromium keeps its profile inside its confined dir, NOT
+            # ~/.config/chromium — probe both so snap installs are found.
+            "chromium": [cfg / "chromium", cfg / "chromium-browser",
+                         snap / "chromium" / "common" / "chromium"],
             "edge":     [cfg / "microsoft-edge"],
-            "brave":    [cfg / "BraveSoftware" / "Brave-Browser"],
+            "brave":    [cfg / "BraveSoftware" / "Brave-Browser",
+                         snap / "brave" / "common" / "BraveSoftware" / "Brave-Browser"],
             "vivaldi":  [cfg / "vivaldi"],
-            "opera":    [cfg / "opera"],
+            "opera":    [cfg / "opera", snap / "opera" / "common" / "opera"],
             "operagx":  [cfg / "opera-gx"],
         }
         candidates = m.get(browser, [])
@@ -131,10 +155,38 @@ def _real_profile_dir(browser: str) -> str:
             print(f"[Browser] ✅ Real profile found for {browser}: {p}")
             return str(p)
 
-    fallback = home / ".jarvis_profiles" / browser
-    fallback.mkdir(parents=True, exist_ok=True)
+    fallback = _automation_profile_dir(browser)
     print(f"[Browser] ⚠️  Real profile not found for {browser}, using: {fallback}")
-    return str(fallback)
+    return fallback
+
+
+def _is_snap_browser(browser: str) -> bool:
+    """True if `browser` resolves to a snap-packaged binary. Snap confinement
+    changes where profiles must live, so callers branch on this."""
+    if _OS != "Linux":
+        return False
+    try:
+        spec = _resolve_browser(browser) or {}
+        exe = spec.get("exe") or ""
+        real = os.path.realpath(exe) if exe else ""
+    except Exception:
+        exe, real = "", ""
+    return "/snap/" in exe or "/snap/" in real
+
+
+def _automation_profile_dir(browser: str) -> str:
+    """The persistent Aethelark automation profile for a browser — where a
+    one-time login (e.g. the WhatsApp QR) is remembered. For snap browsers it
+    MUST live inside ~/snap/<browser>/common (the only place snap confinement
+    lets the browser write); hidden dirs under $HOME are blocked and fail with
+    'SingletonLock: Permission denied'."""
+    home = Path.home()
+    if _is_snap_browser(browser):
+        base = home / "snap" / browser / "common" / "aethelark-profile"
+    else:
+        base = _automation_base() / browser
+    base.mkdir(parents=True, exist_ok=True)
+    return str(base)
 
 def _firefox_profile_dir() -> Optional[str]:
     home = Path.home()
@@ -211,8 +263,8 @@ def _find_opera_windows() -> Optional[str]:
                         return exe
                 except Exception:
                     continue
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[browser_control.py] Non-fatal error at line 266: {_e}")
 
     return shutil.which("opera") or None
 
@@ -234,8 +286,8 @@ def _find_exe_windows(prog_name: str) -> Optional[str]:
                         return exe
                 except Exception:
                     continue
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[browser_control.py] Non-fatal error at line 289: {_e}")
     return None
 
 _BROWSER_SPECS: dict[str, dict] = {
@@ -339,6 +391,16 @@ def _resolve_browser(name: str) -> dict | None:
     return {"engine": engine, "exe": exe, "channel": channel}
 
 
+def _configured_default_browser() -> str | None:
+    """The user's chosen default browser from api_keys.json (set via the
+    'set_default' action or the classic UI). Normalized through _ALIASES.
+    Returns None when unset ('' / 'system default') so callers fall through to
+    the OS default."""
+    v = _read_config().get("default_browser", "").lower().strip()
+    v = _ALIASES.get(v, v)
+    return v or None
+
+
 def _detect_default_browser() -> str:
     try:
         if _OS == "Windows":
@@ -371,9 +433,59 @@ def _detect_default_browser() -> str:
             for kw in ("firefox", "opera", "brave", "vivaldi", "chromium", "chrome", "edge"):
                 if kw in out:
                     return kw
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[browser_control.py] Non-fatal error at line 436: {_e}")
     return "chrome"
+
+
+_DISPLAY_NAMES: dict[str, str] = {
+    "chrome": "Google Chrome", "chromium": "Chromium", "edge": "Microsoft Edge",
+    "firefox": "Firefox", "opera": "Opera", "operagx": "Opera GX",
+    "brave": "Brave", "vivaldi": "Vivaldi", "safari": "Safari",
+}
+# Single-glyph marks for the Settings browser picker (avoids shipping icon assets).
+_BROWSER_GLYPHS: dict[str, str] = {
+    "chrome": "C", "chromium": "◎", "edge": "e", "firefox": "◐",
+    "opera": "O", "operagx": "Ø", "brave": "◆", "vivaldi": "V", "safari": "S",
+}
+
+
+_BROWSERS_CACHE: list[dict] | None = None
+
+
+def list_browsers(refresh: bool = False) -> list[dict]:
+    """Every browser actually installed on this machine, for the Settings picker.
+    Each entry: id, name, glyph, is_default, is_snap, works (snap browsers still
+    work now that profiles are snap-safe, but we flag them so the UI can nudge
+    toward a real install when both exist).
+
+    Cached after the first call: the installed set and OS default don't change
+    within a session, and the probe shells out to `xdg-settings` — we don't want
+    to pay that (or block a caller) on every Settings open."""
+    global _BROWSERS_CACHE
+    if _BROWSERS_CACHE is not None and not refresh:
+        return _BROWSERS_CACHE
+    default = _detect_default_browser()
+    out: list[dict] = []
+    for bid in _BROWSER_SPECS.get(_OS, {}):
+        spec = _resolve_browser(bid)
+        if not spec:
+            continue
+        # Installed = we found a real executable, or Playwright can drive it via a
+        # managed channel (chrome/msedge on Win/Mac).
+        if not (spec.get("exe") or spec.get("channel")):
+            continue
+        out.append({
+            "id": bid,
+            "name": _DISPLAY_NAMES.get(bid, bid.title()),
+            "glyph": _BROWSER_GLYPHS.get(bid, bid[:1].upper()),
+            "is_default": bid == default,
+            "is_snap": _is_snap_browser(bid),
+        })
+    # Default first, then alphabetical — the recommended pick leads.
+    out.sort(key=lambda b: (not b["is_default"], b["name"]))
+    _BROWSERS_CACHE = out
+    return out
 
 
 _SEARCH_ENGINES: dict[str, str] = {
@@ -468,8 +580,8 @@ def _open_native(url: str, browser_name: Optional[str]) -> str:
         try:
             if webbrowser.open(url):
                 return f"Opened in your default browser: {url}"
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[browser_control.py] Non-fatal error at line 583: {_e}")
         return f"Could not open a browser for: {url}"
 
 
@@ -526,13 +638,13 @@ class _BrowserSession:
         if self._context:
             try:
                 await self._context.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[browser_control.py] Non-fatal error at line 641: {_e}")
         if self._pw:
             try:
                 await self._pw.stop()
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[browser_control.py] Non-fatal error at line 646: {_e}")
         self._context = self._page = None
 
     async def _adopt_page(self) -> Page:
@@ -564,9 +676,7 @@ class _BrowserSession:
         engine_obj  = getattr(self._pw, engine_name)
 
         if engine_name == "firefox":
-            profile = _firefox_profile_dir() or str(
-                Path.home() / ".jarvis_profiles" / "firefox"
-            )
+            profile = _firefox_profile_dir() or str(_automation_base() / "firefox")
             kwargs: dict = {
                 "headless":    False,
                 "slow_mo":     0,
@@ -580,16 +690,16 @@ class _BrowserSession:
                 self._context = await engine_obj.launch_persistent_context(profile, **kwargs)
             except Exception as e:
                 print(f"[Browser] Firefox real profile failed ({e}), using Aethelark profile")
-                jarvis = str(Path.home() / ".jarvis_profiles" / "firefox_jarvis")
-                Path(jarvis).mkdir(parents=True, exist_ok=True)
-                self._context = await engine_obj.launch_persistent_context(jarvis, **kwargs)
+                auto = str(_automation_base() / "firefox_automation")
+                Path(auto).mkdir(parents=True, exist_ok=True)
+                self._context = await engine_obj.launch_persistent_context(auto, **kwargs)
 
             self._page = await self._adopt_page()
             print(f"[Browser] ✅ Firefox launched")
             return
 
         if engine_name == "webkit":
-            safari_profile = str(Path.home() / ".jarvis_profiles" / "safari")
+            safari_profile = str(_automation_base() / "safari")
             Path(safari_profile).mkdir(parents=True, exist_ok=True)
             kwargs = {
                 "headless":    False,
@@ -603,7 +713,15 @@ class _BrowserSession:
             print(f"[Browser] ✅ Safari launched")
             return
 
-        profile = _real_profile_dir(self.browser_name)
+        # Chrome/Chromium REFUSE automation on their live default profile (Chrome:
+        # "DevTools remote debugging requires a non-default data directory"), so a
+        # real-profile launch ALWAYS fails and wastes up to 25s before we fall back.
+        # Since it never actually drives the real profile anyway, go STRAIGHT to the
+        # persistent automation profile — that's where one-time logins (the WhatsApp
+        # QR) already live. Firefox/Edge keep the real-profile-first behaviour.
+        skip_real = self.browser_name in ("chrome", "chromium")
+        profile = (_automation_profile_dir(self.browser_name) if skip_real
+                   else _real_profile_dir(self.browser_name))
 
         kwargs = {
             "headless":    False,
@@ -617,6 +735,21 @@ class _BrowserSession:
                 "--no-first-run",
                 "--disable-default-apps",
                 "--no-default-browser-check",
+                # Suppress the yellow "unsupported command-line flag: --no-sandbox"
+                # infobar Playwright triggers (it launches Chromium with --no-sandbox
+                # by default). --test-type hides it without changing sandbox state,
+                # so the browser still launches reliably.
+                "--test-type",
+                "--disable-infobars",
+                # If a previous instance died uncleanly (GL crash / kill), Chrome
+                # otherwise shows a "Restore pages?" bubble that COVERS the UI and
+                # makes clicks hang until timeout. Suppress it.
+                "--hide-crash-restore-bubble",
+                "--disable-session-crashed-bubble",
+                # The automation browser doesn't need the GPU, and swiftshader GL was
+                # core-dumping on cleanup ("Failed to restore OpenGL context"). Disable
+                # GPU so it stays alive → the session is reusable → subsequent sends fast.
+                "--disable-gpu",
             ],
         }
 
@@ -634,21 +767,22 @@ class _BrowserSession:
         try:
             self._context = await engine_obj.launch_persistent_context(profile, **kwargs)
             self._page = await self._adopt_page()
-            print(f"[Browser] ✅ Launched [{label}] profile={profile}")
+            tag = "automation" if skip_real else "real"
+            print(f"[Browser] ✅ Launched [{label}] ({tag} profile) profile={profile}")
             return
         except Exception as e:
+            if skip_real:
+                # Already on the automation profile — nothing else to try.
+                raise RuntimeError(f"Could not launch {self.browser_name}: {e}") from e
             print(f"[Browser] ⚠️  Real profile failed for {label}: {e}")
 
-        # Gerçek profil açılamadı (tarayıcı zaten açık / kilitli profil / yeni
-        # Chrome sürümleri otomasyonla gerçek profili engelliyor). Kalıcı
-        # Aethelark otomasyon profiline geçilir — buraya bir kez giriş yapılan
-        # hesaplar sonraki oturumlarda da açık kalır.
-        jarvis_profile = str(Path.home() / ".jarvis_profiles" / self.browser_name)
-        Path(jarvis_profile).mkdir(parents=True, exist_ok=True)
-        print(f"[Browser] Retrying with Aethelark profile: {jarvis_profile}")
+        # Real profile locked/undriveable → the persistent Aethelark automation
+        # profile, where a one-time login stays signed in across sessions.
+        auto_profile = _automation_profile_dir(self.browser_name)
+        print(f"[Browser] Retrying with Aethelark profile: {auto_profile}")
 
         try:
-            self._context = await engine_obj.launch_persistent_context(jarvis_profile, **kwargs)
+            self._context = await engine_obj.launch_persistent_context(auto_profile, **kwargs)
             self._page = await self._adopt_page()
             print(f"[Browser] ✅ Launched [{label}] with Aethelark profile "
                   f"(sign-ins persist across sessions)")
@@ -658,10 +792,31 @@ class _BrowserSession:
 
     async def _get_page(self) -> Page:
         await self._launch()
-        # If somehow page got closed, open a fresh one
-        if self._page is None or self._page.is_closed():
-            self._page = await self._context.new_page()
-            await asyncio.sleep(0.2)
+        try:
+            # If somehow page got closed, open a fresh one
+            if self._page is None or self._page.is_closed():
+                self._page = await self._context.new_page()
+                await asyncio.sleep(0.2)
+        except Exception as e:
+            # The persistent context/browser was closed (e.g. the user shut the
+            # window after the previous action). Drop the dead handles and relaunch
+            # a fresh browser so the tool RECOVERS instead of failing every
+            # subsequent call with "Target page, context or browser has been closed".
+            if "closed" in str(e).lower() or "target page" in str(e).lower():
+                print(f"[Browser] Context was closed — relaunching {self.browser_name}.")
+                try:
+                    if self._context is not None:
+                        await self._context.close()
+                except Exception as _e:
+                    print(f"[browser_control.py] Non-fatal error at line 791: {_e}")
+                self._context = None
+                self._page = None
+                await self._launch()
+                if self._page is None or self._page.is_closed():
+                    self._page = await self._context.new_page()
+                    await asyncio.sleep(0.2)
+            else:
+                raise
         return self._page
 
     async def go_to(self, url: str) -> str:
@@ -777,8 +932,8 @@ class _BrowserSession:
                 if await loc.count() > 0:
                     await loc.first.click(timeout=5_000)
                     return f"Clicked ({role}): '{description}'"
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[browser_control.py] Non-fatal error at line 916: {_e}")
         for attempt in (
             lambda: page.get_by_text(description, exact=False).first.click(timeout=5_000),
             lambda: page.get_by_placeholder(description, exact=False).first.click(timeout=5_000),
@@ -790,8 +945,8 @@ class _BrowserSession:
             try:
                 await attempt()
                 return f"Clicked: '{description}'"
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[browser_control.py] Non-fatal error at line 929: {_e}")
         return f"Could not find element: '{description}'"
 
     async def smart_type(self, description: str, text: str) -> str:
@@ -837,7 +992,7 @@ class _BrowserSession:
     async def screenshot(self, path: str = None) -> str:
         page = await self._get_page()
         try:
-            save_path = path or str(Path.home() / "Desktop" / "jarvis_screenshot.png")
+            save_path = path or str(Path.home() / "Desktop" / "aethelark_screenshot.png")
             await page.screenshot(path=save_path, full_page=False)
             return f"Screenshot saved: {save_path}"
         except Exception as e:
@@ -907,7 +1062,9 @@ class _SessionRegistry:
 
     def get(self, browser_name: str | None = None) -> _BrowserSession:
         if not browser_name:
-            browser_name = self._active_browser or _detect_default_browser()
+            browser_name = (self._active_browser
+                            or _configured_default_browser()
+                            or _detect_default_browser())
         browser_name = _ALIASES.get(browser_name.lower().strip(), browser_name.lower().strip())
         sess = self._get_or_create(browser_name)
         self._active_browser = browser_name
@@ -938,8 +1095,8 @@ class _SessionRegistry:
         for s in sessions:
             try:
                 s.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[browser_control.py] Non-fatal error at line 1079: {_e}")
         return "All browsers closed: " + (", ".join(names) if names else "none")
 
     def list_sessions(self) -> str:
@@ -969,6 +1126,24 @@ def browser_control(
     if action == "switch":
         target = browser or params.get("target", "").lower().strip()
         result = _registry.switch(target) if target else "Please specify a browser."
+        _log(player, result)
+        return result
+
+    # Persist the user's preferred browser so every later action (navigation,
+    # interactive control, WhatsApp Web, etc.) uses it by default.
+    if action in ("set_default", "set_default_browser"):
+        target = (browser or params.get("target", "")).lower().strip()
+        target = _ALIASES.get(target, target)
+        cfg = _read_config()
+        if target in ("", "system", "system default", "default", "os"):
+            cfg.pop("default_browser", None)
+            _write_config(cfg)
+            result = "Default browser reset to your system default."
+        else:
+            cfg["default_browser"] = target
+            _write_config(cfg)
+            _registry._active_browser = target  # take effect immediately
+            result = f"Default browser set to {target}."
         _log(player, result)
         return result
 

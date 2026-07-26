@@ -34,6 +34,141 @@ OVERRIDE_STYLE = """
      exactly like the artifact — so the collapse morph keeps the same ratio. */
   .app { width:calc(100vw - 44px) !important; height:calc(100vh - 44px) !important;
          max-width:none !important; margin:22px !important; }
+
+  /* ── Expand / collapse morph ─────────────────────────────────────────────
+     The native window is shown at its FINAL size; the "spring from the island"
+     is done here as a GPU-composited transform on the card, so Chromium never
+     re-lays-out the page mid-animation (the old geometry-resize morph did, which
+     is what made it stutter). Origin near the top-centre so it reads as growing
+     from the Dynamic Island's spot. */
+  .app { transform-origin:50% 4%; }
+  .app.ae-in  { animation:aeIn  .46s cubic-bezier(.22,1.12,.35,1) both; will-change:transform,opacity; }
+  .app.ae-out { animation:aeOut .24s cubic-bezier(.4,0,.9,.4)     both; will-change:transform,opacity; }
+  @keyframes aeIn  { from { transform:scale(.16) translateY(-11vh); opacity:0; }
+                     60% { opacity:1; }
+                     to   { transform:none; opacity:1; } }
+  @keyframes aeOut { from { transform:none; opacity:1; }
+                     to   { transform:scale(.16) translateY(-11vh); opacity:0; } }
+
+  /* Let the user select & copy chat / timeline / memory text (the whole window
+     is draggable and the artifact sets user-select:none, which blocked it). */
+  .log, .log *, .tl, .tl *, .memcard, .memcard * { user-select:text !important;
+    -webkit-user-select:text !important; cursor:auto; }
+
+  /* Chat + swarm timeline must scroll through history (artifact clipped them). */
+  .log, .tl { overflow-y:auto !important; overflow-x:hidden !important; overscroll-behavior:contain; }
+  .log::-webkit-scrollbar, .tl::-webkit-scrollbar { width:8px; }
+  .log::-webkit-scrollbar-thumb, .tl::-webkit-scrollbar-thumb { background:rgba(200,200,208,.18); border-radius:4px; }
+  .log::-webkit-scrollbar-thumb:hover, .tl::-webkit-scrollbar-thumb:hover { background:rgba(200,200,208,.32); }
+  .log::-webkit-scrollbar-track, .tl::-webkit-scrollbar-track { background:transparent; }
+  /* Muted state for the mic button — mirrors the red 'interrupt' treatment. */
+  .opbtn.mic.muted { color:var(--red) !important;
+    background:linear-gradient(135deg,rgba(40,8,14,.6),rgba(20,4,8,.7)) !important;
+    box-shadow:inset 0 0 0 1px rgba(239,77,92,.5) !important; }
+  .opbtn.mic.muted .d { animation:none !important; }
+
+  /* ── Settings panel (opened by the title-bar gear ⚙) ────────────────────
+     A tech-noir sheet that slides over the dashboard, matching the onboarding
+     card's language (silver strokes, Doto labels, glass fills). Built + driven
+     entirely from the bridge script so artifact_reference.html stays untouched. */
+  .stud { cursor:pointer; transition:.16s; }
+  .stud:hover { color:var(--silver-hi,#ECECF2) !important;
+                box-shadow:inset 0 0 0 1px rgba(200,200,208,.5); }
+  #set-scrim { position:absolute; inset:0; z-index:120; display:none;
+    background:rgba(4,4,6,.62); backdrop-filter:blur(3px);
+    animation:setfade .18s ease both; }
+  #set-scrim.open { display:block; }
+  @keyframes setfade { from{opacity:0} to{opacity:1} }
+  #set-panel { position:absolute; top:0; right:0; height:100%;
+    width:min(460px,86%); display:flex; flex-direction:column;
+    background:linear-gradient(180deg,rgba(18,18,24,.98),rgba(8,8,12,.99));
+    box-shadow:-30px 0 80px rgba(0,0,0,.6), inset 1px 0 0 rgba(200,200,208,.14);
+    transform:translateX(100%); transition:transform .26s cubic-bezier(.2,.9,.25,1); }
+  #set-scrim.open #set-panel { transform:translateX(0); }
+  .set-hd { display:flex; align-items:center; justify-content:space-between;
+    padding:20px 24px 14px; flex:none;
+    box-shadow:inset 0 -1px 0 rgba(200,200,208,.1); }
+  .set-hd .ttl { font-family:'Doto'; font-weight:800; font-size:13px;
+    letter-spacing:.34em; color:var(--silver,#C8C8D0); }
+  .set-hd .x { width:28px; height:28px; border-radius:8px; display:grid;
+    place-items:center; color:var(--muted,#7C7C86); cursor:pointer; font-size:14px;
+    background:rgba(255,255,255,.03); box-shadow:inset 0 0 0 1px rgba(200,200,208,.14); }
+  .set-hd .x:hover { color:#fff; box-shadow:inset 0 0 0 1px var(--silver,#C8C8D0); }
+  .set-body { flex:1; overflow-y:auto; padding:8px 24px 26px; }
+  .set-body::-webkit-scrollbar { width:8px; }
+  .set-body::-webkit-scrollbar-thumb { background:rgba(200,200,208,.18); border-radius:4px; }
+  .set-sec { margin-top:22px; }
+  .set-sec > .lbl { font-family:'Doto'; font-weight:700; font-size:10px;
+    letter-spacing:.2em; color:var(--muted,#7C7C86); text-transform:uppercase;
+    margin-bottom:10px; }
+  .set-row { display:flex; align-items:center; gap:14px; padding:14px 16px;
+    border-radius:13px; margin-bottom:10px; background:rgba(255,255,255,.025);
+    box-shadow:inset 0 0 0 1px rgba(200,200,208,.14); }
+  .set-row .ic { flex:none; width:36px; height:36px; border-radius:10px;
+    display:grid; place-items:center; font-family:'Doto'; font-weight:700; font-size:14px;
+    background:linear-gradient(135deg,#2a2a32,#141419); color:var(--silver-hi,#ECECF2);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.06); }
+  .set-row .tt { flex:1; min-width:0; }
+  .set-row .tt .t { font-size:13.5px; color:var(--text,#E5E5EA); font-weight:600;
+    display:flex; align-items:center; gap:8px; }
+  .set-row .tt .d { font-size:11.5px; color:var(--muted,#7C7C86); line-height:1.5;
+    margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .set-mini { font-family:'Manrope'; font-weight:600; font-size:11px; letter-spacing:.06em;
+    padding:8px 14px; border-radius:9px; cursor:pointer; flex:none; border:0;
+    color:var(--text2,#C8C8D0); background:rgba(255,255,255,.04);
+    box-shadow:inset 0 0 0 1px rgba(200,200,208,.16); transition:.16s; }
+  .set-mini:hover { color:#fff; box-shadow:inset 0 0 0 1px var(--silver,#C8C8D0); }
+  .set-mini.danger:hover { color:var(--red,#ef4d5c);
+    box-shadow:inset 0 0 0 1px rgba(239,77,92,.6); }
+  .set-mini.solid { color:#0A0A0A; background:linear-gradient(135deg,#ECECF2,#B0B0B8);
+    box-shadow:0 8px 20px rgba(200,200,208,.16); }
+  .set-mini:disabled { opacity:.45; cursor:default; }
+  .set-badge { font-family:'Doto'; font-weight:700; font-size:8px; letter-spacing:.14em;
+    padding:3px 7px; border-radius:6px; color:var(--green,#4ee08a);
+    box-shadow:inset 0 0 0 1px rgba(78,224,138,.45); }
+  .set-badge.off { color:var(--muted,#7C7C86); box-shadow:inset 0 0 0 1px rgba(200,200,208,.2); }
+  /* toggle switch */
+  .set-sw { flex:none; width:42px; height:24px; border-radius:13px; cursor:pointer;
+    background:rgba(255,255,255,.06); box-shadow:inset 0 0 0 1px rgba(200,200,208,.2);
+    position:relative; transition:.2s; }
+  .set-sw::after { content:""; position:absolute; top:3px; left:3px; width:18px; height:18px;
+    border-radius:50%; background:var(--silver,#C8C8D0); transition:.2s; }
+  .set-sw.on { background:linear-gradient(135deg,#ECECF2,#B0B0B8);
+    box-shadow:inset 0 0 0 1px rgba(200,200,208,.4); }
+  .set-sw.on::after { left:21px; background:#0A0A0A; }
+  .set-sw.disabled { opacity:.4; cursor:default; }
+  .set-field { width:100%; height:42px; border:0; border-radius:11px; padding:0 14px;
+    background:rgba(255,255,255,.04); color:var(--text,#E5E5EA);
+    font-family:'Manrope'; font-size:13px; outline:none;
+    box-shadow:inset 0 0 0 1px rgba(200,200,208,.14); }
+  .set-field:focus { box-shadow:inset 0 0 0 1px var(--silver,#C8C8D0); }
+  .set-field::placeholder { color:var(--muted,#7C7C86); }
+  .set-stack { display:block; padding:14px 16px; }
+  .set-stack .t { font-size:13.5px; color:var(--text,#E5E5EA); font-weight:600; margin-bottom:8px; }
+  .set-inline { display:flex; gap:8px; margin-top:8px; }
+  .set-inline .set-field { flex:1; }
+  .set-chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  .set-chip { padding:7px 13px; border-radius:18px; font-size:12px; color:var(--text2,#C8C8D0);
+    cursor:pointer; background:rgba(255,255,255,.03);
+    box-shadow:inset 0 0 0 1px rgba(200,200,208,.14); transition:.16s; }
+  .set-chip:hover { color:#fff; box-shadow:inset 0 0 0 1px var(--silver,#C8C8D0); }
+  .set-chip.sel { color:#0A0A0A; background:linear-gradient(135deg,#ECECF2,#B0B0B8);
+    box-shadow:none; font-weight:600; }
+  /* browser picker */
+  .set-bwrap { display:flex; flex-wrap:wrap; gap:8px; margin-top:4px; }
+  .set-bchip { display:flex; align-items:center; gap:9px; padding:9px 13px 9px 10px;
+    border-radius:12px; cursor:pointer; font-size:12.5px; color:var(--text2,#C8C8D0);
+    background:rgba(255,255,255,.03); box-shadow:inset 0 0 0 1px rgba(200,200,208,.14);
+    transition:.16s; }
+  .set-bchip:hover { color:#fff; box-shadow:inset 0 0 0 1px var(--silver,#C8C8D0); }
+  .set-bchip .bg { flex:none; width:26px; height:26px; border-radius:8px; display:grid;
+    place-items:center; font-family:'Doto'; font-weight:700; font-size:13px;
+    color:var(--silver-hi,#ECECF2); background:linear-gradient(135deg,#2a2a32,#141419);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.06); }
+  .set-bchip.sel { color:#0A0A0A; background:linear-gradient(135deg,#ECECF2,#B0B0B8);
+    box-shadow:0 6px 16px rgba(200,200,208,.16); font-weight:600; }
+  .set-bchip.sel .bg { background:rgba(10,10,10,.14); color:#0A0A0A; box-shadow:none; }
+  .set-bchip.sel .set-badge { color:#0A0A0A; box-shadow:inset 0 0 0 1px rgba(10,10,10,.3); }
 </style>
 """
 
@@ -53,6 +188,16 @@ BRIDGE = """
 
   window.aethelark.setMode = function (m) { try { setMode(m === 'hardcore' ? 'swarm' : 'rest'); } catch (e) {} };
 
+  // Expand ('in') / collapse ('out') morph — a compositor-only transform on the
+  // card (no window resize → no Chromium reflow). Restarting requires clearing
+  // the class and forcing a reflow before re-adding it.
+  window.aethelark.playMorph = function (dir) {
+    var app = document.querySelector('.app'); if (!app) return;
+    app.classList.remove('ae-in', 'ae-out');
+    void app.offsetWidth;  // force reflow so the animation re-triggers
+    app.classList.add(dir === 'out' ? 'ae-out' : 'ae-in');
+  };
+
   window.aethelark.setState = function (s) {
     s = String(s || '').toUpperCase();
     var lb = document.querySelector('.state .lb'), dot = document.querySelector('.state .dot');
@@ -60,6 +205,13 @@ BRIDGE = """
     var col = s === 'LISTENING' ? 'var(--green)' : s === 'SPEAKING' ? '#3B82F6'
             : s === 'MUTED' ? 'var(--red)' : 'var(--silver)';
     if (dot) { dot.style.background = col; dot.style.boxShadow = '0 0 10px ' + col; }
+    // Reflect mute on the MIC button itself (was previously never updated).
+    var muted = (s === 'MUTED');
+    document.querySelectorAll('.opbtn.mic').forEach(function (b) {
+      b.classList.toggle('muted', muted);
+      var etch = b.querySelector('.etch');
+      if (etch) etch.textContent = muted ? 'MICROPHONE MUTED' : 'MICROPHONE ACTIVE';
+    });
   };
 
   window.aethelark.setMemory = function (list) {
@@ -76,6 +228,9 @@ BRIDGE = """
 
   window.aethelark.setLog = function (lines) {
     var box = document.querySelector('.log'); if (!box) return;
+    // Stick to the bottom only if the user is already near it — so scrolling up
+    // to read history is not yanked back down when a new line arrives.
+    var atBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 40;
     box.innerHTML = (lines || []).map(function (l) {
       var sp = (l.speaker || 'sys').toLowerCase();
       var cls = sp === 'you' ? ' you' : sp === 'ae' ? ' ae' : '';
@@ -83,6 +238,7 @@ BRIDGE = """
       return '<div class="logline' + cls + '"><span class="tag ' + sp + '">' + tag + '</span>'
         + '<span class="msg">' + esc(l.text) + '</span></div>';
     }).join('');
+    if (atBottom) box.scrollTop = box.scrollHeight;
   };
 
   window.aethelark.setMetrics = function (m) {
@@ -164,11 +320,15 @@ BRIDGE = """
       if (e.key === 'Escape' && window.pybridge) window.pybridge.interrupt();
     });
 
-    // Drag the whole dashboard window from any non-interactive area
-    var DRAG_SKIP = 'button,input,textarea,select,a,.chip,.wbtn,.stud,.modeseg,.opbtn,.cmd,.searchbar,[onclick]';
+    // Drag the whole dashboard window from any non-interactive area. Text/scroll
+    // regions (.log chat, .tl timeline, .memcard memory) are EXCLUDED so you can
+    // select & copy their text instead of dragging the window.
+    var DRAG_SKIP = 'button,input,textarea,select,a,.chip,.wbtn,.stud,.modeseg,.opbtn,.cmd,.searchbar,.log,.tl,.memcard,[onclick]';
     var ddrag = false;
     document.addEventListener('mousedown', function (e) {
       if (e.button !== 0 || (e.target.closest && e.target.closest(DRAG_SKIP))) return;
+      // Also don't start a drag if the user is actively selecting text.
+      if (e.target.closest && e.target.closest('.log,.tl,.memcard')) return;
       ddrag = true;
       if (window.pybridge) window.pybridge.begin_drag(e.screenX, e.screenY);
     });
@@ -192,6 +352,254 @@ BRIDGE = """
 </script>
 """
 
-out = src.rstrip() + "\n" + OVERRIDE_STYLE + BRIDGE + "\n"
+# The Settings sheet — self-contained: builds its own DOM, wires the title-bar
+# gear, and exposes window.aethelark.setSettings(snapshot) for the daemon to fill.
+SETTINGS = """
+<script>
+(function () {
+  var built = false, panel = null, scrim = null;
+  function pb() { return window.pybridge; }
+
+  var SHELL =
+    '<div id="set-panel">'
+    + '<div class="set-hd"><span class="ttl">SETTINGS</span>'
+    +   '<div class="x" id="set-close" title="Close">\\u2715</div></div>'
+    + '<div class="set-body">'
+
+    + '<div class="set-sec"><div class="lbl">Connected accounts</div>'
+    +   '<div class="set-row"><div class="ic">G</div><div class="tt">'
+    +     '<div class="t">Google <span class="set-badge off" id="set-g-badge">NOT LINKED</span></div>'
+    +     '<div class="d" id="set-g-d">Inbox briefings & calendar need your account.</div></div>'
+    +     '<button class="set-mini" id="set-g-btn">Connect</button></div>'
+    +   '<div class="set-row"><div class="ic">W</div><div class="tt">'
+    +     '<div class="t">WhatsApp</div>'
+    +     '<div class="d">Link via QR to send messages by voice.</div></div>'
+    +     '<button class="set-mini" id="set-wa-btn">Link</button></div></div>'
+
+    + '<div class="set-sec"><div class="lbl">Startup</div>'
+    +   '<div class="set-row"><div class="ic">\\u23fb</div><div class="tt">'
+    +     '<div class="t">Start on boot</div>'
+    +     '<div class="d" id="set-boot-d">Wake the eagle when your computer starts.</div></div>'
+    +     '<div class="set-sw" id="set-boot-sw"></div></div></div>'
+
+    + '<div class="set-sec"><div class="lbl">Identity</div>'
+    +   '<div class="set-row set-stack">'
+    +     '<div class="t">The eagle\\'s name</div>'
+    +     '<input class="set-field" id="set-asst" placeholder="Aethelark">'
+    +     '<div class="t" style="margin-top:14px">It should call you</div>'
+    +     '<input class="set-field" id="set-addr" placeholder="e.g. Sir, Boss, Shenny">'
+    +     '<div class="set-inline"><button class="set-mini solid" id="set-id-save" style="flex:1">Save identity</button></div>'
+    +   '</div></div>'
+
+    + '<div class="set-sec"><div class="lbl">Brain</div>'
+    +   '<div class="set-row set-stack">'
+    +     '<div class="t">Where the eagle thinks</div>'
+    +     '<div class="set-chips" id="set-mode">'
+    +       '<span class="set-chip" data-mode="local">Local</span>'
+    +       '<span class="set-chip" data-mode="api">Cloud</span></div>'
+    +     '<div id="set-api-wrap">'
+    +       '<div class="t" style="margin-top:14px">Provider</div>'
+    +       '<div class="set-chips" id="set-prov">'
+    +         '<span class="set-chip" data-prov="google">Google</span>'
+    +         '<span class="set-chip" data-prov="anthropic">Anthropic</span>'
+    +         '<span class="set-chip" data-prov="openai">OpenAI</span>'
+    +         '<span class="set-chip" data-prov="other">Other</span></div>'
+    +       '<div class="t" style="margin-top:14px">API key <span class="set-badge off" id="set-key-badge">NONE</span></div>'
+    +       '<div class="set-inline"><input class="set-field" id="set-key" type="password" placeholder="Paste a new key to replace">'
+    +         '<button class="set-mini solid" id="set-key-save">Update</button></div>'
+    +     '</div>'
+    +   '</div></div>'
+
+    + '<div class="set-sec"><div class="lbl">Preferences</div>'
+    +   '<div class="set-row"><div class="ic">\\u2600</div><div class="tt">'
+    +     '<div class="t">Morning brief</div>'
+    +     '<div class="d">A spoken summary to start the day.</div></div>'
+    +     '<div class="set-sw" id="set-brief-sw"></div></div>'
+    +   '<div class="set-row set-stack"><div class="t">Browser for logins & automation</div>'
+    +     '<div class="set-bwrap" id="set-browsers"></div>'
+    +     '<div class="d" id="set-browser-hint" style="margin-top:9px"></div></div></div>'
+
+    + '<div class="set-sec"><div class="lbl">Session</div>'
+    +   '<div class="set-row"><div class="ic">\\u21bb</div><div class="tt">'
+    +     '<div class="t">Re-run setup</div><div class="d">Walk the ignition flow again.</div></div>'
+    +     '<button class="set-mini" id="set-reonboard">Open</button></div>'
+    +   '<div class="set-row"><div class="ic">\\u23fb</div><div class="tt">'
+    +     '<div class="t">Quit Aethelark</div><div class="d">Shut the eagle down.</div></div>'
+    +     '<button class="set-mini danger" id="set-quit">Quit</button></div></div>'
+
+    + '</div></div>';
+
+  var st = { mode: 'api', provider: 'google' };
+
+  function setVal(id, v) {
+    var el = document.getElementById(id);
+    if (el && document.activeElement !== el) el.value = v == null ? '' : v;
+  }
+  function selChips(container, attr, val) {
+    document.querySelectorAll('#' + container + ' .set-chip').forEach(function (c) {
+      c.classList.toggle('sel', c.dataset[attr] === val);
+    });
+  }
+
+  window.aethelark = window.aethelark || {};
+  window.aethelark.setSettings = function (s) {
+    if (!built) return; s = s || {};
+    var g = (s.accounts || {}).google || {};
+    var gb = document.getElementById('set-g-badge'),
+        gd = document.getElementById('set-g-d'),
+        gbtn = document.getElementById('set-g-btn');
+    if (g.connected) {
+      gb.textContent = 'LINKED'; gb.className = 'set-badge';
+      gd.textContent = g.email || g.name || 'Account connected';
+      gbtn.textContent = 'Disconnect'; gbtn.className = 'set-mini danger'; gbtn.dataset.act = 'disc';
+    } else if (g.configured === false) {
+      // OAuth client id not set yet — be honest instead of a dead 'Connect'.
+      gb.textContent = 'SETUP NEEDED'; gb.className = 'set-badge off';
+      gd.textContent = 'Add a Google client ID to config to enable sign-in.';
+      gbtn.textContent = 'Connect'; gbtn.className = 'set-mini'; gbtn.dataset.act = 'conn';
+    } else {
+      gb.textContent = 'NOT LINKED'; gb.className = 'set-badge off';
+      gd.textContent = 'Inbox briefings & calendar need your account.';
+      gbtn.textContent = 'Connect'; gbtn.className = 'set-mini'; gbtn.dataset.act = 'conn';
+    }
+
+    var startup = s.startup || {};
+    var bsw = document.getElementById('set-boot-sw');
+    bsw.classList.toggle('on', !!startup.boot_enabled);
+    if (startup.boot_supported === false) {
+      bsw.classList.add('disabled');
+      document.getElementById('set-boot-d').textContent = 'Not supported on this system.';
+    } else { bsw.classList.remove('disabled'); }
+
+    var id = s.identity || {};
+    setVal('set-asst', id.assistant_name || '');
+    setVal('set-addr', id.user_name || '');
+
+    var brain = s.brain || {};
+    st.mode = brain.mode || 'api'; st.provider = brain.provider || 'google';
+    selChips('set-mode', 'mode', st.mode);
+    selChips('set-prov', 'prov', st.provider);
+    document.getElementById('set-api-wrap').style.display = st.mode === 'local' ? 'none' : '';
+    var kb = document.getElementById('set-key-badge');
+    if (brain.has_key) { kb.textContent = 'SET'; kb.className = 'set-badge'; }
+    else { kb.textContent = 'NONE'; kb.className = 'set-badge off'; }
+
+    var pref = s.preferences || {};
+    document.getElementById('set-brief-sw').classList.toggle('on', !!pref.morning_brief_enabled);
+
+    // Browser picker — click an installed browser instead of typing a name.
+    var picker = document.getElementById('set-browsers');
+    var list = s.browsers || [];
+    var sel = (pref.default_browser || '').toLowerCase();
+    if (!sel) { var d = list.filter(function (b) { return b.is_default; })[0]; sel = d ? d.id : ''; }
+    picker.innerHTML = list.length ? list.map(function (b) {
+      return '<div class="set-bchip' + (b.id === sel ? ' sel' : '') + '" data-bid="' + b.id + '">'
+        + '<span class="bg">' + esc(b.glyph) + '</span><span class="bn">' + esc(b.name) + '</span>'
+        + (b.is_default ? '<span class="set-badge">DEFAULT</span>' : '')
+        + (b.is_snap ? '<span class="set-badge off">SNAP</span>' : '') + '</div>';
+    }).join('') : '<div class="d">No browsers detected on this machine.</div>';
+    var chosen = list.filter(function (b) { return b.id === sel; })[0];
+    var hint = document.getElementById('set-browser-hint');
+    hint.textContent = (chosen && chosen.is_snap)
+      ? 'Snap browsers work, but a native install (e.g. Google Chrome) links accounts more reliably.'
+      : '';
+  };
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+
+  function saveIdentity() {
+    if (!pb()) return;
+    pb().save_settings(JSON.stringify({
+      assistant_name: (document.getElementById('set-asst').value || '').trim(),
+      user_name: (document.getElementById('set-addr').value || '').trim(),
+      address_style: 'custom'
+    }));
+  }
+
+  function wire() {
+    document.getElementById('set-close').onclick = close;
+    scrim.addEventListener('click', function (e) { if (e.target === scrim) close(); });
+
+    document.getElementById('set-g-btn').onclick = function () {
+      if (!pb()) return;
+      if (this.dataset.act === 'disc') pb().disconnect_google();
+      else { this.textContent = 'Opening\\u2026'; pb().connect_google(); }
+    };
+    document.getElementById('set-wa-btn').onclick = function () {
+      if (!pb()) return;
+      var btn = this; btn.textContent = 'Opening\\u2026'; pb().link_whatsapp();
+      // No reliable "done" signal (QR scan is user-paced) — restore the label
+      // after the browser has had time to open so it isn't stuck on 'Opening…'.
+      setTimeout(function () { btn.textContent = 'Link'; }, 4000);
+    };
+    document.getElementById('set-boot-sw').onclick = function () {
+      if (this.classList.contains('disabled') || !pb()) return;
+      pb().set_autostart(!this.classList.contains('on'));
+    };
+    document.getElementById('set-id-save').onclick = saveIdentity;
+    document.getElementById('set-asst').addEventListener('keydown', function (e) { if (e.key === 'Enter') saveIdentity(); });
+    document.getElementById('set-addr').addEventListener('keydown', function (e) { if (e.key === 'Enter') saveIdentity(); });
+
+    document.getElementById('set-mode').addEventListener('click', function (e) {
+      var c = e.target.closest('.set-chip'); if (!c || !pb()) return;
+      st.mode = c.dataset.mode; selChips('set-mode', 'mode', st.mode);
+      document.getElementById('set-api-wrap').style.display = st.mode === 'local' ? 'none' : '';
+      pb().save_settings(JSON.stringify({ brain_mode: st.mode }));
+    });
+    document.getElementById('set-prov').addEventListener('click', function (e) {
+      var c = e.target.closest('.set-chip'); if (!c || !pb()) return;
+      st.provider = c.dataset.prov; selChips('set-prov', 'prov', st.provider);
+      pb().save_settings(JSON.stringify({ brain_provider: st.provider }));
+    });
+    document.getElementById('set-key-save').onclick = function () {
+      var f = document.getElementById('set-key'), v = (f.value || '').trim();
+      if (v && pb()) { pb().set_brain_key(st.provider, v); f.value = ''; }
+    };
+
+    document.getElementById('set-brief-sw').onclick = function () {
+      if (pb()) pb().save_settings(JSON.stringify({ morning_brief_enabled: !this.classList.contains('on') }));
+    };
+    document.getElementById('set-browsers').addEventListener('click', function (e) {
+      var c = e.target.closest('.set-bchip'); if (!c || !pb()) return;
+      pb().save_settings(JSON.stringify({ default_browser: c.dataset.bid }));
+    });
+    document.getElementById('set-reonboard').onclick = function () { if (pb()) { pb().rerun_onboarding(); close(); } };
+    document.getElementById('set-quit').onclick = function () { if (pb()) pb().quit(); };
+  }
+
+  function build() {
+    if (built) return;
+    scrim = document.createElement('div'); scrim.id = 'set-scrim'; scrim.innerHTML = SHELL;
+    var host = document.querySelector('.app') || document.body;
+    if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+    host.appendChild(scrim);
+    panel = document.getElementById('set-panel');
+    // Swallow mousedown inside the sheet so the dashboard's drag-from-anywhere
+    // handler (on document) never drags the window while using Settings.
+    scrim.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+    built = true; wire();
+  }
+  function open() {
+    build();
+    scrim.classList.add('open');
+    if (pb() && pb().open_settings) pb().open_settings();
+  }
+  function close() { if (scrim) scrim.classList.remove('open'); }
+
+  function attachGear() {
+    var g = document.querySelector('.stud');
+    if (g) { g.style.cursor = 'pointer'; g.title = 'Settings'; g.onclick = open; }
+  }
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', attachGear);
+  else attachGear();
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && scrim && scrim.classList.contains('open')) { e.stopPropagation(); close(); }
+  }, true);
+})();
+</script>
+"""
+
+out = src.rstrip() + "\n" + OVERRIDE_STYLE + BRIDGE + SETTINGS + "\n"
 (HERE / "dashboard.html").write_text(out, encoding="utf-8")
 print("wrote web/dashboard.html", len(out), "bytes")

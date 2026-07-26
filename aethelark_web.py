@@ -16,9 +16,10 @@ import time
 import pathlib
 
 from PyQt6.QtCore import (Qt, QObject, pyqtSlot, pyqtSignal, QUrl, QEvent, QTimer,
-                          QRect, QPropertyAnimation, QEasingCurve)
+                          QRect)
 from PyQt6.QtGui import QKeySequence, QShortcut
-from PyQt6.QtWidgets import QApplication, QMainWindow
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QLabel, QPushButton)
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebChannel import QWebChannel
 
@@ -67,6 +68,24 @@ class WebBridge(QObject):
     def halt_swarm(self): self._ui._fire_interrupt()
     @pyqtSlot()
     def toggle_mute(self): self._ui.toggle_mute()
+
+    # ---- Settings panel (the title-bar gear) ----
+    @pyqtSlot()
+    def open_settings(self): self._ui.push_settings()
+    @pyqtSlot(str)
+    def save_settings(self, patch): self._ui.save_settings(patch)
+    @pyqtSlot(bool)
+    def set_autostart(self, on): self._ui.set_autostart(on)
+    @pyqtSlot(str, str)
+    def set_brain_key(self, provider, key): self._ui.set_brain_key(provider, key)
+    @pyqtSlot()
+    def connect_google(self): self._ui.connect_google()
+    @pyqtSlot()
+    def disconnect_google(self): self._ui.disconnect_google()
+    @pyqtSlot()
+    def link_whatsapp(self): self._ui.link_whatsapp()
+    @pyqtSlot()
+    def rerun_onboarding(self): self._ui.rerun_onboarding()
 
     @pyqtSlot(int, int)
     def begin_drag(self, sx, sy):
@@ -168,14 +187,98 @@ class PillWebWindow(QMainWindow):
         self._apply()   # re-assert state on re-show (hidden views go stale)
 
 
+class WebClipboardPanel(QWidget):
+    """Clipboard Intelligence for the web app (ported from the classic UI):
+    when the user copies text, a floating tech-noir panel offers Translate /
+    Summarise / Explain / Fix — one click routes it to the brain."""
+    action_requested = pyqtSignal(str)
+    _ACTIONS = [
+        ("TRANSLATE", "Translate this text to English: {text}"),
+        ("SUMMARISE", "Summarise this: {text}"),
+        ("EXPLAIN",   "Explain this: {text}"),
+        ("FIX",       "Fix the grammar and spelling of this: {text}"),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint
+                            | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedWidth(360)
+        self._text = ""
+
+        wrap = QWidget(self)
+        wrap.setObjectName("clipwrap")
+        wrap.setStyleSheet("""
+            #clipwrap{background:rgba(12,12,16,0.97);border:1px solid rgba(200,200,208,0.22);border-radius:14px;}
+            QLabel#hdr{color:#C8C8D0;font-family:'Doto';font-weight:700;font-size:9px;letter-spacing:2px;background:transparent;}
+            QLabel#prev{color:#E5E5EA;background:rgba(0,0,0,0.35);border:1px solid rgba(200,200,208,0.14);border-radius:7px;padding:6px 9px;font-size:11px;}
+            QPushButton#act{color:#C8C8D0;background:rgba(255,255,255,0.04);border:1px solid rgba(200,200,208,0.16);border-radius:8px;font-family:'Manrope';font-weight:600;font-size:10px;letter-spacing:1px;padding:8px 0;}
+            QPushButton#act:hover{color:#fff;border-color:#C8C8D0;background:rgba(255,255,255,0.08);}
+            QPushButton#x{color:#7C7C86;background:transparent;border:none;font-size:13px;}
+            QPushButton#x:hover{color:#fff;}
+        """)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(wrap)
+
+        lay = QVBoxLayout(wrap)
+        lay.setContentsMargins(12, 10, 12, 11)
+        lay.setSpacing(8)
+
+        hdr = QHBoxLayout()
+        h = QLabel("◈  CLIPBOARD DETECTED"); h.setObjectName("hdr")
+        x = QPushButton("✕"); x.setObjectName("x"); x.setFixedSize(18, 18)
+        x.setCursor(Qt.CursorShape.PointingHandCursor); x.clicked.connect(self.hide)
+        hdr.addWidget(h); hdr.addStretch(); hdr.addWidget(x)
+        lay.addLayout(hdr)
+
+        self._preview = QLabel(); self._preview.setObjectName("prev"); self._preview.setWordWrap(False)
+        lay.addWidget(self._preview)
+
+        row = QHBoxLayout(); row.setSpacing(6)
+        for label, fmt in self._ACTIONS:
+            b = QPushButton(label); b.setObjectName("act")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _, c=fmt: self._fire(c))
+            row.addWidget(b)
+        lay.addLayout(row)
+
+        self._timer = QTimer(self); self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.hide)
+        self.hide()
+
+    def _fire(self, fmt):
+        if self._text:
+            self.action_requested.emit(fmt.format(text=self._text[:800]))
+        self.hide()
+
+    def show_for(self, text, x, y):
+        self._text = text
+        prev = text[:64].replace("\n", " ")
+        if len(text) > 64:
+            prev += "…"
+        self._preview.setText('"' + prev + '"')
+        self.adjustSize()
+        self.move(x, y)
+        self.show(); self.raise_()
+        self._timer.start(8000)
+
+
 class WebShellUI(QObject):
     """The object AethelarkLive drives. Thread-safe: backend runs in a worker
     thread and calls these; GUI work is marshalled to the main thread via signals."""
+    # The web pill's waveform is CSS-animated, so the backend must NOT spend CPU
+    # computing a per-frame RMS envelope during speech (it's a no-op here). The
+    # playback loop reads this to skip that work — keeps voice snappy.
+    consumes_audio_level = False
+
     _state_sig    = pyqtSignal(str)
     _log_sig      = pyqtSignal(str)
     _audio_sig    = pyqtSignal(float)
     _content_sig  = pyqtSignal(str, str)
     _reconfig_sig = pyqtSignal()
+    _settings_sig = pyqtSignal(dict)   # worker threads → push settings snapshot
 
     def __init__(self, face_path="face.png"):
         super().__init__()
@@ -209,12 +312,12 @@ class WebShellUI(QObject):
         ew, eh = int(geo.width() * 0.63), int(geo.height() * 0.70)
         self._expanded_geo = QRect(geo.x() + (geo.width() - ew) // 2,
                                    geo.y() + (geo.height() - eh) // 2, ew, eh)
-        self._anim = None
 
         self._state_sig.connect(self._on_state)
         self._log_sig.connect(self._on_log)
         self._content_sig.connect(self._on_content)
         self._reconfig_sig.connect(self._on_reconfig)
+        self._settings_sig.connect(lambda snap: self._push("setSettings", snap))
 
         QShortcut(QKeySequence("F4"), self.dashboard, activated=self.toggle_mute)
 
@@ -222,53 +325,78 @@ class WebShellUI(QObject):
         self._metric_tmr.timeout.connect(self._tick)
         self._metric_tmr.start(2000)
 
+        # Clipboard Intelligence — copy text → floating quick-action panel.
+        self._last_clip = ""
+        self._clip_panel = WebClipboardPanel()
+        self._clip_panel.action_requested.connect(self._dispatch_command)
+        try:
+            self._app.clipboard().dataChanged.connect(self._on_clipboard_changed)
+        except Exception as e:
+            print(f"[aethelark_web] clipboard watch unavailable: {e}")
+
         self.show_pill()
+
+    def _on_clipboard_changed(self):
+        try:
+            text = self._app.clipboard().text().strip()
+        except Exception:
+            return
+        if len(text) < 10 or text == self._last_clip:
+            return
+        self._last_clip = text
+        geo = QApplication.primaryScreen().availableGeometry()
+        w = self._clip_panel.width() or 360
+        self._clip_panel.show_for(text, geo.x() + (geo.width() - w) // 2, geo.y() + 96)
 
     # ---- window transitions (main thread) ----
     def show_pill(self):
         self.pill_win.setGeometry(self._pill_geo)
         self.pill_win.show(); self.pill_win.raise_()
 
+    # Expand/collapse is animated INSIDE the page (a GPU-composited transform on
+    # the card), not by resizing the Chromium window. Resizing forced a full page
+    # relayout every frame — the stutter you saw. The window is simply shown at
+    # its final size and the card springs in via CSS.
+    _MORPH_OUT_MS = 260   # must cover the aeOut keyframe duration in build_app_ui
+
     def open_dashboard(self):
-        self.pill_win.hide()
+        # Show the extended card at full size; the "spring from the island" is the
+        # CSS aeIn animation growing the card from the top-centre.
         self.dashboard.setGeometry(self._expanded_geo)
+        # Keep the window invisible for one frame so the CSS from-state (tiny +
+        # transparent) is applied BEFORE it's shown — otherwise the full-size card
+        # flashes for a frame. Fails safe: revealed unconditionally at 24ms even
+        # if the morph JS didn't run.
         self.dashboard.setWindowOpacity(0.0)
         self.dashboard.show()
         self.dashboard.activateWindow(); self.dashboard.raise_()
+        self.pill_win.hide()
+        self.dashboard.push("playMorph", "in")
+        QTimer.singleShot(24, lambda: self.dashboard.setWindowOpacity(1.0))
         self._push_all()
-        self._fade(1.0)
 
     def collapse_to_pill(self):
-        self._fade(0.0, on_done=self._after_collapse)
+        # Shrink the card back toward the island (CSS aeOut), then hand off to the
+        # live pill once the animation has finished.
+        self.dashboard.push("playMorph", "out")
+        QTimer.singleShot(self._MORPH_OUT_MS, self._after_collapse)
 
     def _after_collapse(self):
         self.dashboard.hide()
         self.dashboard.setWindowOpacity(1.0)
+        self.dashboard.setGeometry(self._expanded_geo)  # reset for next open
         self.show_pill()
 
-    def _fade(self, to, on_done=None):
-        """Clean GPU-composited crossfade. A live QWebEngine view can't be
-        shape-morphed smoothly (per-frame resize janks; .grab() is unreliable
-        on GPU), so we fade — snappy and glitch-free."""
-        if self._anim is not None:
-            self._anim.stop()
-        self._anim = QPropertyAnimation(self.dashboard, b"windowOpacity")
-        self._anim.setDuration(190)
-        self._anim.setStartValue(self.dashboard.windowOpacity())
-        self._anim.setEndValue(to)
-        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        if on_done:
-            self._anim.finished.connect(on_done)
-        self._anim.start()
-
     def on_dashboard_blur(self):
-        if self.mode == "casual" and not self.pinned:
-            QTimer.singleShot(120, self._blur_collapse)
-
-    def _blur_collapse(self):
-        if (self.dashboard.isVisible() and not self.dashboard.isActiveWindow()
-                and self.mode == "casual" and not self.pinned):
-            self.collapse_to_pill()
+        # Interaction model (revised): the dashboard NO LONGER collapses just
+        # because it lost focus. Clicking another window (e.g. Claude Code next
+        # to Aethelark) must keep the dashboard open so the two can sit side by
+        # side. Collapse to the pill happens ONLY on an explicit trigger:
+        #   • the Collapse button in the UI          → bridge.collapse()
+        #   • a voice command ("go to pill mode", …) → collapse_to_pill()
+        #   • another window going fullscreen         → (handled elsewhere)
+        # so plain blur is intentionally a no-op now.
+        return
 
     # ---- bridge-driven ----
     def _on_ui_ready(self):
@@ -289,6 +417,116 @@ class WebShellUI(QObject):
     def toggle_mute(self):
         self.muted = not self._muted
 
+    # ---- Settings panel (title-bar gear) ----
+    def push_settings(self):
+        """Send a fresh settings snapshot to the panel. Computed off the GUI
+        thread — the first snapshot probes installed browsers (shells out to
+        xdg-settings), which must never block the UI / steal the audio GIL."""
+        def _work():
+            try:
+                from actions.app_settings import snapshot
+                self._push_settings_async(snapshot())
+            except Exception as e:
+                print(f"[aethelark_web] settings snapshot failed: {e}")
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _push_settings_async(self, snap):
+        # From a worker thread we can't touch the web view directly.
+        self._settings_sig.emit(snap or {})
+
+    def save_settings(self, patch):
+        try:
+            data = json.loads(patch or "{}")
+        except Exception:
+            data = {}
+        try:
+            from actions.app_settings import save, set_brain_key
+            key = (data.pop("brain_api_key", "") or "").strip()
+            snap = save(data)
+            if key:
+                snap = set_brain_key(data.get("brain_provider")
+                                     or snap["brain"]["provider"], key)
+            self._push("setSettings", snap)
+        except Exception as e:
+            print(f"[aethelark_web] save_settings failed: {e}")
+
+    def set_autostart(self, on):
+        try:
+            from actions.app_settings import set_autostart
+            self._push("setSettings", set_autostart(bool(on)))
+        except Exception as e:
+            print(f"[aethelark_web] autostart toggle failed: {e}")
+
+    def set_brain_key(self, provider, key):
+        try:
+            from actions.app_settings import set_brain_key
+            self._push("setSettings", set_brain_key(provider, key))
+        except Exception as e:
+            print(f"[aethelark_web] set_brain_key failed: {e}")
+
+    def connect_google(self):
+        def _flow():
+            try:
+                from actions.google_auth import sign_in_google
+                res = sign_in_google()
+                status = res.get("status")
+                if status == "ok":
+                    self.write_log(f"NET: Google connected — {res.get('email', '')}")
+                elif status == "not_configured":
+                    # The OAuth seam has no client_id yet — tell the user plainly
+                    # instead of the button silently snapping back to 'Connect'.
+                    self.write_log("NET: Google sign-in isn't switched on yet "
+                                   "(needs a google_client_id). Guest + browser "
+                                   "automation still work in the meantime.")
+                else:
+                    self.write_log(f"NET: Google sign-in — {res.get('message', 'failed')}")
+            except Exception as e:
+                self.write_log(f"ERR: Google sign-in — {e}")
+            try:
+                from actions.app_settings import snapshot
+                self._push_settings_async(snapshot())
+            except Exception as _e:
+                print(f"[aethelark_web.py] Non-fatal error at line 488: {_e}")
+        threading.Thread(target=_flow, daemon=True).start()
+
+    def disconnect_google(self):
+        try:
+            from actions.app_settings import disconnect_google
+            self._push("setSettings", disconnect_google())
+        except Exception as e:
+            print(f"[aethelark_web] disconnect_google failed: {e}")
+
+    def link_whatsapp(self):
+        # Opens WhatsApp Web in the shared browser session so the user can scan
+        # the QR once; the login then persists in that profile. Non-blocking.
+        self.write_log("NET: Opening WhatsApp Web — scan the QR once to link.")
+        def _flow():
+            try:
+                from actions.browser_control import _registry
+                sess = _registry.get(None)
+                async def _open(s):
+                    page = await s._get_page()
+                    await page.goto("https://web.whatsapp.com/",
+                                    wait_until="domcontentloaded", timeout=45_000)
+                    return "opened"
+                sess.run(_open(sess), timeout=60)
+            except Exception as e:
+                self.write_log(f"ERR: WhatsApp link — {e}")
+        threading.Thread(target=_flow, daemon=True).start()
+
+    def rerun_onboarding(self):
+        # Re-open the full ignition flow. on_done just refreshes the panel — the
+        # main app keeps running behind it (config is merged, never wiped).
+        def _done():
+            try:
+                self._reonboard.close()
+            except Exception as _e:
+                print(f"[aethelark_web.py] Non-fatal error at line 523: {_e}")
+            self.push_settings()
+        self._reonboard = OnboardingWindow(on_done=_done)
+        self._reonboard.showMaximized()
+        self._reonboard.raise_()
+
     # ---- pushing state to the web UI ----
     def _push(self, fn, payload):
         if self._ui_ready:
@@ -302,6 +540,20 @@ class WebShellUI(QObject):
     def _push_memory(self):
         self._push("setMemory", self._memory_facts())
 
+    def _memory_changed(self) -> bool:
+        """True if the long-term memory file changed since we last read it.
+        Avoids re-parsing memory from disk on every 2s tick (that GIL churn
+        competed with the audio threads)."""
+        try:
+            from memory.memory_manager import MEMORY_PATH
+            mtime = MEMORY_PATH.stat().st_mtime
+        except Exception:
+            return False
+        if mtime != getattr(self, "_mem_mtime", None):
+            self._mem_mtime = mtime
+            return True
+        return False
+
     def _push_metrics(self):
         s = _metrics.snapshot()
         gpu = f"{s['gpu']:.0f}%" if s['gpu'] >= 0 else "N/A"
@@ -309,7 +561,11 @@ class WebShellUI(QObject):
                                   "mem": f"{s['mem']:.0f}%", "gpu": gpu})
 
     def _tick(self):
-        self._push_metrics(); self._push_memory()
+        # Metrics are cheap (a psutil snapshot); memory is only re-read + pushed
+        # when the file actually changed, not every 2 seconds.
+        self._push_metrics()
+        if self._memory_changed():
+            self._push_memory()
 
     def _memory_facts(self):
         try:
@@ -427,12 +683,139 @@ class WebShellUI(QObject):
                 if d.get("gemini_api_key"):
                     self._win._ready = True
                     return
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[aethelark_web.py] Non-fatal error at line 686: {_e}")
             time.sleep(0.3)
 
 
-def main():
+ONBOARDING_HTML = BASE / "web" / "onboarding.html"
+
+
+def _is_onboarded() -> bool:
+    try:
+        cfg = json.loads(API_KEYS.read_text(encoding="utf-8"))
+        return bool(cfg.get("onboarded"))
+    except Exception:
+        return False
+
+
+class OnboardBridge(QObject):
+    """window.pybridge on the onboarding page."""
+    def __init__(self, win): super().__init__(); self._win = win
+
+    @pyqtSlot()
+    def onboard_ready(self): self._win.on_ready()
+    @pyqtSlot()
+    def google_login(self): self._win.start_google_login()
+    @pyqtSlot(str)
+    def complete(self, payload): self._win.complete(payload)
+    @pyqtSlot()
+    def quit(self): QApplication.instance().quit()
+
+    @pyqtSlot(int, int)
+    def begin_drag(self, sx, sy):
+        w = self._win; w._drag_origin = (sx, sy, w.x(), w.y())
+
+    @pyqtSlot(int, int)
+    def drag_to(self, sx, sy):
+        w = self._win; o = getattr(w, "_drag_origin", None)
+        if o:
+            w.move(o[2] + (sx - o[0]), o[3] + (sy - o[1]))
+
+
+class OnboardingWindow(QMainWindow):
+    """First-run ignition flow. Renders web/onboarding.html, persists the user's
+    choices to config, then hands control to on_done()."""
+    _push_sig = pyqtSignal(str, str)   # (fn, json-payload) — marshals to GUI thread
+
+    def __init__(self, on_done):
+        super().__init__()
+        self._on_done = on_done
+        self.setWindowTitle("AETHELARK — Ignition")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.view = QWebEngineView()
+        self.view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.view.page().setBackgroundColor(Qt.GlobalColor.transparent)
+        self.setCentralWidget(self.view)
+        self.channel = QWebChannel()
+        self.bridge = OnboardBridge(self)
+        self.channel.registerObject("pybridge", self.bridge)
+        self.view.page().setWebChannel(self.channel)
+        self._push_sig.connect(self._do_push)
+        self.view.load(QUrl.fromLocalFile(str(ONBOARDING_HTML)))
+
+    def _do_push(self, fn, payload):
+        self.view.page().runJavaScript(
+            "window.onboarding && window.onboarding.%s(%s)" % (fn, payload))
+
+    def push(self, fn, payload):
+        self._push_sig.emit(fn, json.dumps(payload))
+
+    def on_ready(self):
+        # Detect the machine off-thread (nvidia-smi / lspci can block briefly).
+        def _probe():
+            try:
+                from actions.machine_profile import detect_machine
+                self.push("setMachine", detect_machine())
+            except Exception as e:
+                print(f"[onboarding] machine probe failed: {e}")
+        threading.Thread(target=_probe, daemon=True).start()
+
+    def start_google_login(self):
+        def _flow():
+            try:
+                from actions.google_auth import sign_in_google
+                self.push("setAuth", sign_in_google())
+            except Exception as e:
+                self.push("setAuth", {"status": "error", "message": str(e)})
+        threading.Thread(target=_flow, daemon=True).start()
+
+    def complete(self, payload):
+        try:
+            data = json.loads(payload or "{}")
+        except Exception:
+            data = {}
+        try:
+            cfg = json.loads(API_KEYS.read_text(encoding="utf-8"))
+        except Exception:
+            cfg = {}
+
+        # Skip-safe: only overwrite a field when the flow actually provided a
+        # value, so clicking "Skip" never wipes an already-configured setup.
+        cfg["onboarded"] = True
+        un = (data.get("user_name") or "").strip()
+        if un:
+            cfg["user_name"] = un
+        elif "user_name" not in cfg:
+            cfg["user_name"] = ""
+        addr = data.get("address_style") or ""
+        if addr:
+            cfg["address_style"] = addr
+        cfg["brain_mode"] = data.get("brain_mode") or cfg.get("brain_mode") or "api"
+        cfg["auth_provider"] = data.get("auth") or cfg.get("auth_provider") or "guest"
+        if cfg["brain_mode"] == "api":
+            prov = data.get("provider") or cfg.get("brain_provider") or "google"
+            key = (data.get("api_key") or "").strip()
+            cfg["brain_provider"] = prov
+            if key:
+                # The live voice runtime is Gemini today, so a Google key becomes
+                # the runtime key; other providers are stored for the (later)
+                # multi-brain router.
+                if prov == "google":
+                    cfg["gemini_api_key"] = key
+                else:
+                    cfg["brain_api_key"] = key
+        try:
+            API_KEYS.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
+        except Exception as e:
+            print(f"[onboarding] could not write config: {e}")
+
+        self.close()
+        self._on_done()
+
+
+def _launch_main_app():
     ui = WebShellUI("face.png")
 
     def runner():
@@ -446,7 +829,23 @@ def main():
             pass
 
     threading.Thread(target=runner, daemon=True).start()
-    sys.exit(ui.root.mainloop() or 0)
+    # keep a reference so the shell isn't garbage-collected
+    QApplication.instance()._aethelark_ui = ui
+
+
+def main():
+    app = QApplication.instance() or QApplication(sys.argv)
+    load_app_fonts()
+    app.setStyle("Fusion")
+
+    if _is_onboarded():
+        _launch_main_app()
+    else:
+        onboard = OnboardingWindow(on_done=_launch_main_app)
+        app._aethelark_onboard = onboard   # keep alive
+        onboard.showMaximized()
+
+    sys.exit(app.exec() or 0)
 
 
 if __name__ == "__main__":

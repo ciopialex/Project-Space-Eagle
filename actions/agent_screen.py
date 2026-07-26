@@ -81,7 +81,7 @@ class AgentScreenWatcher:
             try:
                 self._stream.feed(data)
             except Exception:
-                pass
+                pass  # per-chunk VT decode hiccup — silent (runs on every output byte)
         self._scan_raw(data)
 
     def _scan_raw(self, data: bytes):
@@ -113,7 +113,7 @@ class AgentScreenWatcher:
             try:
                 self.on_thought(self.agent_name, text, status)
             except Exception:
-                pass
+                pass  # UI callback hiccup — silent (fires per emitted thought)
 
     # ---------------------------------------------------------------- poll
 
@@ -141,7 +141,7 @@ class AgentScreenWatcher:
             try:
                 self._poll_once()
             except Exception:
-                pass
+                pass  # transient poll error — silent (runs POLL_HZ times/sec)
         self._stop.set()
 
     def _poll_once(self):

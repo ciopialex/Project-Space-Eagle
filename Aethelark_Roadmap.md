@@ -29,7 +29,7 @@ The classic PyQt/QPainter desktop assistant + the **Swarm OS** handoff (`for_fab
 | 8 | `7f294f7` | **Dashboard SSE** swarm telemetry + condensed **repo‑map** context packing. |
 
 ### Era 1 — Tech‑noir UI redesign (`513a3e9`)
-The classic UI looked like "knockoff Jarvis." Redesigned to the **7EVEN / WEB7** tech‑noir language: the **Eagle Crest Core** replaced the cyan arc reactor; the adaptive **CASUAL / HARDCORE** surface; the **"Aethelark Remembers"** memory rail; functional starter chips; the swarm war room; **iOS‑grade spring motion**; and a critical fix — the **Doto + Manrope fonts are now registered** (they were silently falling back). Also `main.py` **session‑resumption resilience** (survive Gemini `1011`/GoAway without losing context). *Mockups: the approved artifact is preserved at `web/artifact_reference.html`.*
+The classic UI looked like a "knockoff assistant." Redesigned to the **7EVEN / WEB7** tech‑noir language: the **Eagle Crest Core** replaced the cyan arc reactor; the adaptive **CASUAL / HARDCORE** surface; the **"Aethelark Remembers"** memory rail; functional starter chips; the swarm war room; **iOS‑grade spring motion**; and a critical fix — the **Doto + Manrope fonts are now registered** (they were silently falling back). Also `main.py` **session‑resumption resilience** (survive Gemini `1011`/GoAway without losing context). *Mockups: the approved artifact is preserved at `web/artifact_reference.html`.*
 
 ### Era 2 — The web‑rendered pivot (`4e795c3` → `bc47229`)
 Realization: QPainter can't hit **pixel‑exact** CSS (no `backdrop-filter`, blend modes, etc.). Decision (see `Aethelark_Web_Pivot_Plan.md`): **render the real HTML/CSS in embedded QWebEngine**, keep the Python daemon, keep a native‑style pill. Delivered:

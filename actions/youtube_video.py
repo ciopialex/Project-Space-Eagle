@@ -144,8 +144,8 @@ def _get_transcript(video_id: str) -> str | None:
 
         try:
             transcript = transcript_list.find_manually_created_transcript(lang_priority)
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[youtube_video.py] Non-fatal error at line 147: {_e}")
 
         if transcript is None:
             try:

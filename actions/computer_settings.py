@@ -51,9 +51,46 @@ def _get_macos_wifi_interface() -> str:
                 for j in range(i, min(i + 4, len(lines))):
                     if lines[j].startswith("Device:"):
                         return lines[j].split(":", 1)[1].strip()
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[computer_settings.py] Non-fatal error at line 54: {_e}")
     return "en0" 
+
+def _linux_audio(kind: str, arg: int | None = None) -> bool:
+    """Adjust volume on Linux across audio stacks: PulseAudio (pactl),
+    PipeWire (wpctl), or ALSA (amixer) — whichever is installed. Returns True
+    only when a backend actually ran (honest: no silent no-op)."""
+    import shutil
+    backends = []
+    if shutil.which("pactl"):
+        backends.append({
+            "up":   ["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"],
+            "down": ["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"],
+            "mute": ["pactl", "set-sink-mute",   "@DEFAULT_SINK@", "toggle"],
+            "set":  ["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{arg}%"],
+        })
+    if shutil.which("wpctl"):
+        backends.append({
+            "up":   ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "10%+"],
+            "down": ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "10%-"],
+            "mute": ["wpctl", "set-mute",   "@DEFAULT_AUDIO_SINK@", "toggle"],
+            "set":  ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{(arg or 0)/100:.2f}"],
+        })
+    if shutil.which("amixer"):
+        backends.append({
+            "up":   ["amixer", "-q", "set", "Master", "10%+"],
+            "down": ["amixer", "-q", "set", "Master", "10%-"],
+            "mute": ["amixer", "-q", "set", "Master", "toggle"],
+            "set":  ["amixer", "-q", "set", "Master", f"{arg}%"],
+        })
+    for b in backends:
+        try:
+            if subprocess.run(b[kind], capture_output=True, timeout=5).returncode == 0:
+                return True
+        except Exception:
+            continue
+    print("[Settings] ⚠️ No usable Linux audio backend (pactl/wpctl/amixer).")
+    return False
+
 
 def volume_up():
     if _OS == "Windows":
@@ -63,8 +100,7 @@ def volume_up():
             "set volume output volume (output volume of (get volume settings) + 10)"],
             capture_output=True)
     else:
-        subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"],
-            capture_output=True)
+        _linux_audio("up")
 
 def volume_down():
     if _OS == "Windows":
@@ -74,8 +110,7 @@ def volume_down():
             "set volume output volume (output volume of (get volume settings) - 10)"],
             capture_output=True)
     else:
-        subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"],
-            capture_output=True)
+        _linux_audio("down")
 
 def volume_mute():
     if _OS == "Windows":
@@ -84,8 +119,7 @@ def volume_mute():
         subprocess.run(["osascript", "-e", "set volume with output muted"],
             capture_output=True)
     else:
-        subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"],
-            capture_output=True)
+        _linux_audio("mute")
 
 def volume_set(value: int):
     value = max(0, min(100, int(value)))
@@ -110,9 +144,93 @@ def volume_set(value: int):
             capture_output=True)
         return
     else:
-        subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{value}%"],
-            capture_output=True)
+        _linux_audio("set", value)
         return
+
+def _linux_sysfs_brightness(delta_pct: float) -> bool:
+    """Adjust brightness via /sys/class/backlight sysfs — pure Python, no subprocess.
+    delta_pct: fraction to add (e.g. +0.1 or -0.1). Returns True on success."""
+    backlight_dir = Path("/sys/class/backlight")
+    if not backlight_dir.exists():
+        return False
+    devices = list(backlight_dir.iterdir())
+    if not devices:
+        return False
+    dev = devices[0]  # first backlight device (intel_backlight, amdgpu_bl0, etc.)
+    try:
+        max_b = int((dev / "max_brightness").read_text().strip())
+        cur_b = int((dev / "brightness").read_text().strip())
+        step = max(1, int(max_b * abs(delta_pct)))
+        if delta_pct > 0:
+            new_b = min(max_b, cur_b + step)
+        else:
+            new_b = max(max(1, int(max_b * 0.01)), cur_b - step)  # floor at ~1%
+        # sysfs write requires root or udev rule; try brightnessctl as writer
+        # since direct write may fail on most distros without polkit
+        (dev / "brightness").write_text(str(new_b))
+        return True
+    except PermissionError:
+        # Fall back to brightnessctl with the computed absolute value
+        try:
+            subprocess.run(
+                ["brightnessctl", "set", str(new_b)],
+                capture_output=True, timeout=5
+            )
+            return True
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
+def _linux_xrandr_brightness(delta: float) -> bool:
+    """Adjust brightness via xrandr — structured subprocess, no shell=True.
+    delta: amount to add to current software brightness (e.g. +0.1 or -0.1)."""
+    import shutil
+    if not shutil.which("xrandr"):
+        return False
+    try:
+        # Step 1: Find the connected output name
+        result = subprocess.run(
+            ["xrandr", "--query"],
+            capture_output=True, text=True, timeout=5
+        )
+        output_name = None
+        for line in result.stdout.splitlines():
+            if " connected" in line:
+                output_name = line.split()[0]
+                break
+        if not output_name:
+            return False
+
+        # Step 2: Read current software brightness
+        verbose = subprocess.run(
+            ["xrandr", "--verbose"],
+            capture_output=True, text=True, timeout=5
+        )
+        current = 1.0
+        for line in verbose.stdout.splitlines():
+            if "Brightness:" in line:
+                try:
+                    current = float(line.split("Brightness:")[1].strip())
+                except (ValueError, IndexError):
+                    pass
+                break
+
+        # Step 3: Compute and clamp new brightness
+        new_val = current + delta
+        new_val = max(0.1, min(1.0, round(new_val, 2)))
+
+        # Step 4: Set it — no shell, list args only
+        subprocess.run(
+            ["xrandr", "--output", output_name, "--brightness", str(new_val)],
+            capture_output=True, timeout=5
+        )
+        return True
+    except Exception as e:
+        print(f"[Settings] xrandr brightness failed: {e}")
+        return False
+
 
 def brightness_up():
     if _OS == "Darwin":
@@ -120,17 +238,11 @@ def brightness_up():
             'tell application "System Events" to key code 144'],
             capture_output=True)
     elif _OS == "Linux":
-        if subprocess.run(["which", "brightnessctl"],
-                capture_output=True).returncode == 0:
+        import shutil
+        if shutil.which("brightnessctl"):
             subprocess.run(["brightnessctl", "set", "+10%"], capture_output=True)
-        else:
-            subprocess.run(
-                'xrandr --output $(xrandr | grep " connected" | head -1 | cut -d " " -f1)'
-                ' --brightness $(python3 -c "import subprocess; '
-                'b=float(subprocess.check_output([\"xrandr\",\"--verbose\"]).decode()'
-                '.split(\"Brightness:\")[1].split()[0]); print(min(1.0,b+0.1))")',
-                shell=True, capture_output=True
-            )
+        elif not _linux_sysfs_brightness(+0.10):
+            _linux_xrandr_brightness(+0.1)
     else:
         try:
             subprocess.run(
@@ -149,17 +261,11 @@ def brightness_down():
             'tell application "System Events" to key code 145'],
             capture_output=True)
     elif _OS == "Linux":
-        if subprocess.run(["which", "brightnessctl"],
-                capture_output=True).returncode == 0:
+        import shutil
+        if shutil.which("brightnessctl"):
             subprocess.run(["brightnessctl", "set", "10%-"], capture_output=True)
-        else:
-            subprocess.run(
-                'xrandr --output $(xrandr | grep " connected" | head -1 | cut -d " " -f1)'
-                ' --brightness $(python3 -c "import subprocess; '
-                'b=float(subprocess.check_output([\"xrandr\",\"--verbose\"]).decode()'
-                '.split(\"Brightness:\")[1].split()[0]); print(max(0.1,b-0.1))")',
-                shell=True, capture_output=True
-            )
+        elif not _linux_sysfs_brightness(-0.10):
+            _linux_xrandr_brightness(-0.1)
     else:
         try:
             subprocess.run(
@@ -171,6 +277,7 @@ def brightness_down():
             )
         except Exception as e:
             print(f"[Settings] Brightness down failed on Windows: {e}")
+
 
 def close_app():
     if _OS == "Darwin": pyautogui.hotkey("command", "q")
@@ -210,15 +317,15 @@ def snap_left():
         # macOS has no built-in snap; try Rectangle app shortcut if installed
         try:
             subprocess.run(["open", "-a", "Rectangle"], capture_output=True, timeout=1)
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[computer_settings.py] Non-fatal error at line 246: {_e}")
         pyautogui.hotkey("ctrl", "option", "left")
     else:  # Linux
         try:
             subprocess.run(["wmctrl", "-r", ":ACTIVE:", "-e", "0,0,0,960,1080"],
                 capture_output=True)
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[computer_settings.py] Non-fatal error at line 253: {_e}")
 
 def snap_right():
     if _OS == "Windows":
@@ -226,15 +333,15 @@ def snap_right():
     elif _OS == "Darwin":
         try:
             subprocess.run(["open", "-a", "Rectangle"], capture_output=True, timeout=1)
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[computer_settings.py] Non-fatal error at line 262: {_e}")
         pyautogui.hotkey("ctrl", "option", "right")
     else:  # Linux
         try:
             subprocess.run(["wmctrl", "-r", ":ACTIVE:", "-e", "0,960,0,960,1080"],
                 capture_output=True)
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[computer_settings.py] Non-fatal error at line 269: {_e}")
 
 def switch_window():
     if _OS == "Darwin": pyautogui.hotkey("command", "tab")
@@ -613,7 +720,7 @@ Rules:
 - Return ONLY the JSON, no explanation, no markdown."""
 
     try:
-        resp = _client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
+        resp = _client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
         text = re.sub(r"```(?:json)?", "", resp.text).strip().rstrip("`").strip()
         return json.loads(text)
     except Exception as e:

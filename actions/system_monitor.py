@@ -69,16 +69,27 @@ def _nvml_gpu() -> float:
         return -1.0
 
 
-def _get_gpu_usage() -> float:
-    # pynvml — subprocess-free, works everywhere if installed
-    try:
-        import pynvml  # type: ignore
-        pynvml.nvmlInit()
-        h = pynvml.nvmlDeviceGetHandleByIndex(0)
-        return float(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
-    except Exception:
-        pass
+_PYNVML = None  # None = untested · False = unavailable (optional) · module = ready
 
+
+def _get_gpu_usage() -> float:
+    # pynvml — subprocess-free, works everywhere if installed. It's OPTIONAL; when
+    # absent we fall through to the ctypes probe silently. Cache the import result
+    # so a missing dep doesn't spam this ~2s-poll loop (that was the regression).
+    global _PYNVML
+    if _PYNVML is None:
+        try:
+            import pynvml  # type: ignore
+            _PYNVML = pynvml
+        except Exception:
+            _PYNVML = False  # optional dependency not installed — stay quiet
+    if _PYNVML:
+        try:
+            _PYNVML.nvmlInit()
+            h = _PYNVML.nvmlDeviceGetHandleByIndex(0)
+            return float(_PYNVML.nvmlDeviceGetUtilizationRates(h).gpu)
+        except Exception:
+            pass  # nvml runtime error — fall through to the ctypes fallback
     return _nvml_gpu()
 
 
@@ -93,8 +104,8 @@ def _get_cpu_temp() -> float:
         for entries in temps.values():
             if entries:
                 return entries[0].current
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[system_monitor.py] Non-fatal error at line 96: {_e}")
 
     # Windows: wmi module (pure Python COM, zero subprocess)
     if _OS == "Windows":
@@ -104,8 +115,8 @@ def _get_cpu_temp() -> float:
             tz = w.MSAcpi_ThermalZoneTemperature()
             if tz:
                 return (tz[0].CurrentTemperature / 10.0) - 273.15
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[system_monitor.py] Non-fatal error at line 107: {_e}")
 
     return -1.0
 
@@ -142,8 +153,8 @@ def _metrics_sampler_loop():
                     "process_count": pids_count,
                 }
                 _last_sampled_time = time.monotonic()
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[system_monitor.py] Non-fatal error at line 145: {_e}")
         time.sleep(0.5)
 
 def _ensure_sampler_started():

@@ -62,6 +62,19 @@ class AgentAdapter:
                     f"'{project_name}'. It will respond in its console.")
 
         # ---- First turn: spawn a fresh persistent session ------------------
+        # Fail HONESTLY if the agent CLI isn't installed, instead of spawning a
+        # shell that dies and reporting a confusing "exited immediately". This is
+        # the common cause of "it said it started but nothing ran".
+        import shutil as _shutil
+        _binary = self.command_template.split()[0]
+        if _shutil.which(_binary) is None:
+            err = (f"The {self.name} CLI ('{_binary}') isn't installed or on PATH — "
+                   f"NOTHING was started. Install it, or ask me to use an agent "
+                   f"that is installed.")
+            if player:
+                player.write_log(f"ERR: {err}")
+            return err
+
         esc_prompt = prompt.replace("'", "'\\''")
         agent_cmd = self.command_template.format(prompt=esc_prompt)
 
@@ -109,8 +122,8 @@ class AgentAdapter:
         try:
             from actions.swarm_sentinel import SENTINEL
             SENTINEL.ensure_running()
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[agent_delegation.py] Non-fatal error at line 112: {_e}")
         try:
             from actions.visual_verifier import watch_directory
             watch_directory(project_dir, player=player, session=session)
@@ -184,6 +197,25 @@ AGENT_REGISTRY = {
     "kimi": AgentAdapter("Kimi", "kimi -i '{prompt}'"),
     "opencode": AgentAdapter("OpenCode", "opencode -i '{prompt}'"),
 }
+
+def agent_available(agent_key: str) -> bool:
+    a = AGENT_REGISTRY.get(agent_key)
+    import shutil
+    return bool(a and shutil.which(a.command_template.split()[0]))
+
+
+def first_available_agent(
+    prefer=("claude_code", "antigravity_cli", "opencode", "kimi")) -> str | None:
+    """The best INSTALLED agent CLI, in preference order — so 'start development'
+    picks something that actually exists instead of a default that isn't installed."""
+    for key in prefer:
+        if agent_available(key):
+            return key
+    for key in AGENT_REGISTRY:
+        if agent_available(key):
+            return key
+    return None
+
 
 AGENT_ALIASES = {
     "antigravity": "antigravity_cli",

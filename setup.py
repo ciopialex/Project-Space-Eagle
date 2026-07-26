@@ -3,11 +3,24 @@ import sys
 import platform
 from pathlib import Path
 
-print("Installing requirements...")
-subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
+def _get_python_exe() -> str:
+    base_dir = Path(__file__).resolve().parent
+    venv_py = base_dir / ".venv" / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python3")
+    if venv_py.exists():
+        return str(venv_py)
+    return sys.executable
+
+py_exe = _get_python_exe()
+print(f"Installing requirements using {py_exe}...")
+try:
+    subprocess.run([py_exe, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
+except subprocess.CalledProcessError:
+    # Fallback for system python with PEP 668
+    subprocess.run([py_exe, "-m", "pip", "install", "-r", "requirements.txt", "--break-system-packages"], check=True)
 
 print("Installing Playwright browsers...")
-subprocess.run([sys.executable, "-m", "playwright", "install"], check=True)
+subprocess.run([py_exe, "-m", "playwright", "install"], check=True)
+
 
 if platform.system() == "Windows":
     try:

@@ -149,6 +149,18 @@ class ReviewerAgent:
         if rep["notes"]:
             summary += f" [{'; '.join(rep['notes'])}]"
         if not rep["ok"]:
+            # A caught error → shared lesson so no agent repeats it. Only the
+            # failure notes (syntax/tests/deep-review) become lessons, not the
+            # benign ones (e.g. "tests passed").
+            try:
+                from actions.swarm_orchestrator import SwarmOrchestrator
+                orch = SwarmOrchestrator(self.project_dir, player=self.player)
+                for note in rep["notes"]:
+                    low = note.lower()
+                    if any(k in low for k in ("syntax error", "tests failed", "rejected")):
+                        orch.record_lesson(agent_key, note, tag="review")
+            except Exception as _e:
+                print(f"[swarm_reviewer.py] lesson capture skipped: {_e}")
             return f"REVIEW BLOCKED — {summary}. Branch NOT merged."
         m = self.merge(agent_key, branch)
         verdict = "MERGED" if m["merged"] else "MERGE FAILED"

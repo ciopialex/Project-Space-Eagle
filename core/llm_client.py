@@ -312,8 +312,8 @@ def call_llm(
                     "content":    (msg.get("content") or "").strip(),
                     "tool_calls": msg.get("tool_calls") or [],
                 }
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[llm_client.py] Non-fatal error at line 315: {_e}")
         raise RuntimeError(
             f"Cannot connect to Ollama at {url}. "
             "Make sure Ollama is installed and run: ollama serve"
@@ -359,8 +359,8 @@ def call_llm_text(
                 resp = requests.post(endpoint, json=payload, timeout=timeout)
                 resp.raise_for_status()
                 return (resp.json().get("message", {}).get("content") or "").strip()
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[llm_client.py] Non-fatal error at line 362: {_e}")
         raise RuntimeError(
             f"Cannot connect to Ollama at {url}. "
             "Make sure Ollama is installed and run: ollama serve"

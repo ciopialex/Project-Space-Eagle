@@ -154,7 +154,7 @@ class PtySession:
             try:
                 hook(data)
             except Exception:
-                pass
+                pass  # feed-hook hiccup — silent (runs on every PTY output chunk)
         self._emit_lines(data)
 
     def _emit_lines(self, data: bytes):
@@ -172,7 +172,7 @@ class PtySession:
                 try:
                     self._on_line(part.decode("utf-8", "replace"))
                 except Exception:
-                    pass
+                    pass  # per-line callback hiccup — silent (fires per output line)
 
     # ---------------------------------------------------------------- api
 
@@ -213,8 +213,8 @@ class PtySession:
         if self._on_line and not self._closed:
             try:
                 self._on_line(f"[session] {self.agent_name} process ended.")
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[pty_session.py] Non-fatal error at line 216: {_e}")
 
     def close(self):
         if self._closed:
@@ -326,6 +326,6 @@ def open_viewer_terminal(title: str, log_path: Path) -> bool:
             if shutil.which(term):
                 subprocess.Popen([term] + args)
                 return True
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[pty_session.py] Non-fatal error at line 329: {_e}")
     return False

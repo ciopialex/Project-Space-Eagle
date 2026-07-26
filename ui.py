@@ -142,6 +142,7 @@ _LEFT_W  = 202
 _RIGHT_W = 360
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
+_PYNVML_UI = None  # cached pynvml handle: None=untested, False=absent, module=ready
 
 
 # ── iOS-grade spring easing ───────────────────────────────────────────────
@@ -288,8 +289,8 @@ def retheme_all_widgets(old: dict[str, str], new: dict[str, str]) -> None:
                 if s2 != ss:
                     w.setStyleSheet(s2)
             w.update()
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[ui.py] Non-fatal error at line 291: {_e}")
 
 
 def qcol(h: str, a: int = 255) -> QColor:
@@ -361,8 +362,8 @@ class _SysMetrics:
         while self._running:
             try:
                 self._update()
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[ui.py] Non-fatal error at line 364: {_e}")
             time.sleep(1.5)
 
     def _update(self):
@@ -393,14 +394,22 @@ class _SysMetrics:
             self.tmp = tmp
 
     def _get_gpu(self) -> float:
-        # pynvml — subprocess-free, works on all platforms if installed
-        try:
-            import pynvml  # type: ignore
-            pynvml.nvmlInit()
-            h = pynvml.nvmlDeviceGetHandleByIndex(0)
-            return float(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
-        except Exception:
-            pass
+        # pynvml — subprocess-free, works on all platforms if installed. OPTIONAL:
+        # cache the import so a missing dep doesn't spam this metrics-poll loop.
+        global _PYNVML_UI
+        if _PYNVML_UI is None:
+            try:
+                import pynvml  # type: ignore
+                _PYNVML_UI = pynvml
+            except Exception:
+                _PYNVML_UI = False  # not installed — fall through quietly
+        if _PYNVML_UI:
+            try:
+                _PYNVML_UI.nvmlInit()
+                h = _PYNVML_UI.nvmlDeviceGetHandleByIndex(0)
+                return float(_PYNVML_UI.nvmlDeviceGetUtilizationRates(h).gpu)
+            except Exception:
+                pass  # nvml runtime error — fall through to the ctypes probe
 
         # Windows: nvml.dll via ctypes (already cached in _nvml_gpu_windows)
         if _OS == "Windows":
@@ -421,8 +430,8 @@ class _SysMetrics:
             u = _Util()
             nv.nvmlDeviceGetUtilizationRates(dev, ctypes.byref(u))
             return float(u.gpu)
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[ui.py] Non-fatal error at line 424: {_e}")
 
         return -1.0   # N/A — zero subprocess on all platforms
 
@@ -437,8 +446,8 @@ class _SysMetrics:
             for entries in temps.values():
                 if entries:
                     return entries[0].current
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[ui.py] Non-fatal error at line 440: {_e}")
 
         # Windows: wmi module (pure Python COM, zero subprocess)
         if _OS == "Windows":
@@ -448,8 +457,8 @@ class _SysMetrics:
                 tz = w.MSAcpi_ThermalZoneTemperature()
                 if tz:
                     return (tz[0].CurrentTemperature / 10.0) - 273.15
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[ui.py] Non-fatal error at line 451: {_e}")
 
         return -1.0   # N/A — zero subprocess on all platforms
 
@@ -1157,7 +1166,7 @@ class SetupOverlay(QWidget):
             return w
 
         layout.addWidget(_lbl("◈  INITIALISATION REQUIRED", 13, True))
-        layout.addWidget(_lbl("Configure J.A.R.V.I.S. before first boot.", 9, color=C.PRI_DIM))
+        layout.addWidget(_lbl("Configure Aethelark before first boot.", 9, color=C.PRI_DIM))
         layout.addSpacing(6)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
@@ -1739,7 +1748,7 @@ class CustomizeOverlay(QWidget):
 
 
 class ClipboardPanel(QWidget):
-    """Floating panel shown when text is copied — offers quick Jarvis actions."""
+    """Floating panel shown when text is copied — offers quick Aethelark actions."""
 
     action_requested = pyqtSignal(str)
     _W, _H = 326, 112
@@ -2094,14 +2103,14 @@ class PillWidget(QFrame):
         self.setObjectName("PillWidget")
         
         self.svg_path = str(Path(BASE_DIR) / "assets/images/AE_dynamic_island_cutout.svg")
-        downloads_svg = "/home/shennyonthebeat/Downloads/AE_dynamic_island_cutout.svg"
+        downloads_svg = str(Path.home() / "Downloads" / "AE_dynamic_island_cutout.svg")
         if not os.path.exists(self.svg_path) and os.path.exists(downloads_svg):
             os.makedirs(os.path.dirname(self.svg_path), exist_ok=True)
             import shutil
             try:
                 shutil.copy(downloads_svg, self.svg_path)
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[ui.py] Non-fatal error at line 2103: {_e}")
                 
         from PyQt6.QtSvg import QSvgRenderer
         self.renderer = None
@@ -3013,8 +3022,8 @@ class MainWindow(QMainWindow):
                 import json as _j
                 cfg = _j.loads((CONFIG_DIR / "api_keys.json").read_text())
                 cam_idx = int(cfg.get("camera_index", 0))
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[ui.py] Non-fatal error at line 3016: {_e}")
             try:
                 backend = cv2.CAP_DSHOW if _OS == "Windows" else cv2.CAP_ANY
             except AttributeError:
@@ -3047,7 +3056,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _build_aethelark_icon(out_path: Path) -> bool:
         """
-        Render a JARVIS arc-reactor icon at 4× resolution and downsample
+        Render an arc-reactor icon at 4× resolution and downsample
         for crisp results at all sizes. Saves a multi-res .ico to out_path.
         Returns True on success.
         """
@@ -3182,8 +3191,8 @@ class MainWindow(QMainWindow):
                     ctypes.windll.ole32.CoTaskMemFree(buf)
                     if p.is_dir():
                         return p
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[ui.py] Non-fatal error at line 3185: {_e}")
 
             # ── 2) Registry: User Shell Folders (may contain %VARS%) ──────
             try:
@@ -3196,8 +3205,8 @@ class MainWindow(QMainWindow):
                 p = Path(os.path.expandvars(val))
                 if p.is_dir():
                     return p
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[ui.py] Non-fatal error at line 3199: {_e}")
 
         elif _os == "Linux":
             # ── xdg-user-dir honours localized names (~/Masaüstü, …) ──────
@@ -3207,8 +3216,8 @@ class MainWindow(QMainWindow):
                 p = Path(out.stdout.strip())
                 if out.stdout.strip() and p != home and p.is_dir():
                     return p
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[ui.py] Non-fatal error at line 3210: {_e}")
             try:
                 cfg = home / ".config" / "user-dirs.dirs"
                 for line in cfg.read_text(encoding="utf-8").splitlines():
@@ -3218,8 +3227,8 @@ class MainWindow(QMainWindow):
                         p = Path(val.replace("$HOME", str(home)))
                         if p != home and p.is_dir():
                             return p
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[ui.py] Non-fatal error at line 3221: {_e}")
 
         # macOS: ~/Desktop is always the real path (localization is
         # display-only). Everything else lands here as a last resort.
@@ -3243,7 +3252,7 @@ class MainWindow(QMainWindow):
             sc.TargetPath       = target
             sc.Arguments        = f'"{args}"'
             sc.WorkingDirectory = work_dir
-            sc.Description      = "J.A.R.V.I.S AI Assistant"
+            sc.Description      = "Aethelark AI Assistant"
             sc.IconLocation     = icon_loc
             sc.save()
             return
@@ -3264,7 +3273,7 @@ class MainWindow(QMainWindow):
             f'sc.TargetPath = "{q(target)}"',
             f'sc.Arguments = Chr(34) & "{q(args)}" & Chr(34)',
             f'sc.WorkingDirectory = "{q(work_dir)}"',
-            'sc.Description = "J.A.R.V.I.S AI Assistant"',
+            'sc.Description = "Aethelark AI Assistant"',
             f'sc.IconLocation = "{q(icon_loc)}"',
             'sc.Save',
             'If Err.Number <> 0 Then WScript.Quit 1',
@@ -3282,8 +3291,8 @@ class MainWindow(QMainWindow):
         finally:
             try:
                 os.unlink(tmp)
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[ui.py] Non-fatal error at line 3285: {_e}")
 
         if not Path(lnk).exists():
             raise RuntimeError(
@@ -3385,10 +3394,10 @@ class MainWindow(QMainWindow):
                         png_path = ico_path  # fallback to .ico
 
                 icon_line = f"Icon={png_path}\n" if png_path.exists() else ""
-                desk = desktop / "J.A.R.V.I.S.desktop"
+                desk = desktop / "Aethelark.desktop"
                 desk.write_text(
                     "[Desktop Entry]\n"
-                    "Name=J.A.R.V.I.S\n"
+                    "Name=Aethelark\n"
                     f'Exec="{python}" "{script}"\n'
                     f"Path={script.parent}\n"
                     "Type=Application\n"
@@ -4345,8 +4354,6 @@ class MainWindow(QMainWindow):
         self._title_lbl.setText(display)
         if display in ("AETHELARK", "A.E.T.H.E.L.A.R.K"):
             self._sub_lbl.setText("Autonomous Agentic Development Core")
-        elif display in ("JARVIS", "J.A.R.V.I.S"):
-            self._sub_lbl.setText("Just A Rather Very Intelligent System")
         else:
             self._sub_lbl.setText("Personal AI Assistant")
         self._log._ai_name_lc = self._assistant_name.lower()
@@ -4380,8 +4387,8 @@ class MainWindow(QMainWindow):
             text = QApplication.clipboard().text().strip()
             if len(text) >= 10:
                 self._clipboard_sig.emit(text)
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[ui.py] Non-fatal error at line 4381: {_e}")
 
     def _show_clipboard_panel(self, text: str):
         self._clipboard_panel.show_clipboard(text)

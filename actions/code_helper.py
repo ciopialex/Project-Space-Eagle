@@ -497,8 +497,8 @@ Be specific and actionable. If you see an error message, quote it exactly."""
 
         try:
             screenshot_path.unlink()
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[code_helper.py] Non-fatal error at line 500: {_e}")
 
         if file_path and file_content:
 
@@ -516,8 +516,8 @@ Be specific and actionable. If you see an error message, quote it exactly."""
 
         try:
             screenshot_path.unlink()
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[code_helper.py] Non-fatal error at line 519: {_e}")
         return f"Screen analysis failed: {e}"
 
 

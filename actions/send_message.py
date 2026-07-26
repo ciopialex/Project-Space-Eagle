@@ -4,6 +4,8 @@ import sys
 import time
 from pathlib import Path
 
+from core.tool_result import ToolResult
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
@@ -23,14 +25,21 @@ def _base_dir() -> Path:
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent.parent
 
+def _platform_os() -> str:
+    import platform
+    return {"Windows": "windows", "Darwin": "mac", "Linux": "linux"}.get(
+        platform.system(), "linux"
+    )
+
+
 def _get_os() -> str:
     try:
         cfg = json.loads(
             (_base_dir() / "config" / "api_keys.json").read_text(encoding="utf-8")
         )
-        return cfg.get("os_system", "windows").lower()
+        return cfg.get("os_system", _platform_os()).lower()
     except Exception:
-        return "windows"
+        return _platform_os()
 
 
 def _require_pyautogui():
@@ -150,7 +159,17 @@ def _desktop_send(app_name: str, receiver: str, message: str) -> str:
     return f"Message sent to {receiver} via {app_name}."
 
 def _send_whatsapp(receiver: str, message: str) -> str:
-    return _desktop_send("WhatsApp", receiver, message)
+    # Primary path: WhatsApp Web driven inside the real/automation browser
+    # profile — it targets the actual chat instead of blind-typing into whatever
+    # window has focus (the old bug). We do NOT fall back to blind desktop typing
+    # on failure; we surface the reason so the model can tell the user.
+    try:
+        from actions.whatsapp_web import send_whatsapp_web
+        return send_whatsapp_web(receiver, message)
+    except Exception as e:
+        print(f"[SendMessage] WhatsApp Web path unavailable: {e}")
+        return (f"Couldn't reach WhatsApp Web ({e}). "
+                f"Make sure the browser automation (Playwright) is installed.")
 
 def _send_telegram(receiver: str, message: str) -> str:
     return _desktop_send("Telegram", receiver, message)
@@ -230,6 +249,18 @@ def _resolve_platform(platform_str: str):
     return lambda r, m: _desktop_send(platform_str.strip().title(), r, m)
 
 
+# Idempotency guard: the live voice model sometimes re-issues the SAME
+# send_message call several times in a row (slow desktop automation makes the
+# tool result look "stale", so it retries). Without a guard that blind-typed the
+# same text into the focused window over and over. We remember the last identical
+# (platform, receiver, message) send and refuse to repeat it within this window.
+# Wide enough to outlast a slow send (WhatsApp Web can take ~30s) plus the model
+# talking between turns, so an identical auto-retry can't double-text the contact.
+# Only *verified* sends record here (see below), so genuine failures still retry.
+_DEDUPE_WINDOW_S = 120.0
+_last_send: dict = {"key": None, "at": 0.0}
+
+
 def send_message(
     parameters: dict,
     response=None,
@@ -248,6 +279,15 @@ def send_message(
     if not _PYAUTOGUI:
         return "PyAutoGUI is not installed — cannot control the desktop."
 
+    # Reject an identical re-send fired within the dedupe window.
+    _key = (platform.lower(), receiver.lower(), message_text)
+    _now = time.monotonic()
+    if _last_send["key"] == _key and (_now - _last_send["at"]) < _DEDUPE_WINDOW_S:
+        print(f"[SendMessage] ⏭️  Duplicate send suppressed: {platform} → {receiver}")
+        return ToolResult.success(
+            f"Already sent '{message_text}' to {receiver} on {platform} moments ago — "
+            f"do NOT send it again.", deduped=True)
+
     preview = message_text[:50] + ("…" if len(message_text) > 50 else "")
     print(f"[SendMessage] 📨 {platform} → {receiver}: {preview}")
     if player:
@@ -255,12 +295,29 @@ def send_message(
 
     try:
         handler = _resolve_platform(platform)
-        result  = handler(receiver, message_text)
+        raw = handler(receiver, message_text)
     except Exception as e:
-        result = f"Could not send message: {e}"
+        raw = ToolResult.failure(f"Could not send message: {e}",
+                                 guidance="Nothing was sent — report the failure honestly.")
 
-    print(f"[SendMessage] {'✅' if 'sent' in result.lower() else '❌'} {result}")
+    # WhatsApp now returns a structured ToolResult (explicit ok). Legacy desktop
+    # handlers still return a string; detect their success by the "Message sent"
+    # prefix (they all start with it). No more sniffing "sent" out of failures.
+    if isinstance(raw, ToolResult):
+        tr = raw
+    elif raw.strip().lower().startswith("message sent"):
+        tr = ToolResult.success(raw)
+    else:
+        tr = ToolResult.failure(raw, guidance="The message was NOT sent — tell the user.")
+
+    # Record the dedupe key ONLY on a verified success, so a FAILED send can be
+    # retried immediately instead of being falsely reported as "already sent".
+    if tr.ok:
+        _last_send["key"] = _key
+        _last_send["at"]  = time.monotonic()
+
+    print(f"[SendMessage] {'✅' if tr.ok else '❌'} {tr.message}")
     if player:
-        player.write_log(f"[msg] {result}")
+        player.write_log(f"[msg] {tr.message}")
 
-    return result
+    return tr

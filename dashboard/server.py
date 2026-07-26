@@ -32,8 +32,8 @@ _UPLOAD_OK = False
 try:
     from fastapi import UploadFile, File as FastAPIFile
     _UPLOAD_OK = True
-except Exception:
-    pass
+except Exception as _e:
+    print(f"[server.py] Non-fatal error at line 35: {_e}")
 
 BASE_DIR    = Path(__file__).resolve().parent.parent
 STATIC_DIR  = Path(__file__).parent / "static"
@@ -51,8 +51,8 @@ def _make_uploads_dir() -> Path:
         try:
             candidate.mkdir(parents=True, exist_ok=True)
             return candidate
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[server.py] Non-fatal error at line 54: {_e}")
     return BASE_DIR / "uploads"
 
 
@@ -176,8 +176,8 @@ def _ensure_network_access(port: int) -> None:
         except Exception:
             try:
                 os.close(fd)
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[server.py] Non-fatal error at line 179: {_e}")
             return
 
         # ── Try running directly (succeeds when already admin) ────────────────
@@ -189,11 +189,11 @@ def _ensure_network_access(port: int) -> None:
                 print(f"[Dashboard] Firewall configured for port {port}.")
                 try:
                     os.unlink(bat_path)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    print(f"[server.py] Non-fatal error at line 192: {_e}")
                 return
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[server.py] Non-fatal error at line 195: {_e}")
 
         # ── ShellExecuteW: native UAC elevation (most reliable on Windows) ────
         # ShellExecuteW with verb "runas" always shows the UAC dialog regardless
@@ -226,8 +226,8 @@ def _ensure_network_access(port: int) -> None:
                 time.sleep(5)
                 try:
                     os.unlink(path)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    print(f"[server.py] Non-fatal error at line 229: {_e}")
             threading.Thread(target=_cleanup, args=(bat_path,), daemon=True).start()
         return
 
@@ -266,8 +266,8 @@ def _ensure_network_access(port: int) -> None:
                 r = subprocess.run(prefix + cmd, capture_output=True, timeout=30)
                 if r.returncode == 0:
                     return True
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[server.py] Non-fatal error at line 269: {_e}")
         return False
 
     try:  # ufw
@@ -337,16 +337,16 @@ def _local_ip() -> str:
             s.close()
             if not ip.startswith("127."):
                 return ip
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[server.py] Non-fatal error at line 340: {_e}")
 
     # Method 2: hostname resolution (works offline on most systems)
     try:
         ip = socket.gethostbyname(socket.gethostname())
         if not ip.startswith("127."):
             return ip
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[server.py] Non-fatal error at line 348: {_e}")
 
     # Method 3: enumerate all interfaces (fully offline, no external deps)
     try:
@@ -354,8 +354,8 @@ def _local_ip() -> str:
             ip = str(info[4][0])
             if not ip.startswith("127.") and not ip.startswith("169.254."):
                 return ip
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[server.py] Non-fatal error at line 357: {_e}")
 
     return "127.0.0.1"
 
@@ -710,8 +710,8 @@ class DashboardServer:
                 except Exception as exc:
                     try:
                         dest.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        print(f"[server.py] Non-fatal error at line 713: {_e}")
                     return JSONResponse({"error": str(exc)}, status_code=500)
 
                 asyncio.create_task(self.broadcast({
@@ -741,8 +741,8 @@ class DashboardServer:
                     reverse=True,
                 ):
                     files.append({"name": f.name, "size": f.stat().st_size})
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[server.py] Non-fatal error at line 744: {_e}")
             return JSONResponse({"files": files})
 
         @app.get("/uploads/{filename}")

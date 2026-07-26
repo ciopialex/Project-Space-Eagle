@@ -1,7 +1,10 @@
 import time
+import os
+import shlex
 import subprocess
 import platform
 import shutil
+from pathlib import Path
 
 try:
     import psutil
@@ -96,8 +99,8 @@ def _launch_windows(app_name: str) -> bool:
         try:
             subprocess.Popen(f"start {app_name}", shell=True)
             return True
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[open_app.py] Non-fatal error at line 102: {_e}")
 
     try:
         import pyautogui
@@ -121,38 +124,31 @@ def _launch_windows(app_name: str) -> bool:
 
 
 def _launch_macos(app_name: str) -> bool:
-    try:
-        result = subprocess.Popen(
-            ["open", "-a", app_name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        return True
-    except Exception:
-        pass
+    # `open -a` is the correct launcher; check its return code so we only claim
+    # success when the app actually existed and launched (Popen alone always
+    # "succeeds" because it just spawns `open`, which then errors invisibly).
+    for target in (app_name, f"{app_name}.app"):
+        try:
+            r = subprocess.run(
+                ["open", "-a", target],
+                capture_output=True, timeout=12,
+            )
+            if r.returncode == 0:
+                return True
+        except Exception as _e:
+            print(f"[open_app.py] Non-fatal error at line 138: {_e}")
 
-    try:
-        result = subprocess.Popen(
-            ["open", "-a", f"{app_name}.app"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        return True
-    except Exception:
-        pass
-
-    binary = shutil.which(app_name) or shutil.which(app_name.lower())
+    parts  = _split_cmd(app_name)
+    binary = shutil.which(parts[0]) or shutil.which(parts[0].lower())
     if binary:
         try:
-            subprocess.Popen(
-                [binary],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            subprocess.Popen([binary, *parts[1:]],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[open_app.py] Non-fatal error at line 148: {_e}")
 
+    # Spotlight fallback (best-effort — can't verify, so only used last).
     try:
         import pyautogui
         def gui_sequence():
@@ -164,7 +160,6 @@ def _launch_macos(app_name: str) -> bool:
                 pyautogui.press("enter")
             except Exception as e:
                 print(f"[open_app] background gui sequence failed: {e}")
-        
         threading.Thread(target=gui_sequence, name="MacAppLaunchGUI", daemon=True).start()
         return True
     except Exception as e:
@@ -178,8 +173,67 @@ _LINUX_TERMINAL_FALLBACKS = [
     "xterm", "lxterminal", "mate-terminal", "tilix", "alacritty", "kitty",
 ]
 
+_LINUX_DESKTOP_DIRS = [
+    Path.home() / ".local" / "share" / "applications",
+    Path("/usr/share/applications"),
+    Path("/usr/local/share/applications"),
+    Path("/var/lib/flatpak/exports/share/applications"),
+    Path.home() / ".local" / "share" / "flatpak" / "exports" / "share" / "applications",
+    Path("/var/lib/snapd/desktop/applications"),
+]
+
+
+def _split_cmd(app_name: str) -> list[str]:
+    """Split 'libreoffice --writer' into ['libreoffice','--writer'] so multi-word
+    launch commands resolve their real binary instead of failing which()."""
+    try:
+        parts = shlex.split(app_name)
+    except ValueError:
+        parts = app_name.split()
+    return parts or [app_name]
+
+
+def _linux_desktop_id(app_name: str) -> str | None:
+    """Find a .desktop id matching the app across standard + Flatpak/Snap dirs,
+    so GUI apps not on $PATH (most Flatpaks) still launch.
+
+    Matching is deliberately STRICT — a wrong match opens the wrong app, which is
+    worse than an honest miss. We only accept: an exact stem match, or a
+    reverse-DNS segment match (e.g. 'spotify' → com.spotify.Client,
+    'calculator' → org.gnome.Calculator). We never do loose substring matching
+    (which mis-matched 'code' → claude-code-url-handler)."""
+    key     = app_name.lower().strip()
+    keynorm = key.replace(" ", "").replace("-", "").replace("_", "")
+    fallback = None
+    for d in _LINUX_DESKTOP_DIRS:
+        if not d.is_dir():
+            continue
+        try:
+            for f in d.glob("*.desktop"):
+                stem = f.stem
+                s    = stem.lower()
+                snorm = s.replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
+                if s == key or snorm == keynorm:
+                    return stem                      # exact — best possible
+                segs = s.split(".")                  # reverse-DNS (dots only)
+                if len(segs) > 1 and (key in segs or keynorm in segs):
+                    fallback = fallback or stem       # e.g. com.spotify.Client
+        except Exception:
+            continue
+    return fallback
+
+
 def _launch_linux(app_name: str) -> bool:
-    # terminal emulators: try common ones in order
+    # URLs / file paths → xdg-open (its actual purpose).
+    if app_name.startswith(("http://", "https://", "file:", "/", "~")):
+        try:
+            subprocess.Popen(["xdg-open", os.path.expanduser(app_name)],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            return False
+
+    # Terminal emulators: try common ones in order.
     if app_name in ("x-terminal-emulator", "gnome-terminal", "terminal"):
         for term in _LINUX_TERMINAL_FALLBACKS:
             if shutil.which(term):
@@ -189,49 +243,49 @@ def _launch_linux(app_name: str) -> bool:
                 except Exception:
                     continue
 
-    binary = (
-        shutil.which(app_name) or
-        shutil.which(app_name.lower()) or
-        shutil.which(app_name.lower().replace(" ", "-")) or
-        shutil.which(app_name.lower().replace(" ", "_"))
+    # Resolve a real binary on $PATH (handles multi-word commands + name variants).
+    parts   = _split_cmd(app_name)
+    first   = parts[0]
+    binary  = (
+        shutil.which(first) or
+        shutil.which(first.lower()) or
+        shutil.which(first.lower().replace(" ", "-")) or
+        shutil.which(first.lower().replace(" ", "_"))
     )
     if binary:
         try:
-            subprocess.Popen(
-                [binary],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            subprocess.Popen([binary, *parts[1:]],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[open_app.py] Non-fatal error at line 260: {_e}")
 
-    try:
-        subprocess.Popen(
-            ["xdg-open", app_name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        return True
-    except Exception:
-        pass
-
-    for desktop_name in [
-        app_name.lower(),
-        app_name.lower().replace(" ", "-"),
-        app_name.lower().replace(" ", ""),
-    ]:
+    # Not on $PATH → resolve a .desktop entry (Flatpak/Snap/GUI apps). gtk-launch
+    # returns quickly with an HONEST exit code, so we only claim success on rc==0.
+    desktop_id = _linux_desktop_id(app_name)
+    if desktop_id and shutil.which("gtk-launch"):
         try:
-            subprocess.Popen(
-                ["gtk-launch", desktop_name],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            return True
-        except Exception:
-            pass
+            r = subprocess.run(["gtk-launch", desktop_id],
+                               capture_output=True, timeout=10)
+            if r.returncode == 0:
+                return True
+        except Exception as _e:
+            print(f"[open_app.py] Non-fatal error at line 272: {_e}")
+    # gio launch <desktop-file> is the modern alternative.
+    if desktop_id and shutil.which("gio"):
+        for d in _LINUX_DESKTOP_DIRS:
+            f = d / f"{desktop_id}.desktop"
+            if f.exists():
+                try:
+                    r = subprocess.run(["gio", "launch", str(f)],
+                                       capture_output=True, timeout=10)
+                    if r.returncode == 0:
+                        return True
+                except Exception as _e:
+                    print(f"[open_app.py] Non-fatal error at line 284: {_e}")
+                break
 
-    return False
+    return False   # honest failure — no false "Opened" claim
 
 
 _OS_LAUNCHERS = {
