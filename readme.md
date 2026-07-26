@@ -1,4 +1,4 @@
-# Aethelark 🦅
+# Aethelark
 
 **A voice-commanded operator layer for your machine — and a constitutional CEO for every AI coding agent.**
 
