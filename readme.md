@@ -16,45 +16,45 @@ Space-Eagle deepens the personal assistant foundation. Rather than adding more t
 ### Core Features
 | Feature | Description |
 |---|---|
-| 🎙️ Real-time Voice | Ultra-low latency conversation in any language via Gemini Live API |
-| 🖥️ System Control | Launch apps, adjust volume/brightness, WiFi, shortcuts, power — all by voice |
-| 🧩 Autonomous Tasks | High-level planning for complex multi-step goals via agent mode |
-| 👁️ Visual Awareness | Real-time screen capture and webcam vision piped into your main Gemini session |
-| 🧠 Persistent Memory | Deeply remembers projects, preferences, and personal context across sessions |
-| ⌨️ Hybrid Input | Seamlessly switch between keyboard typing and voice commands |
-| 🌅 Morning Briefing | On first boot: greets you, reads the time, fetches live news headlines, and checks weather |
-| 🔔 Proactive Check-ins | After 15 minutes of silence, checks context and offers something genuinely useful |
-| 📊 Hardware Monitoring | Continuous CPU, RAM, GPU and temperature telemetry with localized voice alerts |
-| 🌤️ Weather Report | Live weather data for your city, personalized from memory |
-| 🗺️ Dynamic Content Panel | Scrollable display layer beneath the HUD that renders web results, news, and search data |
-| 🔍 Multi-Mode Web Search | `news` / `research` / `price` / `compare` / `search` — Gemini Grounded first, DDG fallback |
-| ⏰ Smart Reminders | OS-native scheduled notifications (Windows Task Scheduler / macOS LaunchAgent / Linux systemd) |
-| ✈️ Flight Finder | Live flight price and availability lookup |
-| 🎮 Game Updater | Checks and triggers game updates on Steam and Epic Games on demand |
-| 📂 File Processor | Read, summarize, and answer questions about local files |
-| 💻 Code Helper | Inline code review, debugging, and generation |
-| 🌐 Browser Control | Open URLs, navigate tabs, and interact with the browser by voice |
-| 📨 Send Message | Compose and send messages through WhatsApp, Telegram, and more |
-| 🎬 YouTube Control | Search, play, and control YouTube playback by voice |
-| 🖱️ Desktop Control | Taskbar, window management, and desktop-level operations |
-| 🧑‍💻 Silent Language Memory | Detects spoken language on first use and saves it — all future sessions adapt automatically |
-| 📱 Remote Dashboard | Control the assistant from your phone via QR code pairing |
+|  Real-time Voice | Ultra-low latency conversation in any language via Gemini Live API |
+|  System Control | Launch apps, adjust volume/brightness, WiFi, shortcuts, power — all by voice |
+|  Autonomous Tasks | High-level planning for complex multi-step goals via agent mode |
+|  Visual Awareness | Real-time screen capture and webcam vision piped into your main Gemini session |
+|  Persistent Memory | Deeply remembers projects, preferences, and personal context across sessions |
+|  Hybrid Input | Seamlessly switch between keyboard typing and voice commands |
+|  Morning Briefing | On first boot: greets you, reads the time, fetches live news headlines, and checks weather |
+|  Proactive Check-ins | After 15 minutes of silence, checks context and offers something genuinely useful |
+|  Hardware Monitoring | Continuous CPU, RAM, GPU and temperature telemetry with localized voice alerts |
+|  Weather Report | Live weather data for your city, personalized from memory |
+|  Dynamic Content Panel | Scrollable display layer beneath the HUD that renders web results, news, and search data |
+|  Multi-Mode Web Search | `news` / `research` / `price` / `compare` / `search` — Gemini Grounded first, DDG fallback |
+|  Smart Reminders | OS-native scheduled notifications (Windows Task Scheduler / macOS LaunchAgent / Linux systemd) |
+|  Flight Finder | Live flight price and availability lookup |
+|  Game Updater | Checks and triggers game updates on Steam and Epic Games on demand |
+|  File Processor | Read, summarize, and answer questions about local files |
+|  Code Helper | Inline code review, debugging, and generation |
+|  Browser Control | Open URLs, navigate tabs, and interact with the browser by voice |
+|  Send Message | Compose and send messages through WhatsApp, Telegram, and more |
+|  YouTube Control | Search, play, and control YouTube playback by voice |
+|  Desktop Control | Taskbar, window management, and desktop-level operations |
+|  Silent Language Memory | Detects spoken language on first use and saves it — all future sessions adapt automatically |
+|  Remote Dashboard | Control the assistant from your phone via QR code pairing |
 
 ---
 
-## 🆕 What's New in Aethelark
+##  What's New in Aethelark
 
 ### ⚡ Auto-Start on Boot
 The assistant now registers itself with the operating system's startup system. One click in the UI toggles it on or off. On Windows, it writes to the registry using `pythonw.exe` so no console window ever appears. On macOS it installs a LaunchAgent plist; on Linux a `.desktop` autostart entry. The button reflects the current state every time the app launches.
 
-### 🎨 Assistant Customization
+###  Assistant Customization
 The assistant is no longer locked to the name "Aethelark". Click `⚙ CUSTOMISE ASSISTANT` in the right panel to change:
 - **Assistant name** — displayed everywhere in the UI (title bar, header, HUD, log, footer) and injected into the Gemini system prompt so the AI knows its own name
 - **Your name** — how the assistant addresses you. Leave blank for the default language-aware addressing, or set your actual name for a more personal feel
 
 Changes take effect immediately without restarting.
 
-### 📋 Clipboard Intelligence
+###  Clipboard Intelligence
 Copy any text of 10 or more characters and a floating panel appears at the bottom of the window. Four quick actions — **TRANSLATE**, **SUMMARISE**, **EXPLAIN**, **FIX** — send the copied content directly to the assistant with one click. The panel auto-dismisses after 8 seconds. This turns the clipboard into a silent command channel for anything on your screen.
 
 ### ☀ Morning Brief Toggle + Speed Optimization
@@ -62,7 +62,7 @@ The morning briefing can now be turned on or off with one click from the setting
 
 ---
 
-## 🗺️ Aethelark Roadmap
+##  Aethelark Roadmap
 
 | Version | Focus |
 |---|---|
@@ -82,11 +82,11 @@ pip install -r requirements.txt
 python main.py
 ```
 
-> ⚠️ **Installation Note:** Some OS-specific dependencies are not bundled in `requirements.txt` to keep the repo lightweight. If you hit a `ModuleNotFoundError`, install the missing package with `pip install <module_name>`.
+>  **Installation Note:** Some OS-specific dependencies are not bundled in `requirements.txt` to keep the repo lightweight. If you hit a `ModuleNotFoundError`, install the missing package with `pip install <module_name>`.
 
 ---
 
-## 📋 Requirements
+##  Requirements
 
 | Requirement | Details |
 | --- | --- |
@@ -97,7 +97,7 @@ python main.py
 
 ---
 
-## 🗂️ Project Structure
+##  Project Structure
 
 ```
 Space-Eagle/
@@ -133,7 +133,7 @@ Space-Eagle/
 
 ---
 
-## ⚠️ License
+##  License
 
 Personal and non-commercial use only.
 Licensed under **[Creative Commons BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)**.
