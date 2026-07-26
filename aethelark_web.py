@@ -535,7 +535,7 @@ class WebShellUI(QObject):
     def _push_all(self):
         self._push("setState", "LISTENING" if not self._muted else "MUTED")
         self._push("setLog", self._log_lines[-40:])
-        self._push_memory(); self._push_metrics()
+        self._push_memory(); self._push_metrics(); self._push_swarm()
 
     def _push_memory(self):
         self._push("setMemory", self._memory_facts())
@@ -560,10 +560,117 @@ class WebShellUI(QObject):
         self._push("setMetrics", {"cpu": f"{s['cpu']:.0f}%",
                                   "mem": f"{s['mem']:.0f}%", "gpu": gpu})
 
+    # ---- HARDCORE: the live swarm view ----
+    # board status -> (lane css class [work|review|block], badge text)
+    _SWARM_STMAP = {
+        "working": ("work", "WORKING"), "review_blocked": ("block", "NEEDS YOU"),
+        "failed": ("block", "FAILED"), "merged": ("review", "MERGED"),
+        "stopped": ("review", "STOPPED"),
+    }
+    _AGENT_LABELS = {
+        "claude_code": "Claude Code", "antigravity_cli": "Antigravity CLI",
+        "antigravity_ide": "Antigravity IDE", "opencode": "OpenCode", "kimi": "Kimi",
+    }
+
+    def _swarm_view(self):
+        """Transform the live swarm blackboard into the #swarm UI's shape.
+
+        Returns None on error, an idle payload when no swarm is running, else the
+        live mission/agents/timeline. This is what makes HARDCORE real instead of
+        the static mockup — it reads the same blackboard the orchestrator writes.
+        """
+        try:
+            from actions.swarm_orchestrator import swarm_snapshot
+            snap = swarm_snapshot()
+        except Exception:
+            return None
+        projects = snap.get("projects", {})
+        best = None  # the active project = the one with the most registered agents
+        for path, pdata in projects.items():
+            n = len(pdata.get("agents", {}))
+            if n and (best is None or n > len(best[1].get("agents", {}))):
+                best = (path, pdata)
+        if not best:
+            return {"idle": True}
+
+        import os
+        import time as _t
+        path, pdata = best
+        agents = pdata.get("agents", {})
+        decisions = pdata.get("decisions", [])
+        sessions = snap.get("sessions", {})
+
+        def age_for(worktree):
+            if not worktree:
+                return 0
+            try:
+                wt = os.path.realpath(worktree)
+            except Exception:
+                wt = worktree
+            for k, v in sessions.items():
+                sdir = k.split("@", 1)[-1]
+                if sdir == wt or sdir == worktree:
+                    return v.get("age_s", 0) or 0
+            return 0
+
+        def mmss(sec):
+            sec = int(sec or 0)
+            return f"{sec // 60}:{sec % 60:02d}"
+
+        agent_list, merged, max_age = [], 0, 0
+        for key, info in agents.items():
+            st = info.get("status", "working")
+            lane, badge = self._SWARM_STMAP.get(st, ("work", "WORKING"))
+            if st == "merged":
+                merged += 1
+            assignee = info.get("assignee") or key
+            name = self._AGENT_LABELS.get(assignee, str(assignee).replace("_", " ").title())
+            age = age_for(info.get("worktree", ""))
+            max_age = max(max_age, age)
+            agent_list.append({
+                "glyph": (name[:1] or "•").upper(), "name": name,
+                "branch": info.get("branch", ""), "lane": lane, "badge": badge,
+                "thought": (info.get("last_thought") or "").strip() or "…",
+                "elapsed": mmss(age) if age else "",
+            })
+
+        total = len(agents)
+        s = _metrics.snapshot()
+        repo = pathlib.Path(path).name
+        mission = {
+            "repo": repo, "worktrees": total, "merged": f"{merged} / {total}",
+            "conflicts": 0, "progress": int(merged / total * 100) if total else 0,
+            "cpu": f"{s['cpu']:.0f}%", "tasks": len(decisions), "elapsed": mmss(max_age),
+            "conductor": f"{total} AGENT{'S' if total != 1 else ''} · {repo.upper()}",
+            "state": "CONDUCTING",
+        }
+        timeline = [{
+            "ts": _t.strftime("%H:%M", _t.localtime(d.get("ts", 0))) if d.get("ts") else "",
+            "text": d.get("text", ""), "done": True,
+        } for d in decisions[-14:]]
+        return {"mission": mission, "agents": agent_list, "timeline": timeline}
+
+    def _push_swarm(self):
+        view = self._swarm_view()
+        if view is None:
+            return
+        if view.get("idle"):
+            view = {
+                "mission": {"repo": "—", "worktrees": 0, "merged": "0 / 0",
+                            "conflicts": 0, "progress": 0, "cpu": "0%", "tasks": 0,
+                            "elapsed": "0:00", "conductor": "NO ACTIVE SWARM",
+                            "state": "STANDBY"},
+                "agents": [],
+                "timeline": [{"ts": "", "text": "No active swarm. Say "
+                              "“build me…” to start one.", "done": False}],
+            }
+        self._push("setSwarm", view)
+
     def _tick(self):
         # Metrics are cheap (a psutil snapshot); memory is only re-read + pushed
         # when the file actually changed, not every 2 seconds.
         self._push_metrics()
+        self._push_swarm()
         if self._memory_changed():
             self._push_memory()
 

@@ -608,10 +608,11 @@ draw();
     letter-spacing:.5em; padding-left:.5em; color:var(--text,#E5E5EA);
     text-shadow:0 1px 5px rgba(0,0,0,.92); opacity:.95; }
 
-  /* CPU / MEM / GPU tiles — a little bigger and easier to read at a glance. */
-  #resting .minibar { padding:11px 6px !important; border-radius:10px !important; }
-  #resting .minibar .v { font-size:15px !important; }
-  #resting .minibar .k { font-size:8.5px !important; margin-top:3px !important;
+  /* CPU / MEM / GPU (casual) + CPU / TASKS / ELAPSED (hardcore) tiles — a little
+     bigger and easier to read at a glance, in BOTH modes so they stay matched. */
+  .minibar { padding:11px 6px !important; border-radius:10px !important; }
+  .minibar .v { font-size:15px !important; }
+  .minibar .k { font-size:8.5px !important; margin-top:3px !important;
     letter-spacing:.16em !important; }
 </style>
 
@@ -697,22 +698,32 @@ draw();
       var fill = document.querySelector('#swarm .gauge .fill'); if (fill && mm.progress != null) fill.style.width = mm.progress + '%';
       var tv = [mm.cpu, mm.tasks, mm.elapsed];
       document.querySelectorAll('#swarm .minibars .minibar .v').forEach(function (t, i) { if (tv[i] != null) t.textContent = tv[i]; });
+      // Conductor header — live agent count · repo, and the conductor's state.
+      var cs = document.querySelector('#swarm .conductor .txt .s');
+      if (cs && mm.conductor != null) cs.textContent = mm.conductor;
+      var ct = document.querySelector('#swarm .conductor .txt .sig.t');
+      if (ct && mm.state != null) ct.textContent = mm.state;
     }
     if (d.agents) {
       var badge = { work: 'WORKING', review: 'IN REVIEW', block: 'NEEDS YOU', idle: 'STANDBY' };
       document.querySelectorAll('#swarm .lane').forEach(function (lane, i) {
         var a = d.agents[i];
         if (!a) { lane.style.display = 'none'; return; }
-        lane.style.display = ''; lane.className = 'lane ' + (a.status || 'work');
+        lane.style.display = ''; lane.className = 'lane ' + (a.lane || a.status || 'work');
         var q = function (s) { return lane.querySelector(s); };
         if (q('.glyph')) q('.glyph').textContent = a.glyph || '\u2022';
         if (q('.nm')) q('.nm').textContent = a.name || '';
         if (q('.br')) q('.br').textContent = a.branch || '';
-        if (q('.st')) q('.st').textContent = badge[a.status] || '';
+        if (q('.st')) q('.st').textContent = a.badge || badge[a.status] || '';
         if (q('.think')) q('.think').textContent = a.thought || '';
-        if (q('.meta')) q('.meta').innerHTML = '<span><b class="add">+' + (a.adds || 0) + '</b> <b class="del">\u2212' + (a.dels || 0) + '</b></span>'
-          + (a.file ? '<span class="file">' + esc(a.file) + '</span>' : '')
-          + (a.elapsed ? '<span>\u23f1 ' + esc(a.elapsed) + '</span>' : '');
+        if (q('.meta')) {
+          var parts = '';
+          if (a.adds != null || a.dels != null)
+            parts += '<span><b class="add">+' + (a.adds || 0) + '</b> <b class="del">\u2212' + (a.dels || 0) + '</b></span>';
+          if (a.file) parts += '<span class="file">' + esc(a.file) + '</span>';
+          if (a.elapsed) parts += '<span>\u23f1 ' + esc(a.elapsed) + '</span>';
+          q('.meta').innerHTML = parts;
+        }
       });
     }
     if (d.timeline) {
