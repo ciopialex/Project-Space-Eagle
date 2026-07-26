@@ -558,6 +558,61 @@ draw();
     box-shadow:0 6px 16px rgba(200,200,208,.16); font-weight:600; }
   .set-bchip.sel .bg { background:rgba(10,10,10,.14); color:#0A0A0A; box-shadow:none; }
   .set-bchip.sel .set-badge { color:#0A0A0A; box-shadow:inset 0 0 0 1px rgba(10,10,10,.3); }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     TITLE-BAR + CREST REFINEMENTS (founder pass, 2026-07)
+     The 'AETHELARK' wordmark moves off the title bar and onto the crest; the
+     CASUAL/HARDCORE toggle takes its old spot beside the eagle mark; the clock
+     is real-time and sits clean on the background (no pill).
+     ══════════════════════════════════════════════════════════════════════ */
+  /* Wordmark leaves the title bar (re-homed on the crest, below). */
+  .strip .brand .sig.word { display:none !important; }
+  /* Toggle slides right up against the eagle mark, where the name used to be. */
+  .strip .brand .modeseg { margin-left:4px !important; }
+
+  /* Clock + date: no rounded button — clean on the background. Date a touch
+     bigger, time real-time (driven by the script below). */
+  .strip .chrono { background:none !important; box-shadow:none !important;
+    padding:0 !important; gap:16px !important; }
+  .strip .chrono .t { font-size:17px !important; }
+  .strip .chrono .d { font-size:11px !important; color:var(--text2,#C8C8D0) !important; }
+
+  /* The rotating sweep around the eagle — a smooth silver arc that fades in and
+     out gradually (was a hard conic edge), softened with a feathered ring mask
+     and a whisper of blur so it reads as light, not a white line. */
+  .core .sweep {
+    inset:5px !important;
+    background:conic-gradient(from 0deg,
+        rgba(226,226,234,0)    0deg,
+        rgba(226,226,234,.03)  55deg,
+        rgba(226,226,234,.12) 140deg,
+        rgba(240,240,246,.30) 205deg,
+        rgba(226,226,234,.12) 270deg,
+        rgba(226,226,234,.03) 320deg,
+        rgba(226,226,234,0)   360deg) !important;
+    -webkit-mask:radial-gradient(circle, transparent 43%, #000 49%, #000 91%, transparent 99%) !important;
+            mask:radial-gradient(circle, transparent 43%, #000 49%, #000 91%, transparent 99%) !important;
+    filter:blur(1.3px) !important;
+    animation:spin 9s linear infinite !important;
+    opacity:.95 !important;
+  }
+  /* Calm the dashed spinning ring — it was reading as a hard white dashed line. */
+  .core .ring.r3 { border-style:solid !important;
+    border-color:rgba(200,200,208,.07) !important;
+    animation:spin 64s linear infinite !important; }
+
+  /* AETHELARK, in Doto, resting right above the eagle (injected by the script). */
+  .core-wrap .crest-word { position:absolute; top:22%; left:0; right:0;
+    text-align:center; z-index:6; pointer-events:none;
+    font-family:'Doto'; font-weight:800; font-size:15px;
+    letter-spacing:.5em; padding-left:.5em; color:var(--text,#E5E5EA);
+    text-shadow:0 1px 5px rgba(0,0,0,.92); opacity:.95; }
+
+  /* CPU / MEM / GPU tiles — a little bigger and easier to read at a glance. */
+  #resting .minibar { padding:11px 6px !important; border-radius:10px !important; }
+  #resting .minibar .v { font-size:15px !important; }
+  #resting .minibar .k { font-size:8.5px !important; margin-top:3px !important;
+    letter-spacing:.16em !important; }
 </style>
 
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
@@ -978,6 +1033,39 @@ draw();
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && scrim && scrim.classList.contains('open')) { e.stopPropagation(); close(); }
   }, true);
+})();
+</script>
+
+<script>
+(function () {
+  var DOW = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
+  var MON = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  function p(n){ return n < 10 ? '0' + n : '' + n; }
+
+  // ── Real-time clock (the artifact had a hardcoded time/date) ──────────────
+  function tickClock() {
+    var t = document.querySelector('.strip .chrono .t');
+    var d = document.querySelector('.strip .chrono .d');
+    if (!t || !d) return;
+    var n = new Date();
+    t.textContent = p(n.getHours()) + ':' + p(n.getMinutes()) + ':' + p(n.getSeconds());
+    d.textContent = DOW[n.getDay()] + ' ' + n.getDate() + ' ' + MON[n.getMonth()] + ' ' + n.getFullYear();
+  }
+
+  // ── Move the AETHELARK wordmark onto the crest, above the eagle ────────────
+  function placeWordmark() {
+    var wrap = document.querySelector('.stage .core-wrap');
+    if (!wrap || wrap.querySelector('.crest-word')) return;
+    var w = document.createElement('div');
+    w.className = 'crest-word';
+    w.textContent = 'AETHELARK';
+    wrap.appendChild(w);
+  }
+
+  function start() { placeWordmark(); tickClock(); setInterval(tickClock, 1000); }
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', start);
+  else start();
 })();
 </script>
 
