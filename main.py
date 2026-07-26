@@ -420,16 +420,21 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "swarm_mode",
-        "description": "Multi-agent swarm orchestration on one project: launch several coding agents (antigravity_cli, claude_code, opencode, kimi) concurrently in isolated git worktrees with a shared blackboard, broadcast decisions between them, check swarm status, or stop the swarm.",
+        "description": "Multi-agent swarm on one project. PREFERRED FLOW for 'build me X': action='plan' → a Chief Architect decomposes the mission, sizes the team, and returns a spoken plan summary; SPEAK it and ASK the user to approve; then action='execute' to spin up the team in isolated git worktrees. While agents work, action='inject' relays the user's new ideas to specific agents. Also: status | review (verify+merge) | stop | broadcast | launch.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "launch | status | broadcast | review | stop"},
-                "deep":        {"type": "BOOLEAN", "description": "For review: also run an offloaded deep LLM code review (slower)"},
+                "action":      {"type": "STRING", "description": "plan | execute | inject | status | review | stop | broadcast | launch"},
                 "directory":   {"type": "STRING", "description": "Absolute path of the project directory the swarm operates on"},
-                "assignments": {"type": "STRING", "description": "For launch: JSON object mapping agent name to its task, e.g. '{\"claude_code\": \"build the frontend\", \"antigravity_cli\": \"build the API\"}'"},
+                "goal":        {"type": "STRING", "description": "For plan: the mission in one line, e.g. 'a Flappy Bird clone with an online leaderboard'"},
+                "max_agents":  {"type": "INTEGER", "description": "For plan: cap on team size (default 2)"},
+                "notes":       {"type": "STRING", "description": "For execute: extra requirements the user voiced WITH their approval ('yes, but make the UI beautiful'). Route by role with a JSON object like '{\"frontend\": \"make the UI beautiful\"}', or a plain string to apply to every agent."},
+                "target":      {"type": "STRING", "description": "For inject: who hears the new request — a role ('frontend', 'the backend one'), an agent name, or 'all'"},
+                "interrupt":   {"type": "BOOLEAN", "description": "For inject: true = hard redirect (stop current work); false (default) = chime in and keep working"},
+                "deep":        {"type": "BOOLEAN", "description": "For review: also run an offloaded deep LLM code review (slower)"},
+                "assignments": {"type": "STRING", "description": "For launch (manual, skips planning): JSON object mapping agent name to its task"},
                 "agent":       {"type": "STRING", "description": "For broadcast: which agent (or 'eagle') the decision comes from"},
-                "message":     {"type": "STRING", "description": "For broadcast: the decision/context to deliver to all other agents"},
+                "message":     {"type": "STRING", "description": "For inject/broadcast: the request/decision text to deliver"},
             },
             "required": ["action", "directory"]
         }

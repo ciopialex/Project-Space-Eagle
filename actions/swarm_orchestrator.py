@@ -202,10 +202,50 @@ class Blackboard:
         return "\n".join(lines) or "No swarm activity recorded."
 
 
+# Role vocabulary so the eagle can target "the frontend one" / "backend" / "the
+# UI agent" and have it resolve to the right workstream, however it was named.
+_ROLE_SYNONYMS = {
+    "frontend": {"frontend", "front-end", "front", "ui", "web", "client",
+                 "interface", "view", "design", "css", "styling"},
+    "ui":       {"ui", "frontend", "front-end", "web", "client", "interface",
+                 "view", "design"},
+    "backend":  {"backend", "back-end", "back", "api", "server", "service",
+                 "endpoint", "db", "database", "data"},
+    "api":      {"api", "backend", "back-end", "server", "service", "endpoint"},
+    "database": {"database", "db", "data", "backend", "storage", "persistence"},
+}
+# Every word that carries role meaning — used to keep short but meaningful tokens
+# ('ui', 'db', 'api') while filler words ('the', 'one', 'agent') are dropped.
+_ROLE_VOCAB = set(_ROLE_SYNONYMS).union(*_ROLE_SYNONYMS.values())
+
+
+def _matches_workstream(target: str, key: str, assignee: str = "",
+                        task: str = "") -> bool:
+    """Does a fuzzy target ('frontend', 'the ui agent', 'claude', 'api') point at
+    this workstream? Matches on id, assignee, or role words in the task text.
+
+    Only role-vocabulary words or substantive (>=4 char) words become match
+    tokens, so filler like 'the'/'one'/'agent' can't accidentally match another
+    workstream's task text.
+    """
+    t = (target or "").strip().lower()
+    if not t or t in ("all", "*", "everyone", "both", "team"):
+        return True
+    if t == key.lower() or t == assignee.lower():
+        return True
+    tokens = {w for w in t.split() if w in _ROLE_VOCAB or len(w) >= 4}
+    for tok in list(tokens):
+        tokens |= _ROLE_SYNONYMS.get(tok, set())
+    if not tokens:
+        return False
+    hay = f" {key} {assignee} {task} ".lower()
+    return any(f" {tok} " in hay or tok == key.lower() for tok in tokens)
+
+
 def _swarm_preamble(agent: str, task: str, branch: str, project_dir: Path,
                     repo_map: str = "", *, coupled: bool = True,
                     contract: dict | None = None, owns=None,
-                    acceptance=None) -> str:
+                    acceptance=None, extra_note: str = "") -> str:
     """Build the marching orders handed to a swarm member.
 
     Coupling flips how the agent is told to coordinate:
@@ -248,6 +288,11 @@ def _swarm_preamble(agent: str, task: str, branch: str, project_dir: Path,
     if acceptance:
         text += ("\n\nACCEPTANCE CRITERIA — your branch is not done until ALL pass:\n"
                  + "\n".join(f"  - {a}" for a in acceptance))
+    # A late requirement the user voiced at the approval gate — folded into the
+    # spawn so the agent honors it from its very first action.
+    if extra_note:
+        text += ("\n\nUSER-ADDED REQUIREMENT (voiced by the operator — honor this "
+                 f"throughout): {extra_note}")
     # Inject accumulated lessons up front so a fresh agent starts already knowing
     # the mistakes the swarm has hit — it never has to re-learn them the hard way.
     try:
@@ -356,13 +401,18 @@ class SwarmOrchestrator:
             report += f" Issues: {'; '.join(errors)}."
         return report
 
-    async def execute_plan(self, plan: dict) -> str:
+    async def execute_plan(self, plan: dict, notes=None) -> str:
         """Turn a validated Chief-Architect plan into a live swarm.
 
         One isolated worktree per WORKSTREAM (keyed by workstream id, not agent
         key — so two same-brand agents never share a branch), each spawned with a
         coupling-aware, contract-bound preamble. Assumes human approval already
         happened at the front door; this only executes.
+
+        `notes` carries requirements the operator voiced AT the approval gate
+        ("yes, but make the UI beautiful"): a plain string applies to every
+        agent; a dict {target: text} routes each note to the matching workstream
+        (target may be an id, an assignee, or a role word like 'frontend').
         """
         from actions.agent_delegation import AGENT_REGISTRY, agent_available
         from actions.chief_architect import validate_plan
@@ -405,10 +455,12 @@ class SwarmOrchestrator:
                 errors.append(f"{ws_id}: {e}")
                 continue
             branch = f"swarm/{ws_id}"
+            note = self._note_for(notes, ws_id, agent_key, w.get("task", ""))
             prompt = _swarm_preamble(
                 ws_id, w["task"], branch, self.project_dir, repo_map=repo_map,
                 coupled=coupled, contract=contract if coupled else None,
-                owns=w.get("owns"), acceptance=w.get("acceptance"))
+                owns=w.get("owns"), acceptance=w.get("acceptance"),
+                extra_note=note)
             result = await adapter.run(prompt, wt, self.project_dir.name,
                                        player=self.player)
             if "session" not in result.lower():
@@ -426,6 +478,64 @@ class SwarmOrchestrator:
         if errors:
             report += f" Issues: {'; '.join(errors)}."
         return report
+
+    @staticmethod
+    def _note_for(notes, ws_id: str, assignee: str, task: str) -> str:
+        """Resolve which approval-gate note (if any) applies to this workstream."""
+        if not notes:
+            return ""
+        if isinstance(notes, str):
+            return notes.strip()          # a blanket note → every agent gets it
+        if isinstance(notes, dict):
+            for target, text in notes.items():
+                if text and _matches_workstream(str(target), ws_id, assignee, task):
+                    return str(text).strip()
+        return ""
+
+    def inject(self, message: str, target: str = "all",
+               interrupt: bool = False, source: str = "user") -> str:
+        """Chime in on running agents mid-development with a fresh user request.
+
+        `target` selects who hears it — a workstream id, an assignee, a role word
+        ('frontend', 'the backend one'), or 'all'. `interrupt=True` does a hard
+        Ctrl+C redirect (drop what you're doing); default just types the note into
+        the live session so the agent folds it in and keeps working. The request
+        is also recorded on the blackboard so a later-spawned agent still sees it.
+        """
+        message = (message or "").strip()
+        if not message:
+            return "Nothing to inject — no message given."
+        live = self._live_sessions()
+        if not live:
+            return "No live agents to update — the swarm isn't running."
+        state = self.board.read()
+        matched = [k for k in live
+                   if _matches_workstream(
+                       target, k,
+                       state["agents"].get(k, {}).get("assignee", ""),
+                       state["agents"].get(k, {}).get("task", ""))]
+        if not matched:
+            return (f"No live agent matches '{target}'. Running now: "
+                    f"{', '.join(sorted(live))}.")
+
+        line = f"[USER REQUEST — {source} added this] {message}"
+        delivered = []
+        for key in matched:
+            sess = live[key]
+            try:
+                if interrupt:
+                    sess.interrupt()
+                    time.sleep(0.7)       # let the CLI settle back to its prompt
+                sess.send_line(line)
+                delivered.append(key)
+            except OSError:
+                pass
+        # Durable trail: the request lives on the board too.
+        self.board.add_decision(source, f"USER REQUEST → {', '.join(matched)}: {message}")
+        verb = "redirected" if interrupt else "notified"
+        self._log(f"SYS: 🗣 Operator {verb} {', '.join(delivered)}: {message[:80]}")
+        return (f"{verb.capitalize()} {', '.join(delivered) or 'no one'} with your "
+                f"request. It's on the blackboard too, so any later agent sees it.")
 
     def _wire_thoughts(self, adapter, agent_key: str, worktree: Path):
         sess = POOL.get_alive(adapter.pool_key, worktree)
@@ -552,12 +662,13 @@ def get_orchestrator(project_dir, player=None) -> SwarmOrchestrator:
     return orch
 
 
-async def execute_plan(plan: dict, project_dir, player=None) -> str:
+async def execute_plan(plan: dict, project_dir, player=None, notes=None) -> str:
     """Module-level entry: execute a validated Chief-Architect plan on a project.
 
     The front door (voice dispatch) calls this AFTER the human approves the spoken
-    plan summary. Enforces the Space-Eagle self-edit safeguard, then delegates to
-    the project's orchestrator.
+    plan summary. `notes` carries any requirement the operator voiced with their
+    approval. Enforces the Space-Eagle self-edit safeguard, then delegates to the
+    project's orchestrator.
     """
     project_dir = Path(project_dir).expanduser().resolve()
     if project_dir == SPACE_EAGLE_HOME or SPACE_EAGLE_HOME in project_dir.parents:
@@ -565,7 +676,7 @@ async def execute_plan(plan: dict, project_dir, player=None) -> str:
                 "Aethelark's own codebase.")
     project_dir.mkdir(parents=True, exist_ok=True)
     orch = get_orchestrator(project_dir, player)
-    return await orch.execute_plan(plan)
+    return await orch.execute_plan(plan, notes=notes)
 
 
 async def swarm_orchestrate(parameters: dict, player=None) -> str:
@@ -615,7 +726,21 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
         if not plan:
             return ("Ask: No plan provided or found — run the chief architect "
                     "first (action 'plan').")
-        return await orch.execute_plan(plan)
+        notes = parameters.get("notes")
+        if isinstance(notes, str) and notes.strip().startswith("{"):
+            try:
+                notes = json.loads(notes)
+            except ValueError:
+                pass  # keep it as a blanket string note
+        return await orch.execute_plan(plan, notes=notes)
+    if action == "inject":
+        # Mid-development: relay a fresh user request to running agent(s).
+        return await asyncio.to_thread(
+            orch.inject,
+            parameters.get("message", ""),
+            (parameters.get("target") or "all").strip(),
+            bool(parameters.get("interrupt")),
+            parameters.get("source") or "user")
     if action == "launch":
         assignments = parameters.get("assignments") or {}
         if isinstance(assignments, str):
