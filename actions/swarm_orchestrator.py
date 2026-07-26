@@ -363,7 +363,7 @@ class SwarmOrchestrator:
 
     async def launch(self, assignments: dict) -> str:
         """assignments: {registry_agent_key: task_description}"""
-        from actions.agent_delegation import AGENT_REGISTRY
+        from actions.agent_delegation import AGENT_REGISTRY, spawn_succeeded
 
         self.ensure_repo()
         try:
@@ -388,7 +388,7 @@ class SwarmOrchestrator:
                                      repo_map=repo_map)
             result = await adapter.run(prompt, wt, self.project_dir.name,
                                        player=self.player)
-            if "session" not in result.lower():
+            if not spawn_succeeded(result):
                 errors.append(f"{agent_key}: {result}")
                 continue
             self.board.register_agent(agent_key, task, str(wt), branch)
@@ -414,7 +414,8 @@ class SwarmOrchestrator:
         agent; a dict {target: text} routes each note to the matching workstream
         (target may be an id, an assignee, or a role word like 'frontend').
         """
-        from actions.agent_delegation import AGENT_REGISTRY, agent_available
+        from actions.agent_delegation import (AGENT_REGISTRY, agent_available,
+                                              spawn_succeeded)
         from actions.chief_architect import validate_plan
 
         # Defensive gate — never execute a malformed plan even if a caller skipped
@@ -433,6 +434,12 @@ class SwarmOrchestrator:
             repo_map = await asyncio.to_thread(build_repo_map, self.project_dir, 4000)
         except Exception:
             repo_map = ""
+
+        # Persist the dependency-first merge order so the Reviewer merges branches
+        # in the right sequence later, even across a restart.
+        ids = [w["id"] for w in plan.get("workstreams", [])]
+        merge_order = [i for i in (plan.get("merge_order") or ids) if i in ids]
+        self.board.update(lambda s: s.__setitem__("merge_order", merge_order))
 
         # Freeze the contract onto the blackboard up front so every coupled agent
         # reads the same interface from a single source of truth.
@@ -463,7 +470,7 @@ class SwarmOrchestrator:
                 extra_note=note)
             result = await adapter.run(prompt, wt, self.project_dir.name,
                                        player=self.player)
-            if "session" not in result.lower():
+            if not spawn_succeeded(result):
                 errors.append(f"{ws_id} ({agent_key}): {result}")
                 continue
             self.board.register_agent(ws_id, w["task"], str(wt), branch)
@@ -546,13 +553,33 @@ class SwarmOrchestrator:
                     self.board.set_agent(a, last_thought=text))
 
     def _live_sessions(self) -> dict:
-        """agent_key -> live PtySession for this project's swarm."""
+        """board key (workstream id or agent key) -> live PtySession.
+
+        Joins on the resolved WORKTREE PATH, not the agent key — POOL keys
+        sessions by (pool_key, resolved_dir) while the board keys by workstream
+        id, so the directory is the only reliable join. Both sides are resolved
+        so a symlinked project path can't silently break the match.
+        """
         state = self.board.read()
+        sessions = {}
+        for (_, sdir), sess in POOL.all_sessions().items():
+            if sess.is_alive():
+                try:
+                    sessions[str(Path(sdir).resolve())] = sess
+                except OSError:
+                    sessions[sdir] = sess
         out = {}
-        for agent_key, info in state["agents"].items():
-            for (_, sdir), sess in POOL.all_sessions().items():
-                if sdir == info.get("worktree") and sess.is_alive():
-                    out[agent_key] = sess
+        for board_key, info in state["agents"].items():
+            wt = info.get("worktree")
+            if not wt:
+                continue
+            try:
+                wt_r = str(Path(wt).resolve())
+            except OSError:
+                wt_r = wt
+            sess = sessions.get(wt_r) or sessions.get(wt)
+            if sess:
+                out[board_key] = sess
         return out
 
     def broadcast(self, from_agent: str, message: str) -> str:
@@ -597,7 +624,14 @@ class SwarmOrchestrator:
         """Offload verification + merge of swarm branches to the Reviewer."""
         from actions.swarm_reviewer import ReviewerAgent
         state = self.board.read()
-        targets = ([agent] if agent else list(state["agents"].keys()))
+        if agent:
+            targets = [agent]
+        else:
+            # Merge in the plan's dependency-first order; anything not listed
+            # (e.g. a sentinel re-delegation) goes last.
+            keys = list(state["agents"].keys())
+            order = [k for k in (state.get("merge_order") or []) if k in keys]
+            targets = order + [k for k in keys if k not in order]
         if not targets:
             return "No swarm agents registered — nothing to review."
         reviewer = ReviewerAgent(self.project_dir, self.player)

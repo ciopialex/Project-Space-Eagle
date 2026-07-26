@@ -290,7 +290,10 @@ class SessionPool:
 
     def close_all(self):
         for sess in self.all_sessions().values():
-            sess.close()
+            try:
+                sess.close()
+            except Exception:
+                pass  # never let one bad session block shutdown of the rest
         with self._lock:
             self._sessions.clear()
 

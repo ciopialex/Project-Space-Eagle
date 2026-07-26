@@ -706,7 +706,7 @@ TOOL_SPECS = {
     "code_helper": ToolSpec(reads=["memory"], writes=["file"], priority=1, timeout_s=45.0),
     "dev_agent": ToolSpec(reads=["memory"], writes=["file"], priority=1, timeout_s=45.0),
     "developer_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=120.0),
-    "swarm_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=180.0),
+    "swarm_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=300.0),
     "agent_interject": ToolSpec(writes=["file"], priority=3, timeout_s=30.0),
     "web_search": ToolSpec(reads=["web"], priority=1),
     "file_processor": ToolSpec(reads=["file"], writes=["file"], priority=1),

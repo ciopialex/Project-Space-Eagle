@@ -83,10 +83,10 @@ class SwarmSentinel:
             if idle >= NUDGE_AFTER_S:
                 if nudged_at is None:
                     self._nudge_ts[tag] = now
-                    self._nudge(agent_key, sess, root)
+                    self._nudge(agent_key, sess, root, sdir)
                 elif now - nudged_at >= grace:
                     self._nudge_ts.pop(tag, None)
-                    self._fail_over(agent_key, sess, root)
+                    self._fail_over(agent_key, sess, root, sdir)
             elif nudged_at is not None and now - nudged_at >= grace:
                 self._nudge_ts.pop(tag, None)  # recovered — stayed active
 
@@ -98,13 +98,37 @@ class SwarmSentinel:
             player.write_log(msg)
         print(msg)
 
-    def _task_of(self, root: Path, agent_key: str) -> str:
-        from actions.swarm_orchestrator import Blackboard
-        return Blackboard(root).read()["agents"].get(agent_key, {}).get("task", "")
+    @staticmethod
+    def _board_entry(board, sdir, fallback_key):
+        """Map a live session's worktree dir to its blackboard entry.
 
-    def _nudge(self, agent_key, sess, root):
-        task = self._task_of(root, agent_key)
-        self._hud(sess, f"SYS: ⚠️ Swarm agent '{agent_key}' looks idle — nudging.")
+        POOL keys sessions by pool_key (the agent registry key), but the board
+        keys by WORKSTREAM ID after execute_plan — so the worktree directory is
+        the only reliable join. Returns (board_key, info). Falls back to a
+        direct key lookup for the older launch() path where they coincide.
+        """
+        try:
+            sdir_r = str(Path(sdir).resolve())
+        except OSError:
+            sdir_r = str(sdir)
+        agents = board.read().get("agents", {})
+        for key, info in agents.items():
+            wt = info.get("worktree")
+            if not wt:
+                continue
+            try:
+                wt_r = str(Path(wt).resolve())
+            except OSError:
+                wt_r = wt
+            if wt_r == sdir_r or wt == str(sdir):
+                return key, info
+        return fallback_key, agents.get(fallback_key, {})
+
+    def _nudge(self, agent_key, sess, root, sdir):
+        from actions.swarm_orchestrator import Blackboard
+        board_key, info = self._board_entry(Blackboard(root), sdir, agent_key)
+        task = info.get("task", "")
+        self._hud(sess, f"SYS: ⚠️ Swarm agent '{board_key}' looks idle — nudging.")
         try:
             sess.send_line(
                 f"[SWARM UPDATE from eagle] You appear idle. If you are "
@@ -113,21 +137,21 @@ class SwarmSentinel:
         except OSError:
             pass
 
-    def _fail_over(self, agent_key, sess, root):
+    def _fail_over(self, agent_key, sess, root, sdir):
         from actions.agent_delegation import AGENT_REGISTRY
         from actions.swarm_orchestrator import Blackboard, _swarm_preamble
 
         board = Blackboard(root)
-        info = board.read()["agents"].get(agent_key, {})
+        board_key, info = self._board_entry(board, sdir, agent_key)
         task = info.get("task", "")
         worktree = Path(info.get("worktree") or sess.project_dir)
         player = getattr(sess, "player", None)
 
-        self._hud(sess, f"SYS: 🔴 Swarm agent '{agent_key}' is stuck — "
+        self._hud(sess, f"SYS: 🔴 Swarm agent '{board_key}' is stuck — "
                         f"terminating and re-delegating its task.")
         context_tail = sess.snapshot_tail(2000).decode("utf-8", "replace")
         sess.close()
-        board.set_agent(agent_key, status="failed")
+        board.set_agent(board_key, status="failed")
 
         # Turn the stall into a shared lesson so teammates surface blockers early
         # instead of silently freezing.
@@ -147,27 +171,36 @@ class SwarmSentinel:
              if k != agent_key and k in AGENT_REGISTRY
              and _agent_available(AGENT_REGISTRY[k])), None)
         if not fallback:
-            board.add_decision("eagle", f"{agent_key} failed; no fallback "
+            board.add_decision("eagle", f"{board_key} failed; no fallback "
                                         f"agent available for its task.")
             self._hud(sess, "SYS: No fallback agent available — task parked "
                             "on the blackboard.")
             return
 
         adapter = AGENT_REGISTRY[fallback]
-        branch = info.get("branch", f"swarm/{agent_key}")
+        branch = info.get("branch", f"swarm/{board_key}")
         prompt = _swarm_preamble(fallback, task, branch, root) + (
-            f"\nYou are taking over from '{agent_key}', which stalled. "
-            f"Its final console output was:\n{context_tail[-1200:]}\n"
+            f"\nYou are taking over workstream '{board_key}' from '{agent_key}', "
+            f"which stalled. Its final console output was:\n{context_tail[-1200:]}\n"
             f"Assess the worktree state and continue the task from there.")
         try:
             result = asyncio.run(
                 adapter.run(prompt, worktree, root.name, player=player))
         except Exception as e:
             result = f"fail-over error: {e}"
-        board.register_agent(fallback, task, str(worktree), branch)
-        board.add_decision("eagle",
-                           f"Re-delegated '{agent_key}' task to '{fallback}'.")
-        self._hud(sess, f"SYS: Task handed over to '{fallback}': {result[:120]}")
+        from actions.agent_delegation import spawn_succeeded
+        if spawn_succeeded(result):
+            # Revive the SAME workstream entry under the new agent — never orphan
+            # it as a new key, or the worktree would map to two board entries.
+            board.register_agent(board_key, task, str(worktree), branch)
+            board.set_agent(board_key, assignee=fallback)
+            board.add_decision(
+                "eagle", f"Re-delegated '{board_key}' from '{agent_key}' to '{fallback}'.")
+            self._hud(sess, f"SYS: Task handed to '{fallback}': {result[:120]}")
+        else:
+            board.add_decision(
+                "eagle", f"Re-delegation of '{board_key}' to '{fallback}' FAILED: {result[:120]}")
+            self._hud(sess, f"SYS: Re-delegation failed: {result[:120]}")
 
 
 SENTINEL = SwarmSentinel()

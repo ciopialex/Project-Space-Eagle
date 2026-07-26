@@ -140,6 +140,19 @@ class AgentAdapter:
                 f"conversation.")
 
 
+def spawn_succeeded(run_result: str) -> bool:
+    """True iff AgentAdapter.run reported a LIVE session — a fresh spawn
+    ('Started persistent …') or a routed follow-up ('Prompt routed …').
+
+    Guards against failure messages that merely contain the word 'session'
+    (e.g. 'Failed to start X session: …', 'Session write failed: …'), which a
+    naive `'session' in result` test would misread as success — the classic
+    'the tool said it worked but nothing ran' bug.
+    """
+    r = (run_result or "").strip().lower()
+    return r.startswith("started persistent") or r.startswith("prompt routed")
+
+
 def find_session(agent_key: str, directory: str):
     """Locate a live session for agent_key in directory — direct hit first,
     then any session running under it (e.g. a swarm worktree)."""

@@ -19,6 +19,7 @@ The eagle waits for the file (bounded poll as backstop) + validates it.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -91,7 +92,8 @@ async def run_chief(goal: str, project_dir, max_agents: int = 2,
     Reuses the existing agent-spawn pipeline (PTY + screen-watcher auto-approval),
     so the chief can create the plan file autonomously. The chief keeps running
     afterward — it can be re-tasked as worker #1 during execution."""
-    from actions.agent_delegation import AGENT_REGISTRY, agent_available, first_available_agent
+    from actions.agent_delegation import (AGENT_REGISTRY, agent_available,
+                                          first_available_agent, spawn_succeeded)
     project_dir = Path(project_dir)
     (project_dir / STATE_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -115,10 +117,13 @@ async def run_chief(goal: str, project_dir, max_agents: int = 2,
     spawn = await chief.run(prompt=prompt, project_dir=project_dir,
                             project_name=project_dir.name, player=player)
     # agent.run returns an honest error if the CLI isn't installed / died on launch.
-    if isinstance(spawn, str) and not spawn.lower().startswith(("started", "prompt routed")):
+    if not spawn_succeeded(spawn):
         return None, f"chief failed to launch: {spawn}"
 
-    plan, status = read_plan_when_ready(project_dir, max_agents, available, timeout_s)
+    # The plan poll is a blocking time.sleep loop (up to timeout_s). Run it OFF
+    # the event loop so the eagle's audio/mic stay live while the chief thinks.
+    plan, status = await asyncio.to_thread(
+        read_plan_when_ready, project_dir, max_agents, available, timeout_s)
     if plan is not None:
         plan["_chief"] = chief_key   # remember who planned, for chief-as-worker reuse
     return plan, status
