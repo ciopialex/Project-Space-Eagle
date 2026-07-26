@@ -242,9 +242,20 @@ _PLATFORM_MAP = [
 
 
 def _resolve_platform(platform_str: str):
+    """Pick a handler for a platform name.
+
+    Short aliases have to match the whole name: "ig" is a substring of "signal",
+    so a loose match sent every Signal message through the Instagram browser
+    flow -- typing the user's text into the wrong app entirely. Only aliases long
+    enough to be unambiguous match as substrings, which is what lets
+    "whatsapp desktop" or "send on telegram" still resolve.
+    """
     key = platform_str.lower().strip()
     for keywords, handler in _PLATFORM_MAP:
-        if any(k in key for k in keywords):
+        if key in keywords:
+            return handler
+    for keywords, handler in _PLATFORM_MAP:
+        if any(len(k) > 3 and k in key for k in keywords):
             return handler
     return lambda r, m: _desktop_send(platform_str.strip().title(), r, m)
 
