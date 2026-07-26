@@ -83,6 +83,47 @@ def _plan_path(project_dir: Path) -> Path:
     return Path(project_dir) / STATE_DIR / PLAN_FILE
 
 
+async def run_chief(goal: str, project_dir, max_agents: int = 2,
+                    player=None, timeout_s: float = 180.0) -> tuple[dict | None, str]:
+    """Spawn the smartest INSTALLED coding tool as chief architect, hand it the
+    schema-locked prompt, and wait for its validated plan. Returns (plan, status).
+
+    Reuses the existing agent-spawn pipeline (PTY + screen-watcher auto-approval),
+    so the chief can create the plan file autonomously. The chief keeps running
+    afterward — it can be re-tasked as worker #1 during execution."""
+    from actions.agent_delegation import AGENT_REGISTRY, agent_available, first_available_agent
+    project_dir = Path(project_dir)
+    (project_dir / STATE_DIR).mkdir(parents=True, exist_ok=True)
+
+    available = [k for k in AGENT_REGISTRY if agent_available(k)]
+    chief_key = first_available_agent()
+    if not chief_key:
+        return None, ("no coding-agent CLI installed (looked for claude, agy, "
+                      "opencode, kimi) — install one to plan a build")
+
+    # Clear any stale plan so we only ever read THIS run's output.
+    try:
+        _plan_path(project_dir).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    prompt = build_architect_prompt(goal, project_dir, max_agents, available)
+    if player:
+        player.write_log(f"SYS: 🧭 Chief architect ({_agent_label(chief_key)}) planning: {goal[:60]}")
+
+    chief = AGENT_REGISTRY[chief_key]
+    spawn = await chief.run(prompt=prompt, project_dir=project_dir,
+                            project_name=project_dir.name, player=player)
+    # agent.run returns an honest error if the CLI isn't installed / died on launch.
+    if isinstance(spawn, str) and not spawn.lower().startswith(("started", "prompt routed")):
+        return None, f"chief failed to launch: {spawn}"
+
+    plan, status = read_plan_when_ready(project_dir, max_agents, available, timeout_s)
+    if plan is not None:
+        plan["_chief"] = chief_key   # remember who planned, for chief-as-worker reuse
+    return plan, status
+
+
 def validate_plan(plan: dict, max_agents: int,
                   available_agents: list[str]) -> tuple[bool, str]:
     """Deterministic gate: a plan only executes if it's well-formed and safe.
@@ -123,6 +164,42 @@ def validate_plan(plan: dict, max_agents: int,
         return False, f"merge_order {mo} references unknown workstream ids"
 
     return True, "ok"
+
+
+def _agent_label(agent_key: str) -> str:
+    try:
+        from actions.agent_delegation import AGENT_REGISTRY
+        a = AGENT_REGISTRY.get(agent_key)
+        if a:
+            return a.name
+    except Exception:
+        pass
+    return agent_key.replace("_", " ").title()
+
+
+def render_plan_summary(plan: dict) -> str:
+    """The short, voice-friendly plan the eagle SPEAKS at the approval gate.
+    Deterministic — no LLM — so what the user hears is exactly what will run."""
+    n = plan.get("agent_count", len(plan.get("workstreams", [])))
+    parts = [f"Plan: {n} agent{'s' if n != 1 else ''}."]
+    for w in plan.get("workstreams", []):
+        # First sentence, word-boundary capped — clean for speech, no "builds Build".
+        first = (w.get("task", "") or "").split(". ")[0].strip()
+        if len(first) > 110:
+            first = first[:110].rsplit(" ", 1)[0] + "…"
+        parts.append(f"{_agent_label(w.get('assignee', '?'))}: {first.rstrip('.')}.")
+    if plan.get("coupled"):
+        c = plan.get("contract", {}) or {}
+        keys = [k for k in c if k != "ownership"]
+        parts.append("Coupled" + (f" — shared interface: {', '.join(keys[:4])}." if keys
+                                   else " — shared blackboard on."))
+    else:
+        parts.append("Independent — no shared blackboard needed.")
+    mo = plan.get("merge_order") or []
+    if len(mo) > 1:
+        parts.append(f"Merge order: {' then '.join(mo)}.")
+    parts.append("Approve?")
+    return " ".join(parts)
 
 
 def read_plan_when_ready(project_dir: Path, max_agents: int,
