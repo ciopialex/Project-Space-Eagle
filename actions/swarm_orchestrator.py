@@ -697,6 +697,58 @@ class SwarmOrchestrator:
         base = self.board.summary()
         return f"{base}\nLive sessions: {', '.join(sorted(live)) or 'none'}"
 
+    def narrate(self) -> str:
+        """What's happening, phrased so the eagle can just say it out loud.
+
+        `status()` returns a blackboard dump — accurate, unspeakable. When the
+        user asks "what are you doing right now?" they want the answer a project
+        lead would give: who is on what, how far in, and what needs them.
+        """
+        from core import escalations
+        state = self.board.read()
+        agents = state.get("agents", {})
+        if not agents:
+            return "No swarm is running right now — nothing is being built."
+
+        live = set(self._live_sessions())
+        working, merged, blocked, stopped = [], [], [], []
+        for ws_id, info in agents.items():
+            mins = max(0, int((time.time() - info.get("updated_at", time.time())) // 60))
+            st = info.get("status", "")
+            task = (info.get("task") or "").split(". ")[0][:70]
+            thought = (info.get("last_thought") or "").strip()[:80]
+            if st == "merged":
+                merged.append(ws_id)
+            elif st in ("review_blocked", "failed"):
+                blocked.append(f"{ws_id} ({task})")
+            elif st == "stopped" or ws_id not in live:
+                stopped.append(ws_id)
+            else:
+                bit = f"the {ws_id} agent is on {task}"
+                if thought:
+                    bit += f" — right now: {thought}"
+                elif mins:
+                    bit += f", {mins} minute{'s' if mins != 1 else ''} in"
+                working.append(bit)
+
+        parts = []
+        if working:
+            parts.append("Right now " + "; ".join(working) + ".")
+        if merged:
+            parts.append(f"Finished and merged: {', '.join(merged)}.")
+        if blocked:
+            parts.append(f"Needs attention: {', '.join(blocked)}.")
+        if stopped and not working:
+            parts.append(f"Not running: {', '.join(stopped)}.")
+
+        pend = escalations.pending()
+        if pend:
+            e = pend[0]
+            parts.append(f"And {e.agent} is waiting on you: {e.reason}. "
+                         f"Say 'allow it' or 'deny it'.")
+        parts.append(f"Everything lands in {self.project_dir}.")
+        return " ".join(parts)
+
     def review(self, agent: str = "", deep: bool = False) -> str:
         """Offload verification + merge of swarm branches to the Reviewer."""
         from actions.swarm_reviewer import ReviewerAgent
@@ -752,6 +804,19 @@ class SwarmOrchestrator:
             self.board.set_agent(agent_key, status="stopped")
             stopped.append(agent_key)
         return f"Stopped: {', '.join(stopped) or 'nothing running'}."
+
+
+def swarm_narrate() -> str:
+    """Speakable answer to "what are you doing right now?" across all projects.
+
+    Deliberately NOT routed through swarm_orchestrate: that tool is exclusive
+    (a plan can hold the lock for a minute or more), and a question about
+    progress must never queue behind the work it is asking about. The eagle
+    delegates — so it stays free to talk while its agents build.
+    """
+    if not _ORCHESTRATORS:
+        return "No swarm is running — I haven't got anyone building anything yet."
+    return " ".join(o.narrate() for o in list(_ORCHESTRATORS.values()))
 
 
 def swarm_snapshot() -> dict:

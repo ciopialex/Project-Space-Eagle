@@ -7,6 +7,7 @@ windows, no lost conversation history.
 """
 
 import asyncio
+import re
 from pathlib import Path
 
 from actions.pty_session import POOL, open_viewer_terminal
@@ -18,18 +19,73 @@ class AgentAdapter:
         self.command_template = command_template
 
     def _hud_pump(self, player):
-        """Build a per-session line callback that dedupes noise for the HUD."""
-        printed = set()
+        """Per-session line callback that keeps TUI redraw noise out of the HUD.
+
+        Agent CLIs are full-screen TUIs: they repaint a status line constantly,
+        and the PTY emits every repaint as another "line". Exact-match deduping
+        cannot catch that, because each repaint is a genuinely different string:
+
+            Gen  /  Gene  /  Gener  /  Generating…
+            1thinking  /  2thinking  /  ✱thinking  /  ✻still thinking
+
+        which is why the log filled with hundreds of near-identical entries and
+        the UI showed a wall of `[ClaudeCode] 3thinking`. Three filters, in
+        order of how much they catch:
+
+          1. progressive redraw — a line that merely extends the previous one
+             character by character is the same line being typed out;
+          2. status/spinner lines — normalised (leading glyphs, counters and
+             elapsed times removed) before deduping, so "thinking" reports
+             collapse to one entry instead of one per frame;
+          3. exact repeats, as before.
+        """
+        printed: set[str] = set()
+        last_raw = ""
+        last_status = ""
+
+        # Spinner text arrives in many shapes — "1thinking", "✱still thinking",
+        # "10s · thinking)", "Deliberating… (42s · 880 tokens)" — so anchoring
+        # the pattern misses most of them. Match the keyword anywhere, but only
+        # treat it as status when the line is SHORT and carries no path: real
+        # work lines name a file, status lines never do.
+        status_re = re.compile(
+            r"(thinking|deliberating|generating|pondering|working|"
+            r"analy[sz]ing|reading|writing|searching|running)", re.I)
 
         def on_line(raw_line: str):
+            nonlocal last_raw, last_status
             from actions.developer_mode import clean_ansi_line
             cleaned = clean_ansi_line(raw_line)
-            if not cleaned or cleaned in printed:
+            if not cleaned:
+                return
+
+            # 1. the same line still being typed out
+            if last_raw and cleaned.startswith(last_raw) and len(cleaned) > len(last_raw):
+                last_raw = cleaned
+                return
+            last_raw = cleaned
+
+            # 2. spinner/status churn — keep the first, drop the repaints
+            m = status_re.search(cleaned)
+            # 80 rather than something tighter: status lines carry suffixes
+            # like "(42s · 880 tokens · esc to interrupt)". Real work lines are
+            # already excluded by the path check, so length can be generous.
+            if m and len(cleaned) < 80 and "/" not in cleaned:
+                key = m.group(1).lower()
+                if key == last_status:
+                    return
+                last_status = key
+            else:
+                last_status = ""
+
+            # 3. exact repeats
+            if cleaned in printed:
                 return
             if len(cleaned) > 3:
                 printed.add(cleaned)
                 if len(printed) > 500:
                     printed.clear()
+
             if player:
                 player.write_log(f"[{self.name}] {cleaned}")
             print(f"[{self.name}] {cleaned}")

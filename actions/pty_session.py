@@ -147,7 +147,13 @@ class PtySession:
             if len(self._raw) > RAW_BUFFER_LIMIT:
                 del self._raw[:len(self._raw) - RAW_BUFFER_LIMIT]
         try:
-            self._log_file.write(data)
+            # Strip BEL before it reaches the log. Agent TUIs emit \x07 as they
+            # redraw, and a viewer terminal tailing this file rings the desktop
+            # bell for every one — which on Ubuntu is a notification sound
+            # every couple of seconds for the whole run. pyte still sees the
+            # raw stream via the feed hooks; only the human-facing log is
+            # de-belled.
+            self._log_file.write(data.replace(b"\x07", b""))
         except OSError:
             pass
         for hook in list(self._feed_hooks):
@@ -304,12 +310,43 @@ atexit.register(POOL.close_all)
 
 # ------------------------------------------------------------- viewer window
 
+# Log paths that already have a viewer window. Without this a re-spawn or a
+# sentinel re-delegation opens a SECOND window tailing the same file, and two
+# identical consoles look exactly like two agents doing duplicate work.
+_VIEWERS_OPEN: set[str] = set()
+
+
+def viewers_enabled() -> bool:
+    """Are per-agent console windows wanted?
+
+    Off by default. Each agent CLI already opens its own window, so a viewer on
+    top meant two windows per agent, every one of them stealing keyboard focus
+    the moment it appeared — you could not type in your own editor while a
+    mission ran. The swarm's real surface is the HARDCORE dashboard and the
+    terminal trace; these windows are debug tooling, so they are opt-in.
+
+    Enable with  "show_agent_terminals": true  in config/api_keys.json.
+    """
+    try:
+        import json as _json
+        cfg = _json.loads(API_CONFIG_PATH.read_text(encoding="utf-8"))
+        return bool(cfg.get("show_agent_terminals", False))
+    except Exception:
+        return False
+
+
 def open_viewer_terminal(title: str, log_path: Path) -> bool:
     """Open ONE read-only terminal that live-tails a session log (best effort).
 
     The agent itself runs on our hidden PTY; this window is purely a viewer,
     so closing it never kills the session.
     """
+    if not viewers_enabled():
+        return False
+    key = str(log_path)
+    if key in _VIEWERS_OPEN:
+        return False              # already being watched — don't clone the window
+    _VIEWERS_OPEN.add(key)
     try:
         if IS_WINDOWS:
             cmd = (f'start "{title}" powershell -NoExit -Command '

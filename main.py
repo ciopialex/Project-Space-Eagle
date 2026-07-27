@@ -451,6 +451,11 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "swarm_status",
+        "description": "What the swarm is doing RIGHT NOW, in plain speakable language. Use whenever the user asks 'what are you doing', 'how's it going', 'what's happening', 'are they done yet', 'any progress', or asks about the project while agents are working. Instant and read-only — safe to call at any time, including while agents are mid-build. Returns who is on what, how far in, what finished, and anything waiting on the user. ALWAYS prefer this over swarm_mode action='status' when the user is just asking.",
+        "parameters": {"type": "OBJECT", "properties": {}}
+    },
+    {
         "name": "agent_interject",
         "description": "Interrupt a running coding agent mid-work (graceful Ctrl+C) and optionally redirect it with a new instruction. Use when the user says things like 'stop Claude' or 'tell the agent to use X instead of Y'.",
         "parameters": {
@@ -718,6 +723,10 @@ TOOL_SPECS = {
     "dev_agent": ToolSpec(reads=["memory"], writes=["file"], priority=1, timeout_s=45.0),
     "developer_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=120.0),
     "swarm_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=300.0),
+    # Read-only and deliberately NOT exclusive: a question about progress must
+    # never queue behind the work it is asking about. The eagle delegates, so
+    # it stays free to talk while its agents build.
+    "swarm_status": ToolSpec(reads=["memory"], priority=3, timeout_s=10.0),
     "agent_interject": ToolSpec(writes=["file"], priority=3, timeout_s=30.0),
     "web_search": ToolSpec(reads=["web"], priority=1),
     "file_processor": ToolSpec(reads=["file"], writes=["file"], priority=1),
@@ -1094,6 +1103,10 @@ class AethelarkLive:
                 # (the "hallucination"). Now the eagle reports the truth.
                 r = await developer_mode(parameters=args, player=self.ui)
                 result = r or "Developer session started."
+
+            elif name == "swarm_status":
+                from actions.swarm_orchestrator import swarm_narrate
+                result = await loop.run_in_executor(None, swarm_narrate)
 
             elif name == "swarm_mode":
                 from actions.swarm_orchestrator import swarm_orchestrate
