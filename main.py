@@ -108,6 +108,16 @@ SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 
+# How long after a barge-in we keep discarding the cancelled turn's straggler
+# audio. Frames arrive within milliseconds, so this is a generous backstop that
+# guarantees the discard can never latch permanently.
+_INTERRUPT_LATCH_S = 1.5
+
+# No server frame at all for this long, while a turn is in flight, means the
+# session is wedged. Reconnect with the resumption handle rather than sit silent.
+_TURN_STALL_S = 25.0
+
+
 def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
@@ -740,6 +750,13 @@ class AethelarkLive:
         self._vision_last_time     = 0.0     # monotonic time of last screen_process call (cooldown guard)
         self._vision_busy          = False   # True while a vision capture/inject cycle is in flight
         self._interrupted          = False   # True while draining audio after user interrupt
+        self._interrupt_ts         = 0.0     # monotonic time the latch was set — see _discard_stragglers()
+        # Straggler audio from a cancelled turn arrives within milliseconds;
+        # this window is generous. It is a self-heal backstop, not a timer the
+        # normal path relies on — turn_complete still clears the latch at once.
+        self._turn_had_audio       = False   # did THIS turn produce speakable audio?
+        self._tts                  = None    # lazy fallback voice for text-only replies
+        self._last_server_activity = time.monotonic()  # watchdog: any server frame resets this
         self.ui.on_text_command   = self._on_text_command
         self.ui.on_remote_clicked = self._make_remote_key
         self.ui.on_interrupt      = self.interrupt
@@ -807,6 +824,12 @@ class AethelarkLive:
     def interrupt(self) -> None:
         """Stop Aethelark mid-speech: drain queued audio and open mic immediately."""
         self._interrupted = True
+        self._interrupt_ts = time.monotonic()
+        if self._tts is not None:
+            try:
+                self._tts.stop()          # a barge-in must also cut fallback speech
+            except Exception:
+                pass
         old_epoch = self._turn_epoch
         self._turn_epoch += 1  # advance epoch — stale results from this turn will be discarded
         new_epoch = self._turn_epoch
@@ -825,6 +848,61 @@ class AethelarkLive:
         if self._turn_done_event:
             self._turn_done_event.clear()
         self.ui.write_log("SYS: Interrupted — listening...")
+
+    def _discard_stragglers(self) -> bool:
+        """Should the frame just received be thrown away?
+
+        After a barge-in the server may still be flushing the CANCELLED turn's
+        audio. Those frames are tagged at RECEIVE time (post-interrupt), so they
+        carry the NEW epoch and slip past the stale-frame filter in the playback
+        loop — hence this second guard.
+
+        It is time-bounded, and that matters more than it looks. This used to be
+        a plain boolean cleared ONLY by a `turn_complete`. When a barge-in was
+        never followed by one, the latch stuck True and every audio frame for
+        the rest of the session was discarded one line before it reached the
+        playback queue: the eagle kept listening, kept transcribing, kept
+        generating, and never made another sound. A latch whose only exit is a
+        message that may never arrive is a deadlock with extra steps.
+        """
+        if not self._interrupted:
+            return False
+        if time.monotonic() - self._interrupt_ts > _INTERRUPT_LATCH_S:
+            self._interrupted = False       # self-heal: stragglers are long gone
+            return False
+        return True
+
+    def _speak_fallback(self, text: str) -> None:
+        """Voice a text-only reply so the conversation never silently stalls.
+
+        Gemini Live is configured for AUDIO out, but a turn can still come back
+        as text (typically when the model reasons at length instead of talking).
+        Those turns produce no audio at all, so without this the eagle simply
+        goes quiet mid-conversation with no indication why.
+
+        Runs on a worker thread: the engines block. Mic is gated via
+        set_speaking for the duration, otherwise the eagle transcribes itself.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        try:
+            if self._tts is None:
+                from core.tts import create_tts_player
+                cfg = {}
+                try:
+                    cfg = json.loads(
+                        (Path(__file__).parent / "config" / "settings.json")
+                        .read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+                self._tts = create_tts_player(cfg)
+            self.set_speaking(True)
+            self._tts.speak(text)
+        except Exception as e:
+            print(f"[Aethelark] TTS fallback failed: {e}")
+        finally:
+            self.set_speaking(False)
 
     def speak(self, text: str):
         if not self._loop or not self.session:
@@ -1299,6 +1377,7 @@ class AethelarkLive:
     async def _receive_audio(self):
         print("[Aethelark] 👂 Recv started")
         out_buf, in_buf = [], []
+        text_buf: list[str] = []      # text parts of a turn that produced no audio
         session = self.session
         if session is None:
             return
@@ -1324,10 +1403,13 @@ class AethelarkLive:
                         self._go_away_reconnect = True
                         raise _ReconnectSignal("go_away")
 
+                    self._last_server_activity = time.monotonic()
+
                     if response.data:
-                        if self._interrupted:
-                            pass  # discard: interrupted
+                        if self._discard_stragglers():
+                            pass  # tail of the cancelled turn — drop it
                         else:
+                            self._turn_had_audio = True
                             if self._turn_done_event and self._turn_done_event.is_set():
                                 self._turn_done_event.clear()
                             # Split into ~50 ms chunks so interrupt() stops audio within 50 ms
@@ -1351,6 +1433,23 @@ class AethelarkLive:
                     if response.server_content:
                         sc = response.server_content
 
+                        # Text parts of the model turn. The model is configured
+                        # for AUDIO out, but a turn can still come back as text
+                        # — and those turns are silent, because response.data is
+                        # empty for them. Capture the text so turn_complete can
+                        # voice it instead of the conversation just stopping.
+                        #
+                        # `thought` parts are the model's INTERNAL reasoning and
+                        # must never be spoken or shown — reading its own private
+                        # monologue aloud would be worse than saying nothing.
+                        mt = getattr(sc, "model_turn", None)
+                        if mt and getattr(mt, "parts", None):
+                            for _p in mt.parts:
+                                if getattr(_p, "thought", False):
+                                    continue
+                                if getattr(_p, "text", None):
+                                    text_buf.append(_p.text)
+
                         if sc.output_transcription and sc.output_transcription.text:
                             txt = _clean_transcript(sc.output_transcription.text)
                             if txt and txt != (out_buf[-1] if out_buf else ""):
@@ -1373,7 +1472,21 @@ class AethelarkLive:
                                 self._interrupted = False
                                 in_buf  = []
                                 out_buf = []
+                                text_buf = []
+                                self._turn_had_audio = False
                                 continue
+
+                            # A turn that produced text but no audio would end here
+                            # in silence. Voice it so the conversation continues.
+                            _fallback = " ".join(t.strip() for t in text_buf if t.strip()).strip()
+                            text_buf = []
+                            if _fallback and not self._turn_had_audio:
+                                self.ui.write_log(f"{self.ui.assistant_name}: {_fallback}")
+                                print("[Aethelark] 🗣 text-only turn — speaking via fallback TTS")
+                                asyncio.create_task(
+                                    asyncio.to_thread(self._speak_fallback, _fallback))
+                                out_buf = []          # already surfaced; don't double-log
+                            self._turn_had_audio = False
 
                             full_in = _collapse_repeats(" ".join(in_buf).strip())
                             if full_in:
@@ -1808,6 +1921,28 @@ class AethelarkLive:
                 f"mic_drops={drops}"
             )
 
+            # ── Wedged-session watchdog ──────────────────────────────────────
+            # Telemetry used to only PRINT. When a session went quiet there was
+            # full observability of the freeze and zero recovery from it: the
+            # user watched healthy-looking counters while the eagle sat mute.
+            # If the user has spoken since the last server frame and the server
+            # has said nothing at all for _TURN_STALL_S, the session is wedged —
+            # reconnect with the resumption handle, which restores context.
+            silent_for = time.monotonic() - self._last_server_activity
+            user_waiting = self._last_user_speech > self._last_server_activity
+            if user_waiting and silent_for > _TURN_STALL_S:
+                print(f"[Aethelark] ⏳ No server response for {silent_for:.0f}s "
+                      f"with the user waiting — session wedged, reconnecting.")
+                self.ui.write_log("NET: No response — reconnecting…")
+                self._last_server_activity = time.monotonic()  # arm once, not every tick
+                self._interrupted = False                      # never carry a latch across
+                sess = self.session
+                if sess is not None:
+                    try:
+                        await sess.close()   # drops _receive_audio into the reconnect path
+                    except Exception as e:
+                        print(f"[Aethelark] watchdog close failed: {e}")
+
     # ── main loop ───────────────────────────────────────────────────────────
 
     async def run(self):
@@ -1861,6 +1996,9 @@ class AethelarkLive:
                         self._vision_busy          = False
                         self._vision_last_time     = 0.0
                         self._interrupted          = False
+                        self._interrupt_ts         = 0.0
+                        self._turn_had_audio       = False
+                        self._last_server_activity = time.monotonic()
                         self._session_id           = str(uuid.uuid4())[:8]
                         self._turn_epoch           = 0
 
