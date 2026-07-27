@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 
 from actions.pty_session import POOL
+from core.trace import banner, trace
 
 STATE_DIR = ".space_eagle"
 SPACE_EAGLE_HOME = Path(__file__).resolve().parent.parent
@@ -495,6 +496,8 @@ class SwarmOrchestrator:
         # Open a fresh mission BEFORE any worktree is touched, so this plan can
         # never inherit a previous mission's branch or working tree.
         mission_id = self.start_mission()
+        trace("execute", f"mission {mission_id} approved — starting",
+              timer="mission", start=True)
         coupled = bool(plan.get("coupled"))
         contract = plan.get("contract") or {}
         try:
@@ -536,11 +539,17 @@ class SwarmOrchestrator:
                 coupled=coupled, contract=contract if coupled else None,
                 owns=w.get("owns"), acceptance=w.get("acceptance"),
                 extra_note=note)
+            trace("worktree", f"{ws_id} → {branch}")
+            trace("spawn", f"{ws_id}: {agent_key} starting", timer=f"sp:{ws_id}",
+                  start=True)
             result = await adapter.run(prompt, wt, self.project_dir.name,
                                        player=self.player)
             if not spawn_succeeded(result):
+                trace("spawn", f"{ws_id}: {agent_key} FAILED — {result}",
+                      timer=f"sp:{ws_id}", ok=False)
                 errors.append(f"{ws_id} ({agent_key}): {result}")
                 continue
+            trace("spawn", f"{ws_id}: {agent_key} live", timer=f"sp:{ws_id}", ok=True)
             self.board.register_agent(ws_id, w["task"], str(wt), branch)
             self.board.set_agent(ws_id, assignee=agent_key)
             self._wire_thoughts(adapter, ws_id, wt)
@@ -704,17 +713,36 @@ class SwarmOrchestrator:
             return "No swarm agents registered — nothing to review."
         reviewer = ReviewerAgent(self.project_dir, self.player)
         results = []
+        merged_ids = []
         for key in targets:
             info = state["agents"].get(key)
             if not info:
                 results.append(f"{key}: unknown agent")
                 continue
+            trace("review", f"{key} on {info['branch']}", timer=f"rv:{key}",
+                  start=True)
             outcome = reviewer.review_and_merge(
                 key, info["branch"], info["worktree"], deep=deep)
             merged = outcome.startswith("MERGED")
+            trace("review", f"{key}: {outcome[:90]}", timer=f"rv:{key}", ok=merged)
             self.board.set_agent(key, status="merged" if merged else "review_blocked")
             self.board.add_decision("reviewer", outcome[:300])
+            if merged:
+                merged_ids.append(key)
             results.append(outcome)
+
+        # The last mile: a merged mission is worthless if the user is never
+        # told where the thing actually is or how to look at it.
+        if merged_ids and len(merged_ids) == len(targets):
+            trace("mission", "all workstreams merged", timer="mission", ok=True)
+            banner("MISSION COMPLETE", [
+                f"project : {self.project_dir}",
+                f"merged  : {', '.join(merged_ids)}",
+                f"open it : cd {self.project_dir} && ls",
+            ])
+        elif merged_ids:
+            trace("mission", f"partial — merged {len(merged_ids)}/{len(targets)}",
+                  ok=False)
         return " || ".join(results)
 
     def stop_all(self) -> str:
@@ -850,10 +878,24 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
         if not goal:
             return "Ask: What should the swarm build?"
         max_agents = int(parameters.get("max_agents") or 2)
+        trace("mission", f'goal heard: "{goal[:70]}"')
+        trace("route", "conductor — swarm_mode plan")
+        trace("project", f"{project_dir}"
+                         f"{'  (derived from goal)' if not parameters.get('directory') else ''}")
+        trace("chief", f"spawning architect (max {max_agents} agents)",
+              timer="chief", start=True)
         plan, status = await run_chief(goal, project_dir, max_agents=max_agents,
                                        player=player)
         if not plan:
+            trace("chief", f"no usable plan: {status}", timer="chief", ok=False)
             return f"Chief architect could not produce a plan: {status}."
+        trace("plan", f"{plan.get('agent_count')} agent(s), "
+                      f"{'coupled' if plan.get('coupled') else 'independent'}",
+              timer="chief", ok=True)
+        banner("PLAN — awaiting your approval", [
+            f"{w['id']:<10} {w['assignee']:<16} {w.get('task','')[:44]}"
+            for w in plan.get("workstreams", [])
+        ] + [f"merge order: {' → '.join(plan.get('merge_order') or [])}"])
         # Only a successful plan claims the project — a failed one must not
         # redirect the next command at a folder with nothing in it.
         _ACTIVE_PROJECT = project_dir
@@ -912,6 +954,38 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
             orch.review,
             (parameters.get("agent") or "").strip(),
             bool(parameters.get("deep")))
+    if action in ("authorize", "deny"):
+        # Closes the escalation loop: the reflex tier refused to answer a
+        # dangerous prompt, the human heard the question, and this delivers
+        # their decision back to the blocked agent.
+        from core import escalations
+        esc_id = (parameters.get("escalation_id") or "").strip()
+        verdict = "allow" if action == "authorize" else "deny"
+        esc = (escalations.resolve(esc_id, verdict) if esc_id
+               else escalations.resolve_oldest(verdict))
+        if esc is None:
+            return "Nothing is waiting for authorization right now."
+        if verdict == "deny":
+            return (f"Denied. {esc.agent} stays blocked on that prompt — "
+                    f"tell it what to do instead, or stop the swarm.")
+        # Find the live watcher for that agent and let IT do the typing.
+        for (_key, _sdir), sess in POOL.all_sessions().items():
+            w = getattr(sess, "watcher", None)
+            if w is not None and getattr(w, "agent_name", "") == esc.agent:
+                if w.authorize_pending():
+                    return f"Authorized — told {esc.agent} to go ahead."
+                return f"{esc.agent} is no longer running; nothing to authorize."
+        return f"Couldn't find a live session for {esc.agent}."
+
+    if action == "escalations":
+        from core import escalations
+        p = escalations.pending()
+        if not p:
+            return "Nothing is blocked — no agent is waiting on you."
+        return " ".join(
+            f"{e.agent} has been waiting {e.waiting_s:.0f} seconds: {e.reason}."
+            for e in p[:3])
+
     if action == "stop":
         return await asyncio.to_thread(orch.stop_all)
     return await asyncio.to_thread(orch.status)

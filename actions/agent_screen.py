@@ -200,6 +200,26 @@ class AgentScreenWatcher:
             except Exception:
                 pass  # a broken listener must never kill the watcher thread
 
+    def authorize_pending(self, reply: bytes = b"y\r") -> bool:
+        """Type the answer a human explicitly authorized.
+
+        The watcher owns the PTY and is the only thing that writes to it, so a
+        resolved escalation comes back HERE to be injected. The decision and
+        the keystroke stay in different places on purpose — same separation the
+        reflex tier is built on. Returns False if the agent is no longer alive.
+        """
+        try:
+            if not self.session.is_alive():
+                return False
+            self.session.send_raw(reply)
+        except OSError:
+            return False
+        self._last_approve_ts = time.time()
+        if self.player:
+            self.player.write_log(
+                f"SYS: {self.agent_name} — authorized by human, answer injected.")
+        return True
+
     def _mark_handled(self, digest: str):
         self._approved_hashes.add(digest)
         if len(self._approved_hashes) > 200:

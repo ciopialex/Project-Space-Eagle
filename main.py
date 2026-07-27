@@ -434,7 +434,8 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "plan | execute | inject | status | review | stop | broadcast | launch"},
+                "action":      {"type": "STRING", "description": "plan | execute | inject | status | review | stop | broadcast | launch | authorize | deny | escalations. Use 'authorize' the moment the user approves a held prompt ('yes', 'allow it', 'go ahead') and 'deny' if they refuse; use 'escalations' when they ask what's blocked or why nothing is happening."},
+                "escalation_id": {"type": "STRING", "description": "For authorize/deny: the specific held prompt id (e.g. 'esc3'). Omit to resolve the oldest one, which is what the user means when they just say 'allow it'."},
                 "directory":   {"type": "STRING", "description": "OPTIONAL absolute path. Pass it ONLY when the user names an existing project. Otherwise omit it — a folder is derived from the goal under ~/Projects and reused for the rest of the mission. Never ask the user for a path."},
                 "goal":        {"type": "STRING", "description": "For plan: the mission in one line, e.g. 'a Flappy Bird clone with an online leaderboard'"},
                 "max_agents":  {"type": "INTEGER", "description": "For plan: cap on team size (default 2)"},

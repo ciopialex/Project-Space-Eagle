@@ -96,7 +96,15 @@ class AgentAdapter:
         # Virtual VT100 watcher: thought extraction + prompt auto-approval.
         try:
             from actions.agent_screen import AgentScreenWatcher
-            session.watcher = AgentScreenWatcher(session, self.name, player=player)
+            from core.escalations import raise_escalation
+            session.watcher = AgentScreenWatcher(
+                session, self.name, player=player,
+                # A refusal to auto-answer is only half a system: without a
+                # destination the agent blocks forever. Route held prompts to
+                # the pending-escalation registry so a human can actually
+                # resolve them by voice.
+                on_escalation=lambda agent, decision, region: raise_escalation(
+                    agent, decision, region, player=player))
         except Exception as e:
             session.watcher = None
             if player:
