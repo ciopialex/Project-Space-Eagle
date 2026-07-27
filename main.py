@@ -755,7 +755,6 @@ class AethelarkLive:
         # this window is generous. It is a self-heal backstop, not a timer the
         # normal path relies on — turn_complete still clears the latch at once.
         self._turn_had_audio       = False   # did THIS turn produce speakable audio?
-        self._tts                  = None    # lazy fallback voice for text-only replies
         self._last_server_activity = time.monotonic()  # watchdog: any server frame resets this
         self.ui.on_text_command   = self._on_text_command
         self.ui.on_remote_clicked = self._make_remote_key
@@ -825,11 +824,6 @@ class AethelarkLive:
         """Stop Aethelark mid-speech: drain queued audio and open mic immediately."""
         self._interrupted = True
         self._interrupt_ts = time.monotonic()
-        if self._tts is not None:
-            try:
-                self._tts.stop()          # a barge-in must also cut fallback speech
-            except Exception:
-                pass
         old_epoch = self._turn_epoch
         self._turn_epoch += 1  # advance epoch — stale results from this turn will be discarded
         new_epoch = self._turn_epoch
@@ -871,38 +865,6 @@ class AethelarkLive:
             self._interrupted = False       # self-heal: stragglers are long gone
             return False
         return True
-
-    def _speak_fallback(self, text: str) -> None:
-        """Voice a text-only reply so the conversation never silently stalls.
-
-        Gemini Live is configured for AUDIO out, but a turn can still come back
-        as text (typically when the model reasons at length instead of talking).
-        Those turns produce no audio at all, so without this the eagle simply
-        goes quiet mid-conversation with no indication why.
-
-        Runs on a worker thread: the engines block. Mic is gated via
-        set_speaking for the duration, otherwise the eagle transcribes itself.
-        """
-        text = (text or "").strip()
-        if not text:
-            return
-        try:
-            if self._tts is None:
-                from core.tts import create_tts_player
-                cfg = {}
-                try:
-                    cfg = json.loads(
-                        (Path(__file__).parent / "config" / "settings.json")
-                        .read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-                self._tts = create_tts_player(cfg)
-            self.set_speaking(True)
-            self._tts.speak(text)
-        except Exception as e:
-            print(f"[Aethelark] TTS fallback failed: {e}")
-        finally:
-            self.set_speaking(False)
 
     def speak(self, text: str):
         if not self._loop or not self.session:
@@ -961,6 +923,31 @@ class AethelarkLive:
 
         _voice = (_cfg.get("voice_name") or "Puck").strip()
 
+        # ── Latency: end-of-turn detection ───────────────────────────────────
+        # The single biggest tunable delay in the whole product. After you stop
+        # talking the server waits for silence before deciding your turn ended;
+        # nothing can begin until it does, so this sits in front of EVERY reply.
+        # Model inference is fixed cost — this is not.
+        #
+        # It trades against patience: too short and it cuts you off when you
+        # pause mid-thought (exactly what happens while describing something,
+        # like a salon concept). Tuned here for a conversational middle and
+        # exposed in config so it can be dialled per-person.
+        _silence_ms = int(_cfg.get("end_of_turn_silence_ms") or 550)
+        _prefix_ms = int(_cfg.get("speech_prefix_padding_ms") or 200)
+
+        # ── Latency + voice consistency: thinking ────────────────────────────
+        # LIVE_MODEL is a *thinking* native-audio model and thinking defaults
+        # on, so it reasons before it speaks — pure added delay on the simple
+        # conversational turns that are most of a voice session. It is also
+        # where stray `thought`/`text` parts come from, and a turn that returns
+        # text instead of audio is a SILENT turn.
+        #
+        # include_thoughts=False stops the reasoning being streamed to us at
+        # all, which keeps every reply in the model's own voice. Budget is
+        # configurable: 0 is fastest, raise it if planning quality suffers.
+        _think_budget = int(_cfg.get("thinking_budget") or 0)
+
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
@@ -969,6 +956,16 @@ class AethelarkLive:
             tools=[{"function_declarations": TOOL_DECLARATIONS}],
             session_resumption=types.SessionResumptionConfig(
                 handle=self._resume_handle
+            ),
+            thinking_config=types.ThinkingConfig(
+                include_thoughts=False,
+                thinking_budget=_think_budget,
+            ),
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    silence_duration_ms=_silence_ms,
+                    prefix_padding_ms=_prefix_ms,
+                ),
             ),
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
@@ -1476,15 +1473,21 @@ class AethelarkLive:
                                 self._turn_had_audio = False
                                 continue
 
-                            # A turn that produced text but no audio would end here
-                            # in silence. Voice it so the conversation continues.
-                            _fallback = " ".join(t.strip() for t in text_buf if t.strip()).strip()
+                            # A turn that returns text instead of audio is silent.
+                            # It should no longer happen — include_thoughts=False
+                            # stops reasoning being streamed — so surface it
+                            # loudly rather than papering over it.
+                            #
+                            # Deliberately NOT re-voiced through a second TTS
+                            # engine: that swaps voice mid-conversation and adds
+                            # a synthesis round-trip, which is worse than the
+                            # problem. If this ever fires, the fix belongs in the
+                            # session config, not in a substitute voice.
+                            _textonly = " ".join(t.strip() for t in text_buf if t.strip()).strip()
                             text_buf = []
-                            if _fallback and not self._turn_had_audio:
-                                self.ui.write_log(f"{self.ui.assistant_name}: {_fallback}")
-                                print("[Aethelark] 🗣 text-only turn — speaking via fallback TTS")
-                                asyncio.create_task(
-                                    asyncio.to_thread(self._speak_fallback, _fallback))
+                            if _textonly and not self._turn_had_audio:
+                                print(f"[Aethelark] ⚠️ TEXT-ONLY TURN (no audio): {_textonly[:200]}")
+                                self.ui.write_log(f"{self.ui.assistant_name}: {_textonly}")
                                 out_buf = []          # already surfaced; don't double-log
                             self._turn_had_audio = False
 

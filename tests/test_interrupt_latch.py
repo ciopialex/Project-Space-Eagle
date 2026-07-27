@@ -109,26 +109,51 @@ def test_stall_watchdog_threshold_is_sane():
 
 # ------------------------------------------------- text-only turn handling
 
-def test_thought_parts_are_never_spoken():
-    """`thought` parts are the model's private reasoning. Voicing them would be
-    worse than saying nothing — this asserts the filter exists in the source,
-    since the receive loop itself needs a live session to exercise."""
+def test_thought_parts_are_never_surfaced():
+    """`thought` parts are the model's private reasoning — never speak or show
+    them. Asserted against the source because the receive loop needs a live
+    session to exercise directly."""
     src = Path(main.__file__).read_text(encoding="utf-8")
     i = src.find("mt = getattr(sc, \"model_turn\", None)")
     assert i > 0, "text-part capture is missing"
     block = src[i:i + 400]
     assert 'getattr(_p, "thought", False)' in block and "continue" in block, \
-        "thought parts are not excluded from the spoken fallback"
+        "thought parts are not excluded"
 
 
-def test_fallback_only_fires_when_the_turn_produced_no_audio():
-    """Speaking text alongside audio would double up the reply."""
+def test_text_only_turn_is_reported_not_revoiced():
+    """A second TTS engine would swap voice mid-conversation and add a
+    synthesis round-trip — worse than the problem it solves. Text-only turns
+    must be surfaced loudly so the real fix lands in the session config."""
     src = Path(main.__file__).read_text(encoding="utf-8")
-    assert "if _fallback and not self._turn_had_audio:" in src
+    assert "if _textonly and not self._turn_had_audio:" in src
+    assert "TEXT-ONLY TURN" in src, "a silent turn must be visible in the log"
+    assert "_speak_fallback" not in src, "the voice-switching fallback is back"
 
 
-@pytest.mark.parametrize("attr", [
-    "_discard_stragglers", "_speak_fallback",
-])
-def test_new_recovery_helpers_exist(attr):
-    assert callable(getattr(main.AethelarkLive, attr, None))
+def test_discard_helper_exists():
+    assert callable(getattr(main.AethelarkLive, "_discard_stragglers", None))
+
+
+# ---------------------------------------------- session config (latency)
+
+def test_thinking_is_not_streamed_back():
+    """Streamed reasoning is where stray text/thought parts came from, and a
+    turn that returns text instead of audio is a silent turn."""
+    src = Path(main.__file__).read_text(encoding="utf-8")
+    assert "include_thoughts=False" in src
+
+
+def test_end_of_turn_silence_is_tuned_and_configurable():
+    """This wait sits in front of EVERY reply — it is the biggest tunable
+    latency in the product. Too low cuts the user off mid-thought."""
+    src = Path(main.__file__).read_text(encoding="utf-8")
+    assert "silence_duration_ms=_silence_ms" in src
+    assert "end_of_turn_silence_ms" in src, "must be overridable per-person"
+
+
+def test_default_silence_window_is_in_a_conversational_range():
+    src = Path(main.__file__).read_text(encoding="utf-8")
+    i = src.find("end_of_turn_silence_ms")
+    default = int(src[i:i + 80].split("or")[1].split(")")[0].strip())
+    assert 300 <= default <= 900, f"{default}ms will feel laggy or cut people off"
