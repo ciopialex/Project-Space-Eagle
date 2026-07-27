@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Live test of the Chief Architect PLANNING step only (no execution yet).
+"""MANUAL live harness — Chief Architect PLANNING step only (no execution yet).
 
-    .venv/bin/python test_chief.py "make a todo app with a backend" /tmp/aetest
+NOT a unit test, despite what the old `test_chief.py` name implied. This
+spawns a REAL coding agent: it costs money, opens a terminal window, and needs
+a human at the keyboard. The automated equivalents live in
+`tests/test_chief_architect.py` and run in milliseconds for free.
+
+    .venv/bin/python manual_chief.py "make a todo app with a backend" /tmp/aetest
 
 Spawns the smartest installed coding tool as chief architect, waits for it to
 write a validated plan.json, and prints the plan + the spoken approval summary.

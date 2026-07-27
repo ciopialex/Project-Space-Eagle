@@ -4,11 +4,23 @@ Feeds raw PTY bytes into an in-memory pyte terminal, giving an exact,
 ANSI-free snapshot of what a human would see. From stable snapshots it:
 
   1. Detects interactive approval prompts (numbered menus, [y/N], press-
-     Enter) and auto-injects the affirmative response — deterministically,
+     Enter) and injects a response ONLY when core.prompt_reflex classifies
+     the screen as a recognised-safe confirmation — deterministically,
      because it only fires when the screen has stopped redrawing (the CLI
      is truly blocked on input) and never twice on the same screen state.
   2. Extracts <thinking> blocks and spinner status lines from the raw
      stream for HUD telemetry.
+
+AUTHORITY: this class is a SENSOR AND ACTUATOR, not a decision maker. It
+reconstructs the terminal and injects keystrokes, but what counts as safe to
+answer lives entirely in `core.prompt_reflex`. Anything dangerous or
+unrecognised is escalated via `on_escalation` and left unanswered — the agent
+blocks, visibly, until something with authority decides. That is the intended
+failure mode: a stalled agent is recoverable, an auto-approved `rm -rf` is not.
+
+`on_escalation(agent_name, decision, region)` is the seam the Mission
+Controller / DecisionGate hooks into. Until one exists, escalations are logged
+and the prompt is simply left alone.
 
 Attach one AgentScreenWatcher per PtySession via session.add_feed_hook.
 """
@@ -21,22 +33,10 @@ import time
 import pyte
 
 from actions.pty_session import PTY_COLS, PTY_ROWS
+from core.prompt_reflex import Verdict, classify
 
 POLL_HZ = 5
 APPROVE_COOLDOWN_S = 2.0
-
-# Ink/Rich-style highlighted menu marker (e.g. "❯ 1. Yes")
-_SELECTOR_MARK = "❯"
-
-# (pattern, response builder) — checked against the visible screen text.
-_YES_WORDS = r"(?:yes|accept|approve|allow|proceed|continue|trust|confirm)"
-_PROMPT_RULES = [
-    # Numbered menu whose option 1 is affirmative: "1. Yes", "❯ 1. Accept edits"
-    (re.compile(rf"^\s*(?:{re.escape(_SELECTOR_MARK)}\s*)?1[.)]\s+{_YES_WORDS}",
-                re.IGNORECASE | re.MULTILINE), "menu1"),
-    (re.compile(r"\[y/N\]|\[Y/n\]|\(y/n\)", re.IGNORECASE), "yes"),
-    (re.compile(r"press\s+enter\s+to\s+continue", re.IGNORECASE), "enter"),
-]
 
 _THINKING_RE = re.compile(r"<thinking>(.*?)</thinking>", re.DOTALL)
 _ANSI_RE = re.compile(r"(?:\x1b[@-_][0-?]*[ -/]*[@-~])")
@@ -48,12 +48,14 @@ class AgentScreenWatcher:
     """Watches one PtySession through a virtual terminal."""
 
     def __init__(self, session, agent_name: str, player=None,
-                 auto_approve: bool = True, on_thought=None):
+                 auto_approve: bool = True, on_thought=None,
+                 on_escalation=None):
         self.session = session
         self.agent_name = agent_name
         self.player = player
         self.auto_approve = auto_approve
         self.on_thought = on_thought
+        self.on_escalation = on_escalation
 
         self._screen = pyte.Screen(PTY_COLS, PTY_ROWS)
         self._stream = pyte.ByteStream(self._screen)
@@ -162,35 +164,47 @@ class AgentScreenWatcher:
         region = self._active_region().strip()
         if not region:
             return
-        # If several rules match, answer the bottom-most (most recent) prompt.
-        best = None
-        for pattern, kind in _PROMPT_RULES:
-            matches = list(pattern.finditer(region))
-            if matches and (best is None or matches[-1].start() > best[0]):
-                best = (matches[-1].start(), kind)
-        if best:
-            self._respond(best[1], digest, region)
 
-    def _respond(self, kind: str, digest: str, visible: str):
-        # Ink-style menus react to the bare digit; readline needs Enter.
-        if kind == "menu1":
-            reply = b"1" if _SELECTOR_MARK in visible else b"1\r"
-        elif kind == "yes":
-            reply = b"y\r"
-        else:
-            reply = b"\r"
+        decision = classify(region)
+        if decision.verdict is Verdict.ALLOW:
+            self._respond(decision.reply, digest)
+        elif decision.verdict is Verdict.ESCALATE:
+            self._escalate(decision, digest, region)
+
+    def _respond(self, reply: bytes, digest: str):
         try:
             self.session.send_raw(reply)
         except OSError:
             return
-        self._approved_hashes.add(digest)
-        if len(self._approved_hashes) > 200:
-            self._approved_hashes.clear()
-        self._last_approve_ts = time.time()
+        self._mark_handled(digest)
         if self.player:
             self.player.write_log(
                 f"SYS: Auto-approved {self.agent_name} prompt "
                 f"({reply.decode(errors='replace').strip() or 'Enter'}).")
+
+    def _escalate(self, decision, digest: str, region: str):
+        """Refuse to answer, and surface it exactly once per screen state.
+
+        Deduping matters here: the poll loop runs POLL_HZ times a second on a
+        blocked agent, so an unguarded escalation would flood the log and any
+        downstream controller with the same event several times per second.
+        """
+        self._mark_handled(digest)
+        if self.player:
+            self.player.write_log(
+                f"SYS: HELD {self.agent_name} prompt — {decision.reason} "
+                f"[{decision.rule_id}]. Needs authorization.")
+        if self.on_escalation:
+            try:
+                self.on_escalation(self.agent_name, decision, region)
+            except Exception:
+                pass  # a broken listener must never kill the watcher thread
+
+    def _mark_handled(self, digest: str):
+        self._approved_hashes.add(digest)
+        if len(self._approved_hashes) > 200:
+            self._approved_hashes.clear()
+        self._last_approve_ts = time.time()
 
     # ---------------------------------------------------------------- api
 

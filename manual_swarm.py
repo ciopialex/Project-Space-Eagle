@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Live end-to-end swarm test: PLAN → approve → EXECUTE.
+"""MANUAL live end-to-end swarm harness: PLAN → approve → EXECUTE.
 
-    .venv/bin/python test_swarm.py "make a todo app with a backend" /tmp/aeswarm
+NOT a unit test, despite the old `test_swarm.py` name. It spawns REAL billable
+coding agents, opens terminal windows, and blocks on `input()` at the approval
+gate, so it can never run unattended or in CI. The free automated coverage of
+the same logic lives in `tests/`.
+
+    .venv/bin/python manual_swarm.py "make a todo app with a backend" /tmp/aeswarm
 
 Spawns the chief architect, prints the plan + the spoken approval summary, asks
 you to approve (the human gate), then executes the plan — one isolated git
 worktree per workstream, each agent spawned with its contract-bound orders.
-Terminal windows open for the workers; auto-approval handles their prompts.
+Terminal windows open for the workers; recognised-safe prompts are answered
+automatically, dangerous ones are HELD for you (see core/prompt_reflex.py).
 Afterwards it prints the live swarm status (use it to watch, review, or stop).
 """
 import asyncio
