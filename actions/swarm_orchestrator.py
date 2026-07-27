@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import time
+import uuid
 from pathlib import Path
 
 from actions.pty_session import POOL
@@ -345,19 +346,82 @@ class SwarmOrchestrator:
             self._git("commit", "-m", "swarm: initial baseline",
                       "--allow-empty")
 
-    def ensure_worktree(self, agent: str) -> Path:
-        wt = self.project_dir / STATE_DIR / "worktrees" / agent
-        branch = f"swarm/{agent}"
+    # ------------------------------------------------------------ missions
+
+    def start_mission(self) -> str:
+        """Open a new mission and retire the previous one's worktrees.
+
+        Worktrees and branches used to be keyed by workstream id alone
+        ("swarm/api"), and workstream ids are generic — nearly every plan has
+        an `api` or a `web`. Since `ensure_worktree` reuses an existing tree,
+        a SECOND mission on the same project silently inherited the FIRST
+        mission's branch and code: the dental clinic got built on top of the
+        nail salon. Mission one looked perfect, mission two was quietly
+        poisoned. Namespacing by mission makes that structurally impossible.
+        """
+        # Timestamp for human legibility in `git branch`, plus a short random
+        # suffix: second resolution alone would collide for two missions
+        # started in the same second, silently merging them back together.
+        self.mission_id = time.strftime("m%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
+        self.board.update(lambda s: s.__setitem__("mission_id", self.mission_id))
+        self.cleanup_worktrees(keep=self.mission_id)
+        return self.mission_id
+
+    @property
+    def mission_id(self) -> str:
+        """Active mission, recovered from the board so it survives a restart."""
+        if not getattr(self, "_mission_id", ""):
+            self._mission_id = self.board.read().get("mission_id") or "m0"
+        return self._mission_id
+
+    @mission_id.setter
+    def mission_id(self, value: str):
+        self._mission_id = value
+
+    def cleanup_worktrees(self, keep: str = "") -> list[str]:
+        """Detach and delete worktrees from every mission except `keep`.
+
+        Nothing in the codebase used to remove a worktree, so they accumulated
+        forever — a full checkout each, unbounded. Branches are deliberately
+        left behind: they are the only record of what an agent actually did,
+        and deleting merged history to save disk is a bad trade.
+        """
+        root = self.project_dir / STATE_DIR / "worktrees"
+        removed = []
+        if root.exists():
+            for mission_dir in sorted(root.iterdir()):
+                if not mission_dir.is_dir() or mission_dir.name == keep:
+                    continue
+                for wt in sorted(mission_dir.iterdir()):
+                    if wt.is_dir():
+                        self._git("worktree", "remove", "--force", str(wt))
+                        removed.append(f"{mission_dir.name}/{wt.name}")
+                try:
+                    mission_dir.rmdir()
+                except OSError:
+                    pass          # non-empty: git refused a removal, leave it
+        self._git("worktree", "prune")
+        if removed:
+            self._log(f"SYS: retired {len(removed)} worktree(s) from earlier missions.")
+        return removed
+
+    def ensure_worktree(self, name: str) -> Path:
+        """Isolated tree for one workstream, scoped to the active mission."""
+        wt = self.project_dir / STATE_DIR / "worktrees" / self.mission_id / name
+        branch = self.branch_for(name)
         if wt.exists() and (wt / ".git").exists():
             return wt
         wt.parent.mkdir(parents=True, exist_ok=True)
         r = self._git("worktree", "add", str(wt), "-b", branch)
         if r.returncode != 0:
-            # Branch may exist from a previous run — attach without -b.
+            # Branch may exist from an interrupted run of THIS mission.
             r = self._git("worktree", "add", str(wt), branch)
         if r.returncode != 0:
             raise RuntimeError(f"git worktree add failed: {r.stderr.strip()}")
         return wt
+
+    def branch_for(self, name: str) -> str:
+        return f"swarm/{self.mission_id}/{name}"
 
     # ------------------------------------------------------------- swarm
 
@@ -366,6 +430,7 @@ class SwarmOrchestrator:
         from actions.agent_delegation import AGENT_REGISTRY, spawn_succeeded
 
         self.ensure_repo()
+        self.start_mission()
         try:
             from actions.repo_map import build_repo_map
             repo_map = await asyncio.to_thread(
@@ -383,7 +448,7 @@ class SwarmOrchestrator:
             except Exception as e:
                 errors.append(f"{agent_key}: {e}")
                 continue
-            branch = f"swarm/{agent_key}"
+            branch = self.branch_for(agent_key)
             prompt = _swarm_preamble(agent_key, task, branch, self.project_dir,
                                      repo_map=repo_map)
             result = await adapter.run(prompt, wt, self.project_dir.name,
@@ -427,6 +492,9 @@ class SwarmOrchestrator:
             return f"Plan rejected: {why}."
 
         self.ensure_repo()
+        # Open a fresh mission BEFORE any worktree is touched, so this plan can
+        # never inherit a previous mission's branch or working tree.
+        mission_id = self.start_mission()
         coupled = bool(plan.get("coupled"))
         contract = plan.get("contract") or {}
         try:
@@ -461,7 +529,7 @@ class SwarmOrchestrator:
             except Exception as e:
                 errors.append(f"{ws_id}: {e}")
                 continue
-            branch = f"swarm/{ws_id}"
+            branch = self.branch_for(ws_id)
             note = self._note_for(notes, ws_id, agent_key, w.get("task", ""))
             prompt = _swarm_preamble(
                 ws_id, w["task"], branch, self.project_dir, repo_map=repo_map,
@@ -480,7 +548,7 @@ class SwarmOrchestrator:
             self._log(f"SYS: 🐝 Swarm member '{ws_id}' ({agent_key}) live on {branch}.")
 
         mode = "coupled (shared contract)" if coupled else "independent"
-        report = (f"Swarm executing [{mode}]: {', '.join(started) or 'none'}. "
+        report = (f"Swarm executing [{mission_id}, {mode}]: {', '.join(started) or 'none'}. "
                   f"Merge order: {' → '.join(plan.get('merge_order') or [w['id'] for w in plan.get('workstreams', [])])}.")
         if errors:
             report += f" Issues: {'; '.join(errors)}."
@@ -713,13 +781,60 @@ async def execute_plan(plan: dict, project_dir, player=None, notes=None) -> str:
     return await orch.execute_plan(plan, notes=notes)
 
 
+# Remembers where the current mission lives, so the follow-up calls in a voice
+# exchange (plan -> approve -> execute -> status -> review) all land on the same
+# project without the user ever naming a path. Only `plan` can open a new one.
+_ACTIVE_PROJECT: Path | None = None
+
+# Words that carry no identity — dropping them turns "Build a professional
+# booking website for a dental clinic" into "dental-clinic" rather than
+# "build-a-professional-booking-website".
+_SLUG_STOPWORDS = {
+    "a", "an", "the", "for", "my", "our", "me", "us", "with", "and", "or", "to",
+    "of", "in", "on", "at", "please", "can", "you", "build", "make", "create",
+    "develop", "code", "write", "design", "professional", "simple", "basic",
+    "nice", "good", "new", "some", "app", "application", "project", "website",
+    "webapp", "site", "page", "landing", "system", "platform", "tool",
+}
+
+
+def slugify_goal(goal: str, max_words: int = 3) -> str:
+    """Turn a spoken mission into a stable, filesystem-safe folder name."""
+    words = re.findall(r"[a-z0-9]+", (goal or "").lower())
+    keep = [w for w in words if w not in _SLUG_STOPWORDS and len(w) > 1]
+    if not keep:                       # goal was entirely filler
+        keep = words[:max_words] or ["project"]
+    return "-".join(keep[:max_words])
+
+
+def _derive_project_dir(goal: str) -> Path | None:
+    """Where a mission should live when the user never said.
+
+    `plan` (which carries a goal) opens a new project under ~/Projects, reusing
+    the convention already used by developer_mode. Every other action reuses the
+    mission already in flight — re-deriving from a later utterance would scatter
+    one mission across several folders.
+    """
+    if goal:
+        return Path.home() / "Projects" / slugify_goal(goal)
+    return _ACTIVE_PROJECT
+
+
 async def swarm_orchestrate(parameters: dict, player=None) -> str:
     """Voice-tool entry point. Actions: plan | execute | launch | status |
     broadcast | review | stop."""
+    global _ACTIVE_PROJECT
     action = (parameters.get("action") or "status").strip().lower()
     directory = (parameters.get("directory") or "").strip()
+    goal = (parameters.get("goal") or parameters.get("mission") or "").strip()
     if not directory:
-        return "Ask: Which project directory should the swarm operate on?"
+        # Asking "which directory?" is exactly the tedious question this
+        # product exists to delete — the user described a dental clinic site,
+        # not a filesystem layout. Derive one and say where it went.
+        derived = _derive_project_dir(goal)
+        if derived is None:
+            return "Ask: Which project directory should the swarm operate on?"
+        directory = str(derived)
 
     project_dir = Path(directory).expanduser().resolve()
     if project_dir == SPACE_EAGLE_HOME or SPACE_EAGLE_HOME in project_dir.parents:
@@ -732,7 +847,6 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
         # Spawn the chief architect; return the spoken plan summary for the
         # approval gate. The validated plan is left at .space_eagle/plan.json.
         from actions.chief_architect import run_chief, render_plan_summary
-        goal = (parameters.get("goal") or parameters.get("mission") or "").strip()
         if not goal:
             return "Ask: What should the swarm build?"
         max_agents = int(parameters.get("max_agents") or 2)
@@ -740,8 +854,11 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
                                        player=player)
         if not plan:
             return f"Chief architect could not produce a plan: {status}."
-        return ("PLAN READY (awaiting your approval). "
-                + render_plan_summary(plan))
+        # Only a successful plan claims the project — a failed one must not
+        # redirect the next command at a folder with nothing in it.
+        _ACTIVE_PROJECT = project_dir
+        return (f"PLAN READY (awaiting your approval). Project folder: "
+                f"{project_dir}. " + render_plan_summary(plan))
     if action == "execute":
         plan = parameters.get("plan")
         if isinstance(plan, str):

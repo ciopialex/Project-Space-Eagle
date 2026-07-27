@@ -407,7 +407,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "developer_mode",
-        "description": "Enters Developer Mode to build, code, or develop a software project. Spawns an interactive Antigravity CLI (agy) terminal window inside the project directory, feeds it the initial prompt, and orchestrates it while streaming progress logs back.",
+        "description": "Single-agent coding session. Use ONLY for a small self-contained change, a one-off script, or a follow-up instruction to an ALREADY-RUNNING developer session. For a new project or product the user wants built ('build me a booking website', 'make a landing page for my salon'), do NOT use this — use swarm_mode with action='plan', which sizes the team and may still choose one agent.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -420,12 +420,12 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "swarm_mode",
-        "description": "Multi-agent swarm on one project. PREFERRED FLOW for 'build me X': action='plan' → a Chief Architect decomposes the mission, sizes the team, and returns a spoken plan summary; SPEAK it and ASK the user to approve; then action='execute' to spin up the team in isolated git worktrees. While agents work, action='inject' relays the user's new ideas to specific agents. Also: status | review (verify+merge) | stop | broadcast | launch.",
+        "description": "THE FRONT DOOR for building software. Use whenever the user asks for any project, product, app, website, or tool to be built — 'build a booking website for my dental clinic', 'make me a landing page', 'I need an inventory system'. The user does NOT need to mention agents, teams, or a swarm; they never say 'use two agents', they just describe what they want. Flow: action='plan' → a Chief Architect decomposes the mission, sizes the team (possibly to one agent) and returns a spoken plan summary; SPEAK it and ASK the user to approve; then action='execute' to spin up the team in isolated git worktrees. `directory` is OPTIONAL — omit it and a project folder is created automatically under ~/Projects; never ask the user for a file path. While agents work, action='inject' relays new ideas. Also: status | review (verify+merge) | stop | broadcast | launch.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action":      {"type": "STRING", "description": "plan | execute | inject | status | review | stop | broadcast | launch"},
-                "directory":   {"type": "STRING", "description": "Absolute path of the project directory the swarm operates on"},
+                "directory":   {"type": "STRING", "description": "OPTIONAL absolute path. Pass it ONLY when the user names an existing project. Otherwise omit it — a folder is derived from the goal under ~/Projects and reused for the rest of the mission. Never ask the user for a path."},
                 "goal":        {"type": "STRING", "description": "For plan: the mission in one line, e.g. 'a Flappy Bird clone with an online leaderboard'"},
                 "max_agents":  {"type": "INTEGER", "description": "For plan: cap on team size (default 2)"},
                 "notes":       {"type": "STRING", "description": "For execute: extra requirements the user voiced WITH their approval ('yes, but make the UI beautiful'). Route by role with a JSON object like '{\"frontend\": \"make the UI beautiful\"}', or a plain string to apply to every agent."},
@@ -436,7 +436,7 @@ TOOL_DECLARATIONS = [
                 "agent":       {"type": "STRING", "description": "For broadcast: which agent (or 'eagle') the decision comes from"},
                 "message":     {"type": "STRING", "description": "For inject/broadcast: the request/decision text to deliver"},
             },
-            "required": ["action", "directory"]
+            "required": ["action"]
         }
     },
     {
