@@ -64,6 +64,7 @@ class SwarmSentinel:
         self._lock = threading.Lock()
         self._nudge_ts = {}   # (agent_key, dir) -> when we nudged
         self._failovers = {}  # workstream id -> hand-offs so far (see ceiling)
+        self._merged = set()  # project roots already auto-finished (merge once)
 
     def ensure_running(self):
         with self._lock:
@@ -100,6 +101,7 @@ class SwarmSentinel:
             # the board is not.
             if self._is_finished(root, sdir, agent_key):
                 self._nudge_ts.pop((agent_key, sdir), None)
+                self._maybe_finish_mission(root)
                 continue
 
             idle = watcher.seconds_since_activity()
@@ -122,6 +124,54 @@ class SwarmSentinel:
         if player:
             player.write_log(msg)
         print(msg)
+
+    def _maybe_finish_mission(self, root) -> None:
+        """When every workstream is done, review and merge — automatically.
+
+        The nail-salon mission built a complete site and a working API, both
+        agents reported "completed", and `main` stayed empty because nothing
+        ever called review. From the user's side that is indistinguishable from
+        total failure: they open the project folder and it is bare.
+
+        Finishing is the only step that matters to them, so it cannot be the
+        one step that waits to be asked for.
+        """
+        root = str(root)
+        if root in self._merged:
+            return                      # already finished this mission
+        try:
+            from actions.swarm_orchestrator import get_orchestrator
+            orch = get_orchestrator(Path(root), None)
+            agents = orch.board.read().get("agents", {})
+            if not agents:
+                return
+            # Only workstreams from the executing plan count; sentinel
+            # re-delegation artefacts would otherwise block completion forever.
+            real = {k: v for k, v in agents.items()
+                    if v.get("branch") and v.get("worktree")}
+            if not real:
+                return
+            if not all((v.get("status") or "") in TERMINAL_STATUSES
+                       for v in real.values()):
+                return
+            if not any((v.get("status") or "") == "completed"
+                       for v in real.values()):
+                return               # all stopped/blocked — nothing to ship
+            self._merged.add(root)
+            print(f"[Sentinel] all workstreams finished in {root} — "
+                  f"reviewing and merging automatically.")
+            threading.Thread(
+                target=self._finish, args=(orch,), daemon=True,
+                name="swarm-finish").start()
+        except Exception as e:
+            print(f"[swarm_sentinel.py] auto-finish skipped: {e}")
+
+    @staticmethod
+    def _finish(orch) -> None:
+        try:
+            print(orch.review())
+        except Exception as e:
+            print(f"[swarm_sentinel.py] auto-review failed: {e}")
 
     def _is_finished(self, root, sdir, agent_key) -> bool:
         """Has this workstream already reported itself done?

@@ -550,6 +550,19 @@ class SwarmOrchestrator:
                 errors.append(f"{ws_id} ({agent_key}): {result}")
                 continue
             trace("spawn", f"{ws_id}: {agent_key} live", timer=f"sp:{ws_id}", ok=True)
+            # Track the body behind this role so it can be enumerated and, if
+            # it goes wrong, stopped by verified identity rather than pkill.
+            try:
+                from core import proc_registry
+                _sess = POOL.all_sessions().get((agent_key, str(wt).rstrip("/")))
+                if _sess is None:
+                    _sess = next((s for (k, d), s in POOL.all_sessions().items()
+                                  if k == agent_key and str(wt) in d), None)
+                _pid = getattr(getattr(_sess, "_proc", None), "pid", None)
+                if _pid:
+                    proc_registry.register(mission_id, ws_id, agent_key, _pid)
+            except Exception as _e:
+                print(f"[swarm_orchestrator] proc registration skipped: {_e}")
             self.board.register_agent(ws_id, w["task"], str(wt), branch)
             self.board.set_agent(ws_id, assignee=agent_key)
             self._wire_thoughts(adapter, ws_id, wt)
@@ -798,12 +811,30 @@ class SwarmOrchestrator:
         return " || ".join(results)
 
     def stop_all(self) -> str:
+        """Stop this project's agents — then sweep anything the board missed.
+
+        Closing only board-registered sessions used to leave re-delegation
+        artefacts and half-registered spawns alive with no way to reach them.
+        Stop must mean stop.
+        """
         stopped = []
         for agent_key, sess in self._live_sessions().items():
             sess.close()
             self.board.set_agent(agent_key, status="stopped")
             stopped.append(agent_key)
-        return f"Stopped: {', '.join(stopped) or 'nothing running'}."
+        swept = []
+        try:
+            from core import proc_registry
+            for p in proc_registry.running():
+                if p.mission == self.mission_id and p.workstream not in stopped:
+                    if proc_registry.kill(p):
+                        swept.append(p.workstream)
+        except Exception as _e:
+            print(f"[swarm_orchestrator] sweep skipped: {_e}")
+        parts = [f"Stopped: {', '.join(stopped) or 'nothing running'}."]
+        if swept:
+            parts.append(f"Also swept {len(swept)} untracked: {', '.join(swept)}.")
+        return " ".join(parts)
 
 
 def swarm_narrate() -> str:
@@ -1092,6 +1123,28 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
                     return f"Authorized — told {esc.agent} to go ahead."
                 return f"{esc.agent} is no longer running; nothing to authorize."
         return f"Couldn't find a live session for {esc.agent}."
+
+    if action in ("kill_all", "panic"):
+        # The blunt instrument, made safe. `pkill claude` would kill Aethelark
+        # itself; this only touches processes we registered, each verified by
+        # (pid, start_time) so a recycled PID can never be signalled.
+        from core import proc_registry
+        for orch in list(_ORCHESTRATORS.values()):
+            try:
+                orch.stop_all()
+            except Exception:
+                pass
+        r = proc_registry.kill_all()
+        n = len(r["killed"])
+        msg = f"Stopped everything — {n} agent{'s' if n != 1 else ''} terminated."
+        if r["failed"]:
+            msg += f" Could not stop: {', '.join(r['failed'])}."
+        trace("stop", msg, ok=not r["failed"])
+        return msg
+
+    if action == "processes":
+        from core import proc_registry
+        return proc_registry.describe()
 
     if action == "escalations":
         from core import escalations

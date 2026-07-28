@@ -15,10 +15,34 @@ When a swarm branch is ready, the reviewer worker:
 Returns a concise voice-ready summary either way.
 """
 
+import fnmatch
 import py_compile
 import shutil
 import subprocess
 from pathlib import Path
+
+
+def _owner_of(path: str, owners: dict) -> str | None:
+    """Which workstream owns this file, per the plan's `owns` globs.
+
+    Matches a bare directory ("server/") as a prefix as well as a real glob
+    ("server/**"), because architects write both and a plan should not fail to
+    merge over glob punctuation. Returns None when nobody owns it, or when two
+    workstreams both claim it — an ambiguous claim is not a decision.
+    """
+    hits = []
+    for ws_id, globs in (owners or {}).items():
+        for g in globs or []:
+            g = (g or "").strip()
+            if not g:
+                continue
+            if fnmatch.fnmatch(path, g) or fnmatch.fnmatch(path, g.rstrip("/") + "/*"):
+                hits.append(ws_id)
+                break
+            if path.startswith(g.rstrip("*/") .rstrip("/") + "/"):
+                hits.append(ws_id)
+                break
+    return hits[0] if len(hits) == 1 else None
 
 TEST_TIMEOUT_S = 180
 LLM_REVIEW_TIMEOUT_S = 120
@@ -131,13 +155,72 @@ class ReviewerAgent:
                       f"swarm: merge {branch} ({agent_key})")
         if r.returncode == 0:
             return {"merged": True, "detail": f"{branch} merged into {base}"}
+
         conflicts = [l for l in
                      self._git("diff", "--name-only",
                                "--diff-filter=U").stdout.splitlines() if l]
+        resolved, unresolved = self._resolve_by_ownership(agent_key, conflicts)
+        if conflicts and not unresolved:
+            self._git("add", "-A")
+            c = self._git("commit", "--no-edit")
+            if c.returncode == 0:
+                return {"merged": True,
+                        "detail": f"{branch} merged into {base}; {len(resolved)} "
+                                  f"conflict(s) resolved by file ownership "
+                                  f"({', '.join(resolved[:3])})"}
         self._git("merge", "--abort")
-        return {"merged": False,
-                "detail": f"merge conflicts in: {', '.join(conflicts[:5]) or 'unknown'}"
-                          f" — merge aborted, branch left intact"}
+        detail = (f"merge conflicts in: {', '.join(unresolved[:5]) or 'unknown'}"
+                  f" — merge aborted, branch left intact")
+        return {"merged": False, "detail": detail, "conflicts": unresolved}
+
+    def _resolve_by_ownership(self, agent_key: str, conflicts: list[str]):
+        """Settle conflicts the plan already decided, escalate the rest.
+
+        Every workstream declares `owns` globs, and they are disjoint by
+        construction — the validator rejects plans without ownership. So a
+        conflicting file is either:
+
+          * inside this workstream's lane → it is the author, take its version;
+          * inside somebody else's lane   → this agent wrote outside its
+            boundary, so keep the owner's version;
+          * owned by nobody               → genuinely ambiguous, escalate.
+
+        This is deterministic and costs no tokens: the ownership contract IS
+        the merge policy, and the previous code threw that information away and
+        aborted on every conflict, stranding finished work on its branch.
+        """
+        if not conflicts:
+            return [], []
+        owners = self._ownership_map()
+        resolved, unresolved = [], []
+        for path in conflicts:
+            owner = _owner_of(path, owners)
+            if owner is None:
+                unresolved.append(path)
+                continue
+            # "theirs" is the incoming branch, "ours" is main.
+            side = "--theirs" if owner == agent_key else "--ours"
+            if self._git("checkout", side, "--", path).returncode == 0:
+                resolved.append(f"{path}→{owner}")
+            else:
+                unresolved.append(path)
+        return resolved, unresolved
+
+    def _ownership_map(self) -> dict:
+        """workstream id -> its owns globs, straight from the executing plan."""
+        try:
+            import json
+            pf = self.root / ".space_eagle" / "plan.json"
+            plan = json.loads(pf.read_text(encoding="utf-8"))
+            return {w["id"]: (w.get("owns") or [])
+                    for w in plan.get("workstreams", [])}
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            # Narrow on purpose: a bare `except Exception` here hid an
+            # AttributeError for months-worth of debugging value — every
+            # conflict silently fell through to "abort" with no clue why.
+            print(f"[swarm_reviewer] no ownership map ({e}); "
+                  f"conflicts will escalate instead of resolving")
+            return {}
 
     # ---------------------------------------------------------- top level
 
