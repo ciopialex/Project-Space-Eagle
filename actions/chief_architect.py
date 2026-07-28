@@ -54,22 +54,82 @@ _ARCHITECT_PRINCIPLES = (
     "as INDEPENDENT as possible (independent → blackboard off, less coordination); "
     "only mark coupled when they genuinely share an interface, and then define that "
     "interface fully in `contract` so the agents never have to negotiate live; never "
-    "exceed MAX_AGENTS."
+    "exceed MAX_AGENTS. "
+    "EVERY project ships a README.md at its root — what it is, how to install, how "
+    "to run, and the URL to open — as an explicit acceptance criterion on whichever "
+    "workstream owns the root. A project a human cannot start is not finished."
+)
+
+# Design direction, injected only when the mission has a visible surface.
+#
+# Learned the hard way: a nail-salon landing page passed all EIGHT of its
+# acceptance criteria and still looked mediocre, because not one criterion
+# mentioned appearance — they covered endpoints, responsiveness, aria-live and
+# page weight. Agents deliver exactly what is measured, so taste has to be
+# measurable or it does not survive the hand-off.
+#
+# The old spec also banned every external asset "for reliability", which forced
+# system fonts and hand-drawn SVG placeholders onto a product whose entire job
+# is to look good. Self-hosted fonts and images are just as offline as no
+# fonts at all; the ban conflated reliable with plain.
+_DESIGN_PRINCIPLES = """
+DESIGN (this mission has a user-visible surface — treat it as a product, not a page):
+- Turn the design brief below into CONCRETE, CHECKABLE acceptance criteria on the
+  UI workstream: name the exact palette hex values, the typeface roles (display vs
+  body) and the spacing scale. "Looks good" is not checkable; "ground #F5EFE7,
+  accent #8B5A3C, display serif, body sans, 8px scale" is.
+- Assets are SELF-HOSTED, never CDN-linked — but self-hosting real webfonts and
+  real imagery IS allowed and expected. Do not accept system-font-only output or
+  hand-drawn SVG stand-ins where real photography belongs.
+- Require a considered layout: deliberate hierarchy, generous whitespace, and a
+  hero that states what the business is. No centred-everything default.
+- Require both light and dark to be legible if the design implies a theme.
+- Accessibility is a floor, not the design goal: 4.5:1 contrast and labelled
+  inputs are necessary, not sufficient.
+"""
+
+# Words that mean the mission has something a human will look at.
+_VISUAL_HINTS = (
+    "landing", "page", "website", "site", "web app", "webapp", "dashboard",
+    "portfolio", "storefront", "shop", "blog", "ui", "frontend", "front-end",
+    "app", "interface", "menu", "brochure",
 )
 
 
+def mission_is_visual(goal: str) -> bool:
+    g = (goal or "").lower()
+    return any(h in g for h in _VISUAL_HINTS)
+
+
 def build_architect_prompt(goal: str, project_dir: Path, max_agents: int,
-                           available_agents: list[str]) -> str:
-    """The prompt that turns an ordinary coding tool into the chief architect."""
+                           available_agents: list[str],
+                           design_brief: str = "") -> str:
+    """The prompt that turns an ordinary coding tool into the chief architect.
+
+    `design_brief` carries the user's taste — chosen from the aesthetic picker,
+    typed freehand, or elicited by voice. It is threaded through to the plan so
+    it lands in acceptance criteria rather than evaporating at this boundary,
+    which is where the last mission lost its entire visual direction.
+    """
     plan_path = Path(project_dir) / STATE_DIR / PLAN_FILE
     schema = PLAN_SCHEMA_DOC.replace("MAX_AGENTS", str(max_agents))
+    design = ""
+    if design_brief.strip():
+        design = (f"\nDESIGN BRIEF (the user's stated taste — honour it exactly, and "
+                  f"encode it as acceptance criteria):\n{design_brief.strip()}\n"
+                  f"{_DESIGN_PRINCIPLES}\n")
+    elif mission_is_visual(goal):
+        design = (f"\nNo explicit design brief was given, so CHOOSE a coherent visual "
+                  f"direction appropriate to this business and state it explicitly in "
+                  f"the plan — do not leave it to the implementing agent's defaults.\n"
+                  f"{_DESIGN_PRINCIPLES}\n")
     return (
         f"You are the CHIEF ARCHITECT for an autonomous engineering swarm. Do NOT "
         f"write any application code yet — your ONLY job right now is to plan.\n\n"
         f"GOAL: {goal}\n\n"
         f"MAX_AGENTS: {max_agents}\n"
         f"AVAILABLE_AGENTS (assignee must be one of these): {', '.join(available_agents)}\n\n"
-        f"{_ARCHITECT_PRINCIPLES}\n\n"
+        f"{_ARCHITECT_PRINCIPLES}\n{design}\n"
         f"Decompose the goal into at most {max_agents} workstreams and produce a plan "
         f"EXACTLY in this JSON schema:\n{schema}\n\n"
         f"Write the plan to '{plan_path}' — write to '{plan_path}.tmp' first, then "
@@ -85,7 +145,8 @@ def _plan_path(project_dir: Path) -> Path:
 
 
 async def run_chief(goal: str, project_dir, max_agents: int = 2,
-                    player=None, timeout_s: float = 180.0) -> tuple[dict | None, str]:
+                    player=None, timeout_s: float = 180.0,
+                    design_brief: str = "") -> tuple[dict | None, str]:
     """Spawn the smartest INSTALLED coding tool as chief architect, hand it the
     schema-locked prompt, and wait for its validated plan. Returns (plan, status).
 
@@ -109,7 +170,8 @@ async def run_chief(goal: str, project_dir, max_agents: int = 2,
     except OSError:
         pass
 
-    prompt = build_architect_prompt(goal, project_dir, max_agents, available)
+    prompt = build_architect_prompt(goal, project_dir, max_agents, available,
+                                    design_brief=design_brief)
     if player:
         player.write_log(f"SYS: 🧭 Chief architect ({_agent_label(chief_key)}) planning: {goal[:60]}")
 

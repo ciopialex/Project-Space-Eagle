@@ -25,6 +25,23 @@ NUDGE_AFTER_S = 150.0
 FAIL_AFTER_S = 420.0
 FALLBACK_ORDER = ["claude_code", "antigravity_cli", "opencode", "kimi"]
 
+# A workstream in one of these states is FINISHED. It must never be nudged or
+# re-delegated, however quiet its terminal goes.
+#
+# This is the bug that burned an hour of quota: _scan() judged liveness purely
+# by seconds_since_activity, so an agent that had finished — written its files,
+# committed, recorded status "completed" on the blackboard, and gone quiet —
+# was indistinguishable from one that had hung. The sentinel re-delegated it,
+# the replacement found the work already done, reported "no new commit needed",
+# went quiet itself, and was re-delegated in turn. Forever, spawning a window
+# each time. Done and stuck produce exactly the same amount of output: none.
+TERMINAL_STATUSES = {"completed", "merged", "stopped", "review_blocked"}
+
+# How many times one workstream may be re-delegated before the sentinel gives
+# up and asks a human. Without a ceiling, a genuinely un-completable task
+# recruits every installed CLI in an endless relay.
+MAX_FAILOVERS_PER_WORKSTREAM = 2
+
 
 def swarm_root_of(path) -> Path | None:
     """If path is a swarm worktree (…/<root>/.space_eagle/worktrees/<agent>),
@@ -45,7 +62,8 @@ class SwarmSentinel:
     def __init__(self):
         self._thread = None
         self._lock = threading.Lock()
-        self._nudge_ts = {}  # (agent_key, dir) -> when we nudged
+        self._nudge_ts = {}   # (agent_key, dir) -> when we nudged
+        self._failovers = {}  # workstream id -> hand-offs so far (see ceiling)
 
     def ensure_running(self):
         with self._lock:
@@ -77,6 +95,13 @@ class SwarmSentinel:
             root = swarm_root_of(sdir)
             if watcher is None or root is None:
                 continue
+            # Ask the blackboard whether this workstream is actually finished
+            # BEFORE reading anything into its silence. Quiet is ambiguous;
+            # the board is not.
+            if self._is_finished(root, sdir, agent_key):
+                self._nudge_ts.pop((agent_key, sdir), None)
+                continue
+
             idle = watcher.seconds_since_activity()
             tag = (agent_key, sdir)
             nudged_at = self._nudge_ts.get(tag)
@@ -97,6 +122,20 @@ class SwarmSentinel:
         if player:
             player.write_log(msg)
         print(msg)
+
+    def _is_finished(self, root, sdir, agent_key) -> bool:
+        """Has this workstream already reported itself done?
+
+        Cheap board read on a 10s poll — far cheaper than the spawn it prevents.
+        Fails OPEN (returns False) if the board can't be read, so a corrupt
+        state file degrades to the old behaviour rather than disabling healing.
+        """
+        try:
+            from actions.swarm_orchestrator import Blackboard
+            _key, info = self._board_entry(Blackboard(root), sdir, agent_key)
+            return (info.get("status") or "") in TERMINAL_STATUSES
+        except Exception:
+            return False
 
     @staticmethod
     def _board_entry(board, sdir, fallback_key):
@@ -147,8 +186,40 @@ class SwarmSentinel:
         worktree = Path(info.get("worktree") or sess.project_dir)
         player = getattr(sess, "player", None)
 
+        # Last check before the expensive, irreversible part. The agent may
+        # have finished during the grace window — between the nudge and now —
+        # in which case killing it would destroy a completed workstream.
+        if (info.get("status") or "") in TERMINAL_STATUSES:
+            return
+
+        # Give up rather than relay the task around every installed CLI. An
+        # un-completable workstream would otherwise recruit them one by one,
+        # each spawning a session and a window, indefinitely.
+        seen = self._failovers.get(board_key, 0)
+        if seen >= MAX_FAILOVERS_PER_WORKSTREAM:
+            self._hud(sess, f"SYS: ⛔ '{board_key}' has failed over {seen}x — "
+                            f"stopping and escalating to you instead of retrying.")
+            sess.close()
+            board.set_agent(board_key, status="review_blocked")
+            board.add_decision(
+                "eagle", f"{board_key}: {seen} failed hand-offs, giving up. "
+                         f"Needs a human decision.")
+            try:
+                from core.escalations import raise_escalation
+                raise_escalation(
+                    board_key,
+                    type("D", (), {"rule_id": "SENTINEL_EXHAUSTED",
+                                   "reason": f"{seen} agents in a row could not "
+                                             f"finish this workstream"})(),
+                    task[:200], player=player)
+            except Exception:
+                pass
+            return
+        self._failovers[board_key] = seen + 1
+
         self._hud(sess, f"SYS: 🔴 Swarm agent '{board_key}' is stuck — "
-                        f"terminating and re-delegating its task.")
+                        f"terminating and re-delegating its task "
+                        f"(attempt {seen + 1}/{MAX_FAILOVERS_PER_WORKSTREAM}).")
         context_tail = sess.snapshot_tail(2000).decode("utf-8", "replace")
         sess.close()
         board.set_agent(board_key, status="failed")

@@ -900,6 +900,34 @@ def slugify_goal(goal: str, max_words: int = 3) -> str:
     return "-".join(keep[:max_words])
 
 
+# Where the UI picker parks its choices before a mission exists. The picker and
+# the voice command are separate events — the user may tap through the chips a
+# minute before they say "build it" — so the choice has to survive the gap.
+_AESTHETIC_INBOX: dict = {}
+
+
+def set_aesthetic(choices: dict | None = None, text: str = "") -> str:
+    """Called by the UI picker. Returns the brief it will hand to the architect."""
+    from core import aesthetics
+    brief = (aesthetics.brief_from_choices(choices) if choices
+             else aesthetics.brief_from_text(text))
+    _AESTHETIC_INBOX["brief"] = brief
+    _AESTHETIC_INBOX["choices"] = choices or {}
+    _AESTHETIC_INBOX["text"] = text or ""
+    return brief
+
+
+def _pending_aesthetic_brief(project_dir: Path) -> str:
+    """Consume whatever the picker left. One mission, one brief — clearing it
+    stops a look chosen for one project silently styling the next."""
+    return _AESTHETIC_INBOX.pop("brief", "") or ""
+
+
+def _is_visual(goal: str) -> bool:
+    from actions.chief_architect import mission_is_visual
+    return mission_is_visual(goal)
+
+
 def _derive_project_dir(goal: str) -> Path | None:
     """Where a mission should live when the user never said.
 
@@ -943,14 +971,37 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
         if not goal:
             return "Ask: What should the swarm build?"
         max_agents = int(parameters.get("max_agents") or 2)
+
+        # Taste, from whichever source the user actually used. Without this the
+        # brief never reaches the architect and the plan comes back with eight
+        # functional criteria and nothing about how it should look.
+        from core import aesthetics
+        design_brief = ""
+        picked = parameters.get("aesthetic_choices")
+        if isinstance(picked, str):
+            try:
+                picked = json.loads(picked)
+            except ValueError:
+                picked = None
+        if picked:
+            design_brief = aesthetics.brief_from_choices(picked)
+        elif (parameters.get("aesthetic") or "").strip():
+            design_brief = aesthetics.brief_from_answer(parameters["aesthetic"])
+        else:
+            design_brief = _pending_aesthetic_brief(project_dir)
+
         trace("mission", f'goal heard: "{goal[:70]}"')
+        if design_brief:
+            trace("design", design_brief.splitlines()[0][:70])
+        elif _is_visual(goal):
+            trace("design", "no brief given — architect will choose and state one")
         trace("route", "conductor — swarm_mode plan")
         trace("project", f"{project_dir}"
                          f"{'  (derived from goal)' if not parameters.get('directory') else ''}")
         trace("chief", f"spawning architect (max {max_agents} agents)",
               timer="chief", start=True)
         plan, status = await run_chief(goal, project_dir, max_agents=max_agents,
-                                       player=player)
+                                       player=player, design_brief=design_brief)
         if not plan:
             trace("chief", f"no usable plan: {status}", timer="chief", ok=False)
             return f"Chief architect could not produce a plan: {status}."

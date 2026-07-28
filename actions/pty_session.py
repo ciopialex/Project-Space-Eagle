@@ -11,6 +11,7 @@ Cross-platform: Unix (pty/termios) and Windows (pywinpty, optional).
 import atexit
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -147,13 +148,7 @@ class PtySession:
             if len(self._raw) > RAW_BUFFER_LIMIT:
                 del self._raw[:len(self._raw) - RAW_BUFFER_LIMIT]
         try:
-            # Strip BEL before it reaches the log. Agent TUIs emit \x07 as they
-            # redraw, and a viewer terminal tailing this file rings the desktop
-            # bell for every one — which on Ubuntu is a notification sound
-            # every couple of seconds for the whole run. pyte still sees the
-            # raw stream via the feed hooks; only the human-facing log is
-            # de-belled.
-            self._log_file.write(data.replace(b"\x07", b""))
+            self._log_file.write(_clean_for_log(data))
         except OSError:
             pass
         for hook in list(self._feed_hooks):
@@ -309,6 +304,30 @@ atexit.register(POOL.close_all)
 
 
 # ------------------------------------------------------------- viewer window
+
+# OSC "set window/icon title": ESC ] 0|1|2 ; <text> (BEL | ESC \)
+#
+# Claude Code repaints its title with a spinner — one sequence per frame, 231
+# of them in a single observed session — and each is terminated by BEL. A
+# viewer terminal tailing the log therefore rang the desktop bell every couple
+# of seconds AND kept renaming its own window to whatever the agent was doing,
+# so our own consoles looked like a swarm of unrelated applications.
+#
+# The whole sequence has to go, not just the BEL: stripping the terminator
+# alone leaves `ESC]0;title` unterminated, and a terminal will happily swallow
+# everything after it as more title text.
+_OSC_TITLE_RE = re.compile(rb"\x1b\][0-2];[^\x07\x1b]*(?:\x07|\x1b\\)?")
+
+
+def _clean_for_log(data: bytes) -> bytes:
+    """Strip title-setting escapes and stray bells from the human-facing log.
+
+    pyte still receives the RAW stream through the feed hooks, so prompt
+    detection and screen reconstruction are untouched — only the file a human
+    might tail is cleaned.
+    """
+    return _OSC_TITLE_RE.sub(b"", data).replace(b"\x07", b"")
+
 
 # Log paths that already have a viewer window. Without this a re-spawn or a
 # sentinel re-delegation opens a SECOND window tailing the same file, and two

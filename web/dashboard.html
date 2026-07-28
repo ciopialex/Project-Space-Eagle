@@ -614,6 +614,52 @@ draw();
   .minibar .v { font-size:15px !important; }
   .minibar .k { font-size:8.5px !important; margin-top:3px !important;
     letter-spacing:.16em !important; }
+
+  /* ---- Aesthetic picker -------------------------------------------------
+     Reads as part of the tech-noir shell: same silver-on-near-black, same
+     hairline borders. The one saturated colour in the whole panel is the
+     selected chip, so what you've chosen is readable at a glance across
+     seven rows without hunting. */
+  #ae-modal { position:fixed; inset:0; z-index:9999; display:flex;
+    align-items:center; justify-content:center; background:rgba(4,6,9,.72);
+    backdrop-filter:blur(6px); }
+  #ae-modal .ae-card { width:min(560px,88vw); max-height:86vh; overflow-y:auto;
+    background:#0d1014; border:1px solid #222a33; border-radius:14px;
+    padding:22px 24px; box-shadow:0 24px 70px rgba(0,0,0,.6);
+    font-family:inherit; color:#c8cfd6; }
+  #ae-modal .ae-head { margin-bottom:16px; }
+  #ae-modal .ae-title { font-size:17px; letter-spacing:.01em; color:#e6ebf0; }
+  #ae-modal .ae-sub { font-size:11.5px; color:#6b7684; margin-top:4px; }
+  #ae-modal .ae-row { display:flex; align-items:center; gap:12px;
+    padding:7px 0; border-bottom:1px solid #171d24; }
+  #ae-modal .ae-label { flex:0 0 74px; font-size:9.5px; letter-spacing:.16em;
+    text-transform:uppercase; color:#6b7684; }
+  #ae-modal .ae-chips { display:flex; flex-wrap:wrap; gap:6px; }
+  #ae-modal .ae-chip { background:#141a21; border:1px solid #232b35;
+    color:#9aa5b1; border-radius:999px; padding:5px 12px; font-size:11.5px;
+    cursor:pointer; transition:all .13s ease; font-family:inherit; }
+  #ae-modal .ae-chip:hover { border-color:#3a4553; color:#c8cfd6; }
+  #ae-modal .ae-chip.on { background:#e0a33e; border-color:#e0a33e;
+    color:#151a21; font-weight:600; }
+  #ae-modal .ae-chip:focus-visible { outline:2px solid #e0a33e;
+    outline-offset:2px; }
+  #ae-modal .ae-free { width:100%; margin-top:16px; background:#141a21;
+    border:1px solid #232b35; border-radius:8px; padding:10px 12px;
+    color:#c8cfd6; font-size:12px; font-family:inherit; box-sizing:border-box; }
+  #ae-modal .ae-free::placeholder { color:#5a6472; }
+  #ae-modal .ae-foot { display:flex; justify-content:flex-end; gap:8px;
+    margin-top:18px; }
+  #ae-modal .ae-btn { border-radius:8px; padding:8px 15px; font-size:11.5px;
+    cursor:pointer; font-family:inherit; border:1px solid #2a333e;
+    background:transparent; color:#9aa5b1; }
+  #ae-modal .ae-btn:hover { border-color:#3a4553; color:#c8cfd6; }
+  #ae-modal .ae-save { background:#e0a33e; border-color:#e0a33e;
+    color:#151a21; font-weight:600; }
+  #ae-modal .ae-btn:focus-visible { outline:2px solid #e0a33e;
+    outline-offset:2px; }
+  @media (prefers-reduced-motion: reduce) {
+    #ae-modal .ae-chip { transition:none; }
+  }
 </style>
 
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
@@ -735,6 +781,87 @@ draw();
     }
   };
 
+  /* ---- Aesthetic picker ------------------------------------------------
+     Seven rows of four plain words. Tapping chips takes about fifteen seconds
+     and is mildly enjoyable; being ASKED the same seven questions out loud is
+     an interrogation. Same information, opposite feeling — which is the whole
+     reason this exists instead of a longer voice script.
+     Everything here is optional: skip it and the eagle asks ONE question. */
+  var AE_CHOICES = {};
+
+  function openAesthetics() {
+    if (document.getElementById('ae-modal') || !window.pybridge) return;
+    window.pybridge.aesthetic_options(function (raw) {
+      var sections = [];
+      try { sections = JSON.parse(raw); } catch (e) { return; }
+
+      var wrap = document.createElement('div');
+      wrap.id = 'ae-modal';
+      wrap.innerHTML =
+        '<div class="ae-card">' +
+          '<div class="ae-head">' +
+            '<div class="ae-title">How should it look?</div>' +
+            '<div class="ae-sub">Tap what you like. Skip anything you have no view on.</div>' +
+          '</div>' +
+          '<div class="ae-rows"></div>' +
+          '<input class="ae-free" placeholder="…or just describe it: “like a Tokyo nail bar, dark and neon”">' +
+          '<div class="ae-foot">' +
+            '<button class="ae-btn ae-skip">Skip — you pick</button>' +
+            '<button class="ae-btn ae-save">Use this look</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(wrap);
+
+      var rows = wrap.querySelector('.ae-rows');
+      sections.forEach(function (sec) {
+        var row = document.createElement('div');
+        row.className = 'ae-row';
+        var lab = document.createElement('div');
+        lab.className = 'ae-label';
+        lab.textContent = sec.label;
+        row.appendChild(lab);
+        var chips = document.createElement('div');
+        chips.className = 'ae-chips';
+        sec.words.forEach(function (w) {
+          var c = document.createElement('button');
+          c.className = 'ae-chip';
+          c.textContent = w;
+          c.onclick = function () {
+            /* tapping the active chip clears it — undoing a choice must be as
+               easy as making one, or people just abandon the picker */
+            if (AE_CHOICES[sec.key] === w) {
+              delete AE_CHOICES[sec.key];
+              c.classList.remove('on');
+            } else {
+              AE_CHOICES[sec.key] = w;
+              chips.querySelectorAll('.ae-chip').forEach(function (o) {
+                o.classList.remove('on');
+              });
+              c.classList.add('on');
+            }
+          };
+          chips.appendChild(c);
+        });
+        row.appendChild(chips);
+        rows.appendChild(row);
+      });
+
+      function close() { wrap.remove(); }
+      wrap.querySelector('.ae-skip').onclick = function () {
+        AE_CHOICES = {};
+        window.pybridge.set_aesthetic('', '', function () {});
+        close();
+      };
+      wrap.querySelector('.ae-save').onclick = function () {
+        var free = wrap.querySelector('.ae-free').value || '';
+        window.pybridge.set_aesthetic(JSON.stringify(AE_CHOICES), free, function () {});
+        close();
+      };
+      wrap.addEventListener('click', function (e) { if (e.target === wrap) close(); });
+    });
+  }
+  window.aethelark.openAesthetics = openAesthetics;
+
   function wireButtons() {
     document.querySelectorAll('.wbtn.cl').forEach(function (b) {
       b.onclick = function () { if (window.pybridge) window.pybridge.collapse(); };
@@ -746,6 +873,24 @@ draw();
     if (wc && wc.firstElementChild) {
       wc.firstElementChild.onclick = function () { if (window.pybridge) window.pybridge.minimize(); };
     }
+  }
+
+  function wireAestheticEntry() {
+    /* Live alongside the other suggestion chips rather than in a settings
+       panel: taste is part of asking for the thing, not configuration. */
+    var bar = document.querySelector('.saybar');
+    if (!bar || document.getElementById('ae-open')) return;
+    var c = document.createElement('div');
+    c.className = 'chip';
+    c.id = 'ae-open';
+    c.setAttribute('role', 'button');
+    c.setAttribute('tabindex', '0');
+    c.innerHTML = '&#9670;&nbsp; Choose a look for my next build';
+    c.onclick = openAesthetics;
+    c.onkeydown = function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAesthetics(); }
+    };
+    bar.insertBefore(c, bar.firstChild);
   }
 
   function wireActions() {
@@ -775,7 +920,7 @@ draw();
     // Drag the whole dashboard window from any non-interactive area. Text/scroll
     // regions (.log chat, .tl timeline, .memcard memory) are EXCLUDED so you can
     // select & copy their text instead of dragging the window.
-    var DRAG_SKIP = 'button,input,textarea,select,a,.chip,.wbtn,.stud,.modeseg,.opbtn,.cmd,.searchbar,.log,.tl,.memcard,[onclick]';
+    var DRAG_SKIP = 'button,input,textarea,select,a,.chip,.wbtn,.stud,.modeseg,.opbtn,.cmd,.searchbar,.log,.tl,.memcard,#ae-modal,.ae-chip,.ae-btn,.ae-free,[onclick]';
     var ddrag = false;
     document.addEventListener('mousedown', function (e) {
       if (e.button !== 0 || (e.target.closest && e.target.closest(DRAG_SKIP))) return;
@@ -797,6 +942,7 @@ draw();
       window.pybridge = channel.objects.pybridge;
       wireButtons();
       wireActions();
+      wireAestheticEntry();
       if (window.pybridge && window.pybridge.ready) window.pybridge.ready();
     });
   }

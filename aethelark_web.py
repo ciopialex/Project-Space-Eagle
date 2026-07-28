@@ -69,6 +69,31 @@ class WebBridge(QObject):
     @pyqtSlot()
     def toggle_mute(self): self._ui.toggle_mute()
 
+    # ---- Aesthetic picker ----
+    @pyqtSlot(result=str)
+    def aesthetic_options(self):
+        """Sections + words for the picker to render."""
+        import json as _j
+        from core import aesthetics
+        return _j.dumps(aesthetics.options())
+
+    @pyqtSlot(str, str, result=str)
+    def set_aesthetic(self, choices_json, free_text):
+        """Park the user's taste until they say "build it".
+
+        The picker and the build command are separate events — chips get
+        tapped a minute before the mission starts — so the choice has to
+        survive the gap rather than being asked for again at plan time.
+        """
+        import json as _j
+        from actions.swarm_orchestrator import set_aesthetic
+        try:
+            choices = _j.loads(choices_json) if choices_json else None
+        except ValueError:
+            choices = None
+        brief = set_aesthetic(choices, free_text or "")
+        return "Saved — I'll build to that look." if brief else "Cleared."
+
     # ---- Settings panel (the title-bar gear) ----
     @pyqtSlot()
     def open_settings(self): self._ui.push_settings()
