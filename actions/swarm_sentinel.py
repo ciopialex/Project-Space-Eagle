@@ -169,9 +169,31 @@ class SwarmSentinel:
     @staticmethod
     def _finish(orch) -> None:
         try:
-            print(orch.review())
+            result = orch.review()
+            print(result)
         except Exception as e:
             print(f"[swarm_sentinel.py] auto-review failed: {e}")
+            return
+        if "MERGED" not in result:
+            return          # nothing shipped — don't open a browser at nothing
+
+        # The mission is only really over when the user can SEE it. Handing
+        # back a folder path is where this fell down before: they asked for a
+        # website and got a directory.
+        try:
+            from core import preview
+            from core.trace import banner, trace
+            pv = preview.start(orch.project_dir)
+            if pv:
+                trace("preview", f"serving at {pv.url}", ok=True)
+                banner("READY — opened in your browser", [
+                    f"{pv.url}", f"files: {orch.project_dir}"])
+                orch._log(f"SYS: ✅ It's ready — opened at {pv.url}")
+            else:
+                trace("preview", "nothing runnable found (no start script or "
+                                 "index.html) — merged only")
+        except Exception as e:
+            print(f"[swarm_sentinel.py] preview skipped: {e}")
 
     def _is_finished(self, root, sdir, agent_key) -> bool:
         """Has this workstream already reported itself done?

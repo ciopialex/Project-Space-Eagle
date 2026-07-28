@@ -1142,6 +1142,17 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
         trace("stop", msg, ok=not r["failed"])
         return msg
 
+    if action in ("open", "preview"):
+        # "show me it" / "open the site" — also the manual path when a mission
+        # merged before this existed, or the user closed the tab.
+        from core import preview
+        pv = preview.current(project_dir) or preview.start(project_dir)
+        if pv is None:
+            return (f"I couldn't find anything runnable in {project_dir} — "
+                    f"no start script and no index.html.")
+        preview.open_in_browser(pv.url)
+        return f"Opened it at {pv.url}."
+
     if action == "processes":
         from core import proc_registry
         return proc_registry.describe()

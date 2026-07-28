@@ -85,9 +85,25 @@ window.pill = {
       var dots = '';
       for (var i=0;i<working;i++) dots += '<span class="dot" style="background:var(--silver-hi)"></span>';
       for (var j=0;j<needs;j++) dots += '<span class="dot" style="background:var(--amber)"></span>';
-      var label = working + ' working' + (needs ? ' · ' + needs + ' needs you' : '');
+      /* Lead with WHAT IS HAPPENING, not how many subprocesses are alive.
+         "Designing your page" is the institutional state; "2 working" is an
+         implementation detail the user should never have to translate. The
+         dots stay as ambient texture, and the count only appears when someone
+         is actually blocked on them. */
+      var label = data.phase ? data.phase
+                : (working + ' working' + (needs ? ' · ' + needs + ' needs you' : ''));
+      if (data.phase && needs) label += ' · ' + needs + ' needs you';
+      var pct = data.progress != null ? data.progress : Math.round(100*working/total);
       body.innerHTML = '<div class="pagents"><div class="row">' + dots + '&nbsp;<span style="color:var(--muted)">' + label + '</span></div>'
-        + '<div class="phair"><i style="width:' + Math.round(100*working/total) + '%"></i></div></div>';
+        + '<div class="phair"><i style="width:' + Math.max(0, Math.min(100, pct)) + '%"></i></div></div>';
+      body.style.cssText = 'flex:1';
+    } else if (state === 'ready') {
+      /* The payoff. A mission that merged and is now on screen deserves its
+         own state — a log line is not a moment. */
+      body.innerHTML = '<div class="pagents"><div class="row">'
+        + '<span class="dot" style="background:var(--green)"></span>&nbsp;'
+        + '<span style="color:var(--silver-hi)">' + (data.label || 'Ready') + '</span></div>'
+        + '<div class="phair"><i style="width:100%;background:var(--green)"></i></div></div>';
       body.style.cssText = 'flex:1';
     } else { // idle
       body.innerHTML = '<div class="pidle"><i></i></div>';

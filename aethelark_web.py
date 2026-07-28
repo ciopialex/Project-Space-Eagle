@@ -690,6 +690,49 @@ class WebShellUI(QObject):
                               "“build me…” to start one.", "done": False}],
             }
         self._push("setSwarm", view)
+        self._push_phase(view)
+
+    # Institutional phase, not agent chatter. The pill used to read "2 working",
+    # which is a subprocess count the user has to translate. What they want to
+    # know is what is happening to THEIR thing.
+    _PHASES = {
+        "working": "Building your project",
+        "review":  "Checking the work",
+        "merged":  "Finishing up",
+        "block":   "Needs your call",
+    }
+
+    def _push_phase(self, view):
+        """Drive the pill from mission state so it narrates, not enumerates."""
+        try:
+            agents = view.get("agents") or []
+            if not agents:
+                return
+            lanes = [a.get("lane") or "" for a in agents]
+            needs = sum(1 for ln in lanes if ln == "block")
+            working = sum(1 for ln in lanes if ln == "work")
+            done = sum(1 for ln in lanes if ln == "review")
+            total = max(1, len(lanes))
+
+            if needs:
+                phase = self._PHASES["block"]
+            elif working:
+                phase = self._PHASES["working"]
+            elif done == total:
+                # Everything merged — the preview opens separately; this is the
+                # pill's own moment.
+                self.pill_win.set_pill("ready", {"label": "Your project is ready"})
+                return
+            else:
+                phase = self._PHASES["review"]
+
+            self.pill_win.set_pill("swarm", {
+                "working": working, "needs_you": needs, "total": total,
+                "phase": phase,
+                "progress": int(100 * done / total),
+            })
+        except Exception as e:
+            print(f"[aethelark_web] phase push skipped: {e}")
 
     def _tick(self):
         # Metrics are cheap (a psutil snapshot); memory is only re-read + pushed
