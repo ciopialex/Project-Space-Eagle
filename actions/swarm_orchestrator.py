@@ -357,7 +357,7 @@ class SwarmOrchestrator:
         an `api` or a `web`. Since `ensure_worktree` reuses an existing tree,
         a SECOND mission on the same project silently inherited the FIRST
         mission's branch and code: the dental clinic got built on top of the
-        nail salon. Mission one looked perfect, mission two was quietly
+        second project. Mission one looked perfect, mission two was quietly
         poisoned. Namespacing by mission makes that structurally impossible.
         """
         # Timestamp for human legibility in `git branch`, plus a short random

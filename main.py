@@ -417,7 +417,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "developer_mode",
-        "description": "Single-agent coding session. Use ONLY for a small self-contained change, a one-off script, or a follow-up instruction to an ALREADY-RUNNING developer session. For a new project or product the user wants built ('build me a booking website', 'make a landing page for my salon'), do NOT use this — use swarm_mode with action='plan', which sizes the team and may still choose one agent.",
+        "description": "Single-agent coding session. Use ONLY for a small self-contained change, a one-off script, or a follow-up instruction to an ALREADY-RUNNING developer session. For a new project or product the user wants built ('build me a booking website', 'make a landing page for my shop'), do NOT use this — use swarm_mode with action='plan', which sizes the team and may still choose one agent.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -438,7 +438,7 @@ TOOL_DECLARATIONS = [
                 "escalation_id": {"type": "STRING", "description": "For authorize/deny: the specific held prompt id (e.g. 'esc3'). Omit to resolve the oldest one, which is what the user means when they just say 'allow it'."},
                 "directory":   {"type": "STRING", "description": "OPTIONAL absolute path. Pass it ONLY when the user names an existing project. Otherwise omit it — a folder is derived from the goal under ~/Projects and reused for the rest of the mission. Never ask the user for a path."},
                 "goal":        {"type": "STRING", "description": "For plan: the mission in one line, e.g. 'a Flappy Bird clone with an online leaderboard'"},
-                "aesthetic":   {"type": "STRING", "description": "For plan on anything with a LOOK (website, landing page, app UI): the user's answer about the style they want, in their own words ('soft and pastel', 'dark and shiny', 'like a Tokyo nail bar'). Ask ONE short question before planning if they haven't said — 'any look in mind: soft and pastel, dark and shiny, or clean and simple?' — and pass their reply here. If they say they don't mind, omit this and the architect picks."},
+                "aesthetic":   {"type": "STRING", "description": "For plan on anything with a LOOK (website, landing page, app UI): the user's answer about the style they want, in their own words ('soft and pastel', 'dark and shiny', 'warm and rustic', 'like a 1970s record sleeve'). Ask ONE short question before planning if they haven't said — 'any look in mind: soft and pastel, dark and shiny, or clean and simple?' — and pass their reply here. If they say they don't mind, omit this and the architect picks."},
                 "max_agents":  {"type": "INTEGER", "description": "For plan: cap on team size (default 2)"},
                 "notes":       {"type": "STRING", "description": "For execute: extra requirements the user voiced WITH their approval ('yes, but make the UI beautiful'). Route by role with a JSON object like '{\"frontend\": \"make the UI beautiful\"}', or a plain string to apply to every agent."},
                 "target":      {"type": "STRING", "description": "For inject: who hears the new request — a role ('frontend', 'the backend one'), an agent name, or 'all'"},
@@ -942,7 +942,7 @@ class AethelarkLive:
         #
         # It trades against patience: too short and it cuts you off when you
         # pause mid-thought (exactly what happens while describing something,
-        # like a salon concept). Tuned here for a conversational middle and
+        # a design idea). Tuned here for a conversational middle and
         # exposed in config so it can be dialled per-person.
         _silence_ms = int(_cfg.get("end_of_turn_silence_ms") or 550)
         _prefix_ms = int(_cfg.get("speech_prefix_padding_ms") or 200)

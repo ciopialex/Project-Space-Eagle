@@ -1,6 +1,6 @@
 """Show the user the thing they asked for.
 
-The nail-salon mission built a complete site and a working booking API, merged
+A mission built a complete site and a working API, merged
 nothing, and handed back a folder path. The user had to be told a localhost URL
 by someone else before they could see their own website. That is the whole
 product falling at the last inch: they asked for a page, and got a directory.

@@ -62,7 +62,7 @@ _ARCHITECT_PRINCIPLES = (
 
 # Design direction, injected only when the mission has a visible surface.
 #
-# Learned the hard way: a nail-salon landing page passed all EIGHT of its
+# Learned the hard way: a landing-page mission passed all EIGHT of its
 # acceptance criteria and still looked mediocre, because not one criterion
 # mentioned appearance — they covered endpoints, responsiveness, aria-live and
 # page weight. Agents deliver exactly what is measured, so taste has to be

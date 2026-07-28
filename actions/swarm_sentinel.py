@@ -128,7 +128,7 @@ class SwarmSentinel:
     def _maybe_finish_mission(self, root) -> None:
         """When every workstream is done, review and merge — automatically.
 
-        The nail-salon mission built a complete site and a working API, both
+        A mission built a complete site and a working API, both
         agents reported "completed", and `main` stayed empty because nothing
         ever called review. From the user's side that is indistinguishable from
         total failure: they open the project folder and it is bare.

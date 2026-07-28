@@ -4,7 +4,7 @@ Run:  .venv/bin/python -m pytest tests/ -q
 
 THE LOOP THIS PINS DOWN
 -----------------------
-Observed live: agents finished the nail-salon build, wrote status "completed"
+Observed live: agents finished a build, wrote status "completed"
 to the blackboard, committed their work, and went quiet. The sentinel judged
 liveness purely by seconds_since_activity, so a FINISHED agent was
 indistinguishable from a hung one — it re-delegated, the replacement found the
@@ -123,7 +123,7 @@ def test_seven_axes_four_words_each():
 
 
 def test_vocabulary_is_plain_language():
-    """A person booking nail appointments must never have to decode a
+    """A person with no design training must never have to decode a
     design-school term to say what they like."""
     jargon = {"chromatic", "tactile", "editorial", "geometric", "organic",
               "typography", "density", "palette", "monochrome", "saturation"}
@@ -155,8 +155,8 @@ def test_no_choices_yields_no_brief():
 
 
 def test_free_text_survives_in_the_users_own_words():
-    brief = aesthetics.brief_from_text("like a Tokyo nail bar, dark and neon")
-    assert "Tokyo nail bar" in brief
+    brief = aesthetics.brief_from_text("like a 1970s record sleeve, warm and faded")
+    assert "1970s record sleeve" in brief
 
 
 def test_spoken_shorthand_maps_onto_the_picker():
@@ -180,7 +180,7 @@ def test_the_one_question_is_one_question_with_options():
 def test_design_brief_reaches_the_architect_prompt():
     from actions.chief_architect import build_architect_prompt
     brief = aesthetics.brief_from_choices({"colors": "Dark", "surface": "Shiny"})
-    p = build_architect_prompt("a landing page for a nail salon", Path("/tmp/x"),
+    p = build_architect_prompt("a landing page for a bike shop", Path("/tmp/x"),
                                2, ["claude_code"], design_brief=brief)
     assert "Dark" in p and "Shiny" in p
     assert "acceptance criteria" in p.lower()
@@ -190,7 +190,7 @@ def test_visual_mission_without_a_brief_still_gets_design_direction():
     """The last run produced eight functional criteria and nothing about looks.
     Silence must not mean 'skip design'."""
     from actions.chief_architect import build_architect_prompt
-    p = build_architect_prompt("build a landing page for a nail salon",
+    p = build_architect_prompt("build a landing page for a bike shop",
                                Path("/tmp/x"), 2, ["claude_code"])
     assert "DESIGN" in p
     assert "CHOOSE a coherent visual direction" in p

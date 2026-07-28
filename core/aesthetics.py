@@ -1,6 +1,6 @@
 """The taste layer.
 
-A nail-salon landing page once passed all eight of its acceptance criteria and
+A landing-page mission once passed all eight of its acceptance criteria and
 still looked mediocre. Nothing was broken: the criteria covered endpoints,
 responsive breakpoints, aria-live regions and page weight, and the agents hit
 every one. Not a single criterion mentioned how it should LOOK.
@@ -12,7 +12,7 @@ worktree.
 Three ways in, in order of how little they ask of the user:
 
   1. the picker  — seven taps, no typing
-  2. free text   — "like a Tokyo nail bar, dark and neon"
+  2. free text   — "like a 1970s record sleeve, warm and faded"
   3. the eagle   — asks ONE spoken question when the other two are absent
 
 Seven questions ASKED aloud is an interrogation; seven chips TAPPED is fifteen
@@ -22,7 +22,7 @@ THE VOCABULARY RULE
 -------------------
 The words the user sees are everyday words with obvious differences — Strong,
 Pastel, Dark; Matte, Shiny. Not Chromatic Intensity or Tactile Finish. Someone
-booking nail appointments should never have to decode a design-school term to
+booking an appointment should never have to decode a design-school term to
 say what they like.
 
 The precise version lives on the RIGHT of each pair, and only the agent reads
@@ -113,7 +113,7 @@ def brief_from_choices(choices: dict) -> str:
 
 def brief_from_text(text: str) -> str:
     """Free-text taste, passed through nearly untouched — the user's own words
-    carry nuance no fixed vocabulary can ("like a Tokyo nail bar at night")."""
+    carry nuance no fixed vocabulary can ("like a 1970s record sleeve, warm and faded")."""
     text = (text or "").strip()
     if not text:
         return ""

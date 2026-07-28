@@ -6,7 +6,7 @@ Real servers on real ports, no agents, no browser opened.
 
 WHY THIS EXISTS
 ---------------
-The nail-salon mission built a complete site and a working API, and handed back
+A mission built a complete site and a working API, and handed back
 a folder path. The user had to be told a localhost URL by someone else before
 they could look at their own website. They asked for a page and received a
 directory — the whole product falling at the last inch.
@@ -82,11 +82,11 @@ def test_malformed_package_json_does_not_raise(tmp_path):
 
 def test_static_site_actually_serves(tmp_path):
     (tmp_path / "public").mkdir()
-    (tmp_path / "public" / "index.html").write_text("<h1>Lumiere</h1>")
+    (tmp_path / "public" / "index.html").write_text("<h1>It works</h1>")
     pv = preview.start(tmp_path, open_browser=False)
     assert pv is not None
     body = urllib.request.urlopen(pv.url, timeout=5).read()
-    assert b"Lumiere" in body
+    assert b"It works" in body
 
 
 def test_ports_do_not_collide(tmp_path):

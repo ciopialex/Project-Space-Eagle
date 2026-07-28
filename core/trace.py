@@ -8,9 +8,9 @@ stage it stalled in.
 One line per stage transition, fixed-width tags so the whole run reads as a
 column and greps cleanly:
 
-    12:35:02  MISSION   ▸ goal heard: "a nail salon landing page with booking"
+    12:35:02  MISSION   ▸ goal heard: "a landing page with a booking form"
     12:35:02  ROUTE     ▸ conductor (swarm_mode plan)
-    12:35:02  PROJECT   ▸ ~/Projects/nail-salon-booking  (derived)
+    12:35:02  PROJECT   ▸ ~/Projects/booking-landing-page  (derived)
     12:35:03  CHIEF     ▸ spawning claude_code as architect
     12:36:11  PLAN      ▸ 2 agents, coupled  [68.4s]
     12:36:11  GATE      ▸ awaiting human approval

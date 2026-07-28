@@ -57,7 +57,7 @@ def worktrees(repo: Path) -> list[str]:
 # ------------------------------------------------------- mission separation
 
 def test_two_missions_never_share_a_branch(repo):
-    """The core regression: the dental clinic must not land on the nail salon."""
+    """The core regression: project two must not land on top of project one."""
     o = SwarmOrchestrator(repo)
     m1 = o.start_mission()
     b1 = o.branch_for("api")
@@ -76,7 +76,7 @@ def test_second_mission_gets_a_clean_tree(repo):
     o = SwarmOrchestrator(repo)
     o.start_mission()
     wt1 = o.ensure_worktree("api")
-    (wt1 / "nail_salon.py").write_text("# mission one")
+    (wt1 / "first_mission.py").write_text("# mission one")
     subprocess.run(["git", "add", "-A"], cwd=wt1, capture_output=True)
     subprocess.run(["git", "commit", "-m", "m1"], cwd=wt1, capture_output=True)
 
@@ -84,7 +84,7 @@ def test_second_mission_gets_a_clean_tree(repo):
     wt2 = o.ensure_worktree("api")
 
     assert wt2 != wt1
-    assert not (wt2 / "nail_salon.py").exists(), \
+    assert not (wt2 / "first_mission.py").exists(), \
         "mission 2 inherited mission 1's files"
 
 
@@ -157,7 +157,7 @@ def test_mission_id_survives_a_restart(repo):
     # Filler ("build", "a", "professional", "website") is dropped; the words
     # that identify the project survive, in the order the user said them.
     ("Build a professional booking website for a dental clinic", "booking-dental-clinic"),
-    ("make me a landing page for my nail salon", "nail-salon"),
+    ("make me a landing page for my bike shop", "bike-shop"),
     ("build an inventory system for my bakery", "inventory-bakery"),
     ("create a todo app", "todo"),
 ])
