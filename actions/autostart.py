@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import platform
 import subprocess
+from core.run_cmd import run_cmd
 import sys
 from pathlib import Path
 
@@ -101,13 +102,13 @@ def _mac_enable() -> bool:
     )
     _MAC_PLIST.parent.mkdir(parents=True, exist_ok=True)
     _MAC_PLIST.write_text(plist, encoding="utf-8")
-    subprocess.run(["launchctl", "load", str(_MAC_PLIST)], capture_output=True)
+    run_cmd(["launchctl", "load", str(_MAC_PLIST)], capture_output=True)
     return True
 
 
 def _mac_disable() -> bool:
     if _MAC_PLIST.exists():
-        subprocess.run(["launchctl", "unload", str(_MAC_PLIST)], capture_output=True)
+        run_cmd(["launchctl", "unload", str(_MAC_PLIST)], capture_output=True)
         _MAC_PLIST.unlink(missing_ok=True)
     return True
 

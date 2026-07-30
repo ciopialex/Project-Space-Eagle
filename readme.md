@@ -34,13 +34,63 @@ Capability may be fast, creative, and occasionally wrong. The Kernel's job is to
 
 ---
 
+## Install
+
+One line. It installs everything — a private Python runtime, all dependencies, and the `eagle` command — then launches.
+
+**macOS**
+```bash
+curl -fsSL https://get.aethelark.com | bash
+```
+> Open Terminal with **Cmd + Space** → type `Terminal` → Enter. Paste, press Enter.
+
+**Linux**
+```bash
+curl -fsSL https://get.aethelark.com | bash
+```
+> Open a terminal with **Ctrl + Alt + T**. You'll be asked for your password once, to install the Qt system libraries pip can't provide.
+
+**Windows** — *beta*
+```powershell
+irm https://get.aethelark.com/install.ps1 | iex
+```
+> Right-click **Start** → **Terminal**. Paste, press Enter.
+> Windows support is new and hasn't yet been tested on a real Windows machine — please [open an issue](https://github.com/ciopialex/Project-Space-Eagle/issues) if something breaks.
+
+Nothing needs admin rights (except the Linux system libraries), and nothing touches your system Python. Everything lands in `~/.aethelark`. Expect 5–15 minutes — PyQt6, WebEngine, OpenCV and numpy are a large download.
+
+To uninstall: `rm -rf ~/.aethelark ~/.local/bin/eagle`
+
+---
+
 ## Run it
 
 ```bash
 eagle
 ```
 
+That's it — from any terminal, any directory, any time. The installer launches it once for you at the end; after that, `eagle` is the whole command.
+
 First run walks you through ignition: pick a brain, connect your accounts, name the eagle. Then talk to it.
+
+---
+
+## Get a free Gemini API key
+
+Aethelark needs a brain. Google gives one away free — no credit card, no trial clock, no billing setup. It takes about a minute.
+
+1. Go to **[aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)**
+2. Sign in with any Google account
+3. Click **Create API key**
+4. Click **Create API key in new project** if it asks
+5. Hit the **copy** icon next to the key
+6. Paste it into Aethelark's onboarding screen
+
+Done — you can talk to the eagle.
+
+**What "free" actually means here.** This is Google's permanent free tier, not a trial. You are never asked for a card and you cannot be charged. It's rate-limited rather than dollar-capped — roughly 10 requests per minute and 250 per day on Flash — which one person talking to their computer will rarely notice. If the eagle ever goes quiet after heavy use, you've hit a rate limit, not a bug; it resets on its own.
+
+Already have a key, or running a local model? Onboarding handles both — Aethelark speaks to Ollama and any OpenAI-compatible server (LM Studio, Jan, vLLM) as well as Gemini.
 
 ---
 

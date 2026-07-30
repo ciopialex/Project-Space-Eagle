@@ -3,6 +3,7 @@ import os
 import platform
 import shutil
 import subprocess
+from core.run_cmd import run_cmd
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -78,7 +79,7 @@ if not notified:
 if not notified:
     try:
         import subprocess
-        subprocess.run(["msg", "*", "/TIME:30", message], check=False)
+        run_cmd(["msg", "*", "/TIME:30", message], check=False)
     except Exception as _e:
         print(f"[reminder.py] Non-fatal error at line 82: {_e}")
 
@@ -109,7 +110,7 @@ if not notified:
         script = 'display notification "{{}}" with title "Aethelark Reminder"'.format(
             message.replace('"', '')
         )
-        subprocess.run(["osascript", "-e", script], check=False)
+        run_cmd(["osascript", "-e", script], check=False)
     except Exception as _e:
         print(f"[reminder.py] Non-fatal error at line 113: {_e}")
 """
@@ -129,7 +130,7 @@ except Exception as _e:
 if not notified:
     try:
         import subprocess
-        subprocess.run(
+        run_cmd(
             ["notify-send", "--urgency=normal", "--expire-time=15000",
              "Aethelark Reminder", message],
             check=False
@@ -188,7 +189,7 @@ def _schedule_windows(target_dt: datetime, task_name: str,
 
     xml_path.write_text(xml_content, encoding="utf-16")
 
-    result = subprocess.run(
+    result = run_cmd(
         ["schtasks", "/Create", "/TN", task_name, "/XML", str(xml_path), "/F"],
         capture_output=True, text=True, **_CNW,
     )
@@ -243,7 +244,7 @@ def _schedule_mac(target_dt: datetime, task_name: str,
     plist_path.write_text(plist_content, encoding="utf-8")
     plist_path.chmod(0o644)
 
-    result = subprocess.run(
+    result = run_cmd(
         ["launchctl", "load", str(plist_path)],
         capture_output=True, text=True,
     )
@@ -262,7 +263,7 @@ def _schedule_linux(target_dt: datetime, task_name: str,
 
     if shutil.which("systemd-run"):
         on_calendar = target_dt.strftime("%Y-%m-%d %H:%M:00")
-        result = subprocess.run(
+        result = run_cmd(
             [
                 "systemd-run",
                 "--user",
@@ -280,7 +281,7 @@ def _schedule_linux(target_dt: datetime, task_name: str,
     if shutil.which("at"):
         at_time = target_dt.strftime("%H:%M %Y-%m-%d")
         cmd_str = f"{sys.executable} {script_path}\n"
-        result  = subprocess.run(
+        result  = run_cmd(
             ["at", at_time],
             input=cmd_str, capture_output=True, text=True,
         )

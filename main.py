@@ -18,6 +18,8 @@ if _platform.system() == "Windows":
 # ─────────────────────────────────────────────────────────────────────────────
 
 import asyncio
+import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import re
 import threading
 import time
@@ -37,6 +39,7 @@ from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
 )
 from core.tool_result import ToolResult, normalize
+from core import proc_registry
 
 from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
@@ -116,6 +119,83 @@ _INTERRUPT_LATCH_S = 1.5
 # No server frame at all for this long, while a turn is in flight, means the
 # session is wedged. Reconnect with the resumption handle rather than sit silent.
 _TURN_STALL_S = 25.0
+
+# How often the health loop wakes. Kept well under _TURN_STALL_S so the stall
+# window — not the log cadence — decides how fast a wedge is caught.
+_WATCHDOG_TICK_S = 2.0
+
+# Telemetry prints every Nth tick, preserving the original ~30s log cadence
+# without slowing the health check down to match it.
+_TELEMETRY_EVERY_N_TICKS = 15
+
+# Tools used to run on the loop's DEFAULT executor (min(32, cpu+4) workers),
+# which `asyncio.to_thread` also uses — so enough concurrently slow tools
+# starved memory loads, dashboard snapshots and the news fetch of threads.
+# Tools now own a bounded pool of their own; a pile-up degrades tools only.
+_TOOL_WORKERS = 8
+
+
+def _make_tool_executor() -> "ThreadPoolExecutor":
+    """The private pool tools run on. Named so a stuck thread is identifiable
+    in a stack dump rather than an anonymous ThreadPoolExecutor-N."""
+    return ThreadPoolExecutor(
+        max_workers=_TOOL_WORKERS, thread_name_prefix="aethelark-tool"
+    )
+
+
+def _shutdown_tool_executor(executor: "ThreadPoolExecutor") -> None:
+    """Stop taking new work and abandon the backlog.
+
+    `cancel_futures=True` drops everything not yet started; `wait=False` means
+    quitting does not block on tools that are mid-flight. Combined with the
+    deadlines in core.run_cmd — which stop a command hanging forever in the
+    first place — this is what turns "quit" into an action rather than a wish.
+    """
+    executor.shutdown(wait=False, cancel_futures=True)
+
+
+class ConnectionBackoff:
+    """Reconnect delay that grows under failure and forgets that growth once a
+    session proves healthy.
+
+    The delay used to only ever go up. It doubled on each network error, capped
+    at 60, and was never reset on a successful connect — so one bad-Wi-Fi
+    stretch pinned every later reconnect at a full minute for the rest of the
+    process, long after the network had recovered.
+
+    The reset is gated on HEALTH rather than on merely connecting: a session
+    that dies on arrival is a crash loop, and a crash loop that resets its own
+    backoff is a hot loop with extra steps.
+    """
+
+    BASE            = 3.0
+    MAX             = 60.0
+    HEALTHY_AFTER_S = 30.0   # a session that lives this long proves the path works
+
+    def __init__(self, clock=time.monotonic):
+        self._clock        = clock
+        self.delay         = self.BASE
+        self._connected_at = None
+
+    def on_connected(self) -> None:
+        """A live session was established — start the health timer."""
+        self._connected_at = self._clock()
+
+    def on_failure(self) -> None:
+        """The session ended. Drop the accumulated delay only if the session had
+        lived long enough to be evidence that the path is healthy."""
+        started = self._connected_at
+        self._connected_at = None
+        if started is not None and (self._clock() - started) >= self.HEALTHY_AFTER_S:
+            self.delay = self.BASE
+
+    def grow(self) -> None:
+        """Unclassified/network failure — back off, bounded."""
+        self.delay = min(self.delay * 2, self.MAX)
+
+    def set(self, seconds: float) -> None:
+        """A classified error with a known-good delay (GoAway, 1011, bad key)."""
+        self.delay = float(seconds)
 
 
 def _get_api_key() -> str:
@@ -792,6 +872,23 @@ class AethelarkLive:
         self._resume_handle: str | None = None
         self._go_away_reconnect  = False          # set when server signals imminent GoAway
 
+        # Reconnect pacing. Grows under failure, resets once a session has been
+        # up long enough to prove the path is healthy — see ConnectionBackoff.
+        self._backoff = ConnectionBackoff()
+
+        # Tool batches currently running off the receive loop. Holds a strong
+        # reference (asyncio only keeps a weak one) and tells the wedge
+        # watchdog that silence is work, not death.
+        self._inflight_tools: set[asyncio.Task] = set()
+
+        # Serialises batches that write or claim exclusivity. Read-only batches
+        # skip it entirely — see _batch_needs_exclusion.
+        self._tool_batch_lock = asyncio.Lock()
+
+        # Tools get their own bounded pool so a pile-up of slow ones cannot
+        # starve asyncio.to_thread (memory loads, dashboard snapshots, news).
+        self._tool_executor = _make_tool_executor()
+
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
         if self._dashboard is None:
@@ -1017,31 +1114,31 @@ class AethelarkLive:
 
         try:
             if name == "open_app":
-                r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: open_app(parameters=args, response=None, player=self.ui))
                 result = r or f"Opened {args.get('app_name')}."
 
             elif name == "weather_report":
-                r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: weather_action(parameters=args, player=self.ui))
                 result = r or "Weather delivered."
 
             elif name == "browser_control":
-                r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: browser_control(parameters=args, player=self.ui))
                 result = r or "Done."
 
             elif name == "file_controller":
-                r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: file_controller(parameters=args, player=self.ui))
                 result = r or "Done."
 
             elif name == "send_message":
-                r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
+                r = await loop.run_in_executor(self._tool_executor, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
                 result = r or f"Message sent to {args.get('receiver')}."
 
             elif name == "reminder":
-                r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: reminder(parameters=args, response=None, player=self.ui))
                 result = r or "Reminder set."
 
             elif name == "youtube_video":
-                r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: youtube_video(parameters=args, response=None, player=self.ui))
                 result = r or "Done."
 
             elif name == "screen_process":
@@ -1058,13 +1155,13 @@ class AethelarkLive:
                     angle     = args.get("angle", "screen").lower()
                     user_text = args.get("text", "What do you see?")
                     if angle == "camera":
-                        img_b, mime_t = await loop.run_in_executor(None, _capture_camera)
+                        img_b, mime_t = await loop.run_in_executor(self._tool_executor, _capture_camera)
                         self.ui.start_camera_stream()
                         self._vision_cam_active = True
                         print(f"[Vision] 📷 Camera: {len(img_b):,} bytes")
                         _stall = "camera"
                     else:
-                        img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
+                        img_b, mime_t = await loop.run_in_executor(self._tool_executor, _capture_screen)
                         print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
                         _stall = "screen"
                     self._pending_vision = (img_b, mime_t, user_text, angle)
@@ -1080,19 +1177,19 @@ class AethelarkLive:
                 result = "Camera closed."
 
             elif name == "computer_settings":
-                r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: computer_settings(parameters=args, response=None, player=self.ui))
                 result = r or "Done."
 
             elif name == "desktop_control":
-                r = await loop.run_in_executor(None, lambda: desktop_control(parameters=args, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: desktop_control(parameters=args, player=self.ui))
                 result = r or "Done."
 
             elif name == "code_helper":
-                r = await loop.run_in_executor(None, lambda: code_helper(parameters=args, player=self.ui, speak=self.speak))
+                r = await loop.run_in_executor(self._tool_executor, lambda: code_helper(parameters=args, player=self.ui, speak=self.speak))
                 result = r or "Done."
 
             elif name == "dev_agent":
-                r = await loop.run_in_executor(None, lambda: dev_agent(parameters=args, player=self.ui, speak=self.speak))
+                r = await loop.run_in_executor(self._tool_executor, lambda: dev_agent(parameters=args, player=self.ui, speak=self.speak))
                 result = r or "Done."
 
             elif name == "developer_mode":
@@ -1107,7 +1204,7 @@ class AethelarkLive:
 
             elif name == "swarm_status":
                 from actions.swarm_orchestrator import swarm_narrate
-                result = await loop.run_in_executor(None, swarm_narrate)
+                result = await loop.run_in_executor(self._tool_executor, swarm_narrate)
 
             elif name == "swarm_mode":
                 from actions.swarm_orchestrator import swarm_orchestrate
@@ -1125,7 +1222,7 @@ class AethelarkLive:
                 result = r or "Done."
 
             elif name == "web_search":
-                r = await loop.run_in_executor(None, lambda: web_search_action(parameters=args, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: web_search_action(parameters=args, player=self.ui))
                 result = r or "Done."
                 # Mirror results to the on-screen content panel
                 _mode = args.get("mode", "search")
@@ -1137,37 +1234,37 @@ class AethelarkLive:
                 if not args.get("file_path") and self.ui.current_file:
                     args["file_path"] = self.ui.current_file
                 r = await loop.run_in_executor(
-                    None,
+                    self._tool_executor,
                     lambda: file_processor(parameters=args, player=self.ui, speak=self.speak)
                 )
                 result = r or "Done."
 
             elif name == "computer_control":
-                r = await loop.run_in_executor(None, lambda: computer_control(parameters=args, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: computer_control(parameters=args, player=self.ui))
                 result = r or "Done."
 
             elif name == "game_updater":
-                r = await loop.run_in_executor(None, lambda: game_updater(parameters=args, player=self.ui, speak=self.speak))
+                r = await loop.run_in_executor(self._tool_executor, lambda: game_updater(parameters=args, player=self.ui, speak=self.speak))
                 result = r or "Done."
 
             elif name == "flight_finder":
-                r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: flight_finder(parameters=args, player=self.ui))
                 result = r or "Done."
 
             elif name == "system_status":
-                r = await loop.run_in_executor(None, get_system_status)
+                r = await loop.run_in_executor(self._tool_executor, get_system_status)
                 result = str(r)
 
             elif name == "autostart":
-                r = await loop.run_in_executor(None, lambda: autostart(parameters=args, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: autostart(parameters=args, player=self.ui))
                 result = r or "Done."
 
             elif name == "mark_emails_read":
-                r = await loop.run_in_executor(None, lambda: gmail_mark_read(query=args.get("query", "")))
+                r = await loop.run_in_executor(self._tool_executor, lambda: gmail_mark_read(query=args.get("query", "")))
                 result = r or "Done."
 
             elif name == "messages_brief":
-                r = await loop.run_in_executor(None, lambda: messages_brief(parameters=args, player=self.ui))
+                r = await loop.run_in_executor(self._tool_executor, lambda: messages_brief(parameters=args, player=self.ui))
                 result = r or "Nothing to report."
 
             elif name == "shutdown_aethelark":
@@ -1559,15 +1656,15 @@ class AethelarkLive:
                                 asyncio.create_task(_cam_close())
 
                     if response.tool_call:
-                        # Schedule tool calls through our Scoreboard Scheduler
-                        fn_responses = await self._schedule_tool_calls(
+                        # Dispatch and RETURN TO THE WIRE. Awaiting the batch
+                        # here made the session deaf for the tool's whole
+                        # duration — no audio, no go_away, no barge-in, and a
+                        # watchdog that counted the silence as a dead session.
+                        self._dispatch_tool_calls(
                             response.tool_call.function_calls,
-                            call_epoch=self._turn_epoch
+                            call_epoch=self._turn_epoch,
+                            session=session,
                         )
-                        if fn_responses:
-                            await session.send_tool_response(
-                                function_responses=fn_responses
-                            )
         except _ReconnectSignal:
             raise  # intentional graceful reconnect — no error logging
         except Exception as e:
@@ -1718,7 +1815,7 @@ class AethelarkLive:
 
         # Start fetching news immediately — runs in parallel while phase 1 plays
         loop = asyncio.get_event_loop()
-        news_future = loop.run_in_executor(None, _fetch_news_sync, "top world news today")
+        news_future = loop.run_in_executor(self._tool_executor, _fetch_news_sync, "top world news today")
 
         await asyncio.sleep(0.3)
         if not self.session:
@@ -1919,36 +2016,137 @@ class AethelarkLive:
 
     # ── Queue depth monitor ───────────────────────────────────────────────────
 
+    def _session_is_wedged(self, now: float) -> bool:
+        """Has the user asked something the server has simply never answered?
+
+        Both halves matter. `silent_for` alone would fire on an idle session,
+        where silence is the correct behaviour and reconnecting is pure churn.
+        `user_waiting` alone would fire the instant anyone spoke. Together they
+        describe the one state worth recovering from: a question was asked, and
+        nothing at all has come back for longer than any real answer takes.
+
+        Work in flight is proof of life. A tool that legitimately runs longer
+        than the stall window — send_message budgets 130s, swarm_mode 300s — is
+        not a wedge, and reconnecting on top of it kills the very work the user
+        asked for. So an in-flight tool suppresses the watchdog for exactly as
+        long as it runs, and not one tick longer.
+        """
+        if self._inflight_tools:
+            return False
+        user_waiting = self._last_user_speech > self._last_server_activity
+        silent_for   = now - self._last_server_activity
+        return user_waiting and silent_for > _TURN_STALL_S
+
+    def _batch_needs_exclusion(self, function_calls) -> bool:
+        """Must this batch be serialised against other batches?
+
+        While tool batches were awaited inline they could never overlap, so the
+        scoreboard in _schedule_tool_calls only ever had to resolve hazards
+        WITHIN a batch. Concurrent dispatch removes that free guarantee: two
+        batches could now drive the mouse, or write files, at the same time.
+
+        Read-only batches are exempt on purpose. TOOL_SPECS marks swarm_status
+        and system_status non-exclusive precisely so "what are you building?"
+        can answer while the building happens — putting a blunt lock across all
+        batches would break the exact interaction this change exists to enable.
+        """
+        for fc in function_calls:
+            spec = TOOL_SPECS.get(fc.name, ToolSpec(exclusive=True))
+            if spec.exclusive or spec.writes:
+                return True
+        return False
+
+    async def _run_and_reply(self, function_calls, call_epoch: int, session) -> None:
+        """Run a tool batch and send its response. Always awaited from a
+        background task — never from the receive loop, which must stay on the
+        wire so audio, go_away frames and barge-ins keep being seen."""
+        try:
+            guard = (self._tool_batch_lock
+                     if self._batch_needs_exclusion(function_calls)
+                     else contextlib.nullcontext())
+            async with guard:
+                fn_responses = await self._schedule_tool_calls(function_calls, call_epoch)
+            if fn_responses:
+                await session.send_tool_response(function_responses=fn_responses)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # The batch scheduler already converts individual tool failures into
+            # ToolResult.failure responses, so reaching here means the dispatch
+            # itself broke (usually a session closed underneath us). Nothing to
+            # send it to — log and let the reconnect path handle the session.
+            print(f"[Aethelark] ❌ Tool dispatch failed: {type(e).__name__}: {e}")
+
+    def _dispatch_tool_calls(self, function_calls, call_epoch: int, session):
+        """Hand a tool batch to the event loop and return immediately.
+
+        The task is held in `_inflight_tools` for two reasons: asyncio only
+        keeps a weak reference to running tasks, so an untracked task can be
+        garbage-collected mid-flight; and the wedge watchdog needs to know that
+        work is happening before it decides silence means death.
+        """
+        task = asyncio.create_task(
+            self._run_and_reply(function_calls, call_epoch, session)
+        )
+        self._inflight_tools.add(task)
+        task.add_done_callback(self._inflight_tools.discard)
+        return task
+
+    async def _cancel_inflight_tools(self) -> None:
+        """Drop any tool still running when its session ends.
+
+        While dispatch was awaited inline, tearing down the TaskGroup cancelled
+        the running tool as a side effect. Backgrounding the task removes that
+        guarantee, and a tool that outlives its session is not harmless: it
+        holds the batch lock, it keeps the wedge watchdog suppressed into the
+        NEXT session, and it eventually answers a socket that is already gone.
+        """
+        tasks = list(self._inflight_tools)
+        if not tasks:
+            return
+        print(f"[Aethelark] Cancelling {len(tasks)} in-flight tool(s) — session ended.")
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._inflight_tools.clear()
+
     async def _monitor_queue_depth(self) -> None:
-        """Background task: logs queue depths every 30s for observability."""
+        """Watches session health fast, prints telemetry slowly.
+
+        These were one loop on a 30s sleep, which meant a 25s stall threshold
+        took up to 55s to act on — the log cadence was silently deciding how
+        long the user sat in front of a mute eagle. They are separate jobs with
+        separate natural rates, so the loop now ticks fast for health and
+        counts ticks for telemetry: same console noise, ~2x faster recovery.
+        """
+        tick = 0
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(_WATCHDOG_TICK_S)
+            tick += 1
             out_queue = self.out_queue
             audio_in_queue = self.audio_in_queue
             if out_queue is None or audio_in_queue is None:
                 continue
-            mic_q = out_queue.qsize()
-            play_q = audio_in_queue.qsize()
-            mic_age_ms = mic_q * 64  # each frame ≈ 64ms at 16kHz/1024 samples
-            play_age_ms = play_q * 50  # each frame ≈ 50ms at 24kHz/2400 bytes
-            drops = self._mic_drops
-            print(
-                f"[Telemetry] sid={self._session_id} epoch={self._turn_epoch} "
-                f"mic_q={mic_q}/{out_queue.maxsize}(~{mic_age_ms}ms) "
-                f"play_q={play_q}/200(~{play_age_ms}ms) "
-                f"mic_drops={drops}"
-            )
+
+            if tick % _TELEMETRY_EVERY_N_TICKS == 0:
+                mic_q = out_queue.qsize()
+                play_q = audio_in_queue.qsize()
+                mic_age_ms = mic_q * 64  # each frame ≈ 64ms at 16kHz/1024 samples
+                play_age_ms = play_q * 50  # each frame ≈ 50ms at 24kHz/2400 bytes
+                drops = self._mic_drops
+                print(
+                    f"[Telemetry] sid={self._session_id} epoch={self._turn_epoch} "
+                    f"mic_q={mic_q}/{out_queue.maxsize}(~{mic_age_ms}ms) "
+                    f"play_q={play_q}/{audio_in_queue.maxsize}(~{play_age_ms}ms) "
+                    f"mic_drops={drops}"
+                )
 
             # ── Wedged-session watchdog ──────────────────────────────────────
             # Telemetry used to only PRINT. When a session went quiet there was
             # full observability of the freeze and zero recovery from it: the
             # user watched healthy-looking counters while the eagle sat mute.
-            # If the user has spoken since the last server frame and the server
-            # has said nothing at all for _TURN_STALL_S, the session is wedged —
-            # reconnect with the resumption handle, which restores context.
-            silent_for = time.monotonic() - self._last_server_activity
-            user_waiting = self._last_user_speech > self._last_server_activity
-            if user_waiting and silent_for > _TURN_STALL_S:
+            if self._session_is_wedged(time.monotonic()):
+                silent_for = time.monotonic() - self._last_server_activity
                 print(f"[Aethelark] ⏳ No server response for {silent_for:.0f}s "
                       f"with the user waiting — session wedged, reconnecting.")
                 self.ui.write_log("NET: No response — reconnecting…")
@@ -2021,6 +2219,7 @@ class AethelarkLive:
                         self._turn_epoch           = 0
 
                         connected_ok = True
+                        self._backoff.on_connected()   # starts the health timer
                         print(f"[Aethelark] Connected. (session={self._session_id})")
                         self.ui.set_state("LISTENING")
                         self.ui.write_log(f"SYS: Aethelark online. (sid={self._session_id})")
@@ -2052,6 +2251,9 @@ class AethelarkLive:
                 finally:
                     if self._play_stop_event:
                         self._play_stop_event.set()
+                    # Tool tasks live outside the TaskGroup, so nothing else
+                    # will stop them when this session goes away.
+                    await self._cancel_inflight_tools()
 
             except KeyboardInterrupt:
                 raise
@@ -2073,11 +2275,16 @@ class AethelarkLive:
                 )
                 self._go_away_reconnect = False
 
+                # A session that lived long enough to prove the network is fine
+                # hands the next reconnect a clean base delay, so an outage that
+                # ended hours ago can no longer cost a full minute of silence.
+                self._backoff.on_failure()
+
                 if graceful:
                     # Server asked us to migrate connections (GoAway). Expected —
                     # resume immediately with the handle we already hold.
                     print("[Aethelark] Graceful reconnect — resuming session with handle.")
-                    self._conn_backoff = 1
+                    self._backoff.set(1)
 
                 elif "API key not valid" in err_blob or "API_KEY_INVALID" in err_blob:
                     # Genuinely invalid key — stop hammering the API, prompt re-config.
@@ -2092,7 +2299,7 @@ class AethelarkLive:
                     while not self.ui._win._ready:
                         await asyncio.sleep(1)
                     print("[Aethelark] New API key saved — reconnecting...")
-                    self._conn_backoff = 3
+                    self._backoff.set(ConnectionBackoff.BASE)
                     self.session = None
                     continue
 
@@ -2104,14 +2311,14 @@ class AethelarkLive:
                     print(f"[Aethelark] Audio content-type rejected on resume — cold reconnecting. {err_blob[:160]}")
                     self.ui.write_log("NET: Refreshing the audio session…")
                     self._resume_handle = None
-                    self._conn_backoff = 2
+                    self._backoff.set(2)
 
                 elif "1011" in err_blob or "1007" in err_blob or "ConnectionClosedError" in err_blob:
                     # Server-side internal error / connection drop — transient.
                     # Reconnect quickly WITH the resume handle to restore context.
                     print(f"[Aethelark] Gemini connection dropped (1011/1007/closed) — resuming. {err_blob[:160]}")
                     self.ui.write_log("NET: Gemini dropped the connection — resuming…")
-                    self._conn_backoff = 2
+                    self._backoff.set(2)
 
                 else:
                     is_net_err = any(k in err_blob for k in (
@@ -2119,18 +2326,18 @@ class AethelarkLive:
                         "ConnectionRefusedError", "OSError", "Cannot connect",
                     ))
                     if is_net_err:
-                        _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
-                        self._conn_backoff = _conn_backoff
-                        print(f"[Aethelark] Network error — retrying in {_conn_backoff}s. {err_blob[:160]}")
+                        self._backoff.grow()
+                        _delay = self._backoff.delay
+                        print(f"[Aethelark] Network error — retrying in {_delay:.0f}s. {err_blob[:160]}")
                         self.ui.write_log(
-                            f"NET: Bağlantı kurulamadı — {_conn_backoff}s sonra tekrar deneniyor. "
-                            "(VPN gerekiyor olabilir)"
+                            f"NET: Can't reach the network — retrying in {_delay:.0f}s. "
+                            "(a VPN may be required)"
                         )
                     else:
                         # Genuinely unexpected — keep the full traceback for debugging.
                         print(f"[Aethelark] Error ({type(e).__name__}): {e}")
                         traceback.print_exc()
-                        self._conn_backoff = 3
+                        self._backoff.set(ConnectionBackoff.BASE)
 
                 # Stale-handle recovery: if we were resuming but never reached a live
                 # session, the handle is likely expired/rejected — drop it so the next
@@ -2147,20 +2354,81 @@ class AethelarkLive:
             if self._dashboard:
                 await self._dashboard.broadcast({"type": "status", "state": "sleeping"})
 
-            delay = getattr(self, "_conn_backoff", 3)
-            print(f"[Aethelark] Reconnecting in {delay}s...")
+            delay = self._backoff.delay
+            print(f"[Aethelark] Reconnecting in {delay:.0f}s...")
             await asyncio.sleep(delay)
+
+def _run_core(ui, start, *, sleep=time.sleep, max_restarts: int = 5) -> None:
+    """Run the assistant core, and do not let it die quietly.
+
+    The core used to run bare on a daemon thread. Anything raised by the
+    AethelarkLive constructor, or any non-KeyboardInterrupt escape from run(),
+    killed that thread with no supervision and no output — leaving the window
+    open, the pill animating, and nothing working, with no indication that
+    anything was wrong. A beautiful dead window is the worst failure mode
+    available, because it looks fine.
+
+    Restarts are bounded on purpose: endlessly restarting something that is
+    permanently broken buries the cause under identical errors. Better to stop
+    and say so.
+    """
+    attempt = 0
+    while True:
+        try:
+            start()
+            return                                   # finished on purpose
+        except (KeyboardInterrupt, SystemExit):
+            print("\n🔴 Shutting down...")
+            return
+        except BaseException as e:                   # noqa: BLE001
+            attempt += 1
+            label = f"{type(e).__name__}: {e}"
+            traceback.print_exc()
+            if attempt > max_restarts:
+                print(f"[Aethelark] Core failed {attempt}x — giving up. {label}")
+                _safe_log(ui, f"ERR: Core offline — gave up after {attempt} attempts.")
+                _safe_state(ui, "SLEEPING")
+                return
+            delay = min(2 ** attempt, 30)
+            print(f"[Aethelark] Core died ({label}) — restarting in {delay}s "
+                  f"[{attempt}/{max_restarts}]")
+            _safe_log(ui, f"ERR: Core offline ({type(e).__name__}) — restarting in {delay}s…")
+            _safe_state(ui, "SLEEPING")
+            sleep(delay)
+
+
+def _safe_log(ui, text: str) -> None:
+    """The supervisor must survive a UI that is itself broken."""
+    try:
+        ui.write_log(text)
+    except Exception:
+        pass
+
+
+def _safe_state(ui, state: str) -> None:
+    try:
+        ui.set_state(state)
+    except Exception:
+        pass
+
 
 def main():
     ui = AethelarkUI("face.png")
 
+    # Closing the window must stop the agents we started, not orphan them.
+    proc_registry.install_exit_handlers()
+
     def runner():
         ui.wait_for_api_key()
-        aethelark = AethelarkLive(ui)
-        try:
-            asyncio.run(aethelark.run())
-        except KeyboardInterrupt:
-            print("\n🔴 Shutting down...")
+
+        def _start():
+            core = AethelarkLive(ui)          # constructing it can fail too
+            try:
+                asyncio.run(core.run())
+            finally:
+                _shutdown_tool_executor(core._tool_executor)
+
+        _run_core(ui, _start)
 
     threading.Thread(target=runner, daemon=True).start()
     ui.root.mainloop()
