@@ -94,6 +94,34 @@ Already have a key, or running a local model? Onboarding handles both — Aethel
 
 ---
 
+## Three ways to open it
+
+The terminal is a one-time thing. After installing, pick whichever you like:
+
+- **Click the icon.** The installer creates a real app — `Aethelark.app` in your Applications on macOS, an entry in the app grid on Linux, Start Menu and Desktop on Windows.
+- **Type `eagle`** in any terminal, from any directory.
+- **Your own keyboard shortcut.** Bind it once and summon the eagle from anywhere:
+  - **Ubuntu / GNOME** — Settings → Keyboard → Custom Shortcuts → command `eagle`
+  - **macOS** — Automator → Quick Action → Run Shell Script `eagle`, then assign a key in Settings → Keyboard
+  - **Windows** — right-click the Start Menu shortcut → Properties → Shortcut key
+
+Aethelark deliberately ships **no global hotkey listener of its own** — that would mean a background process watching every keystroke. Your OS already does this properly, so we let it.
+
+---
+
+## Privacy
+
+Aethelark is not always listening, and it is not always running. It starts when you open it and stops when you close it. No wake word, no ambient microphone.
+
+**There is no Aethelark server.** Your voice and your screen go from your machine straight to Google, under *your own* API key. They never pass through infrastructure the author controls — because there isn't any.
+
+- **Your memory is a file you own.** It lives at `~/.local/share/aethelark/long_term.json` (`~/Library/Application Support/Aethelark` on macOS, `%APPDATA%\Aethelark` on Windows). Open it, read it, edit it, delete it. Nothing is synced anywhere.
+- **The microphone is off until you open the app**, and the pill visibly shows when it is LISTENING or SPEAKING.
+- **`[ESC]` stops it mid-action**, whatever it is doing.
+- **The code is public.** Every claim above is checkable in this repository — please do check them.
+
+---
+
 ## Status
 
 Active development. Voice, vision, memory, connectors, and the swarm foundation are live; the Chief Architect planning layer is landing now. Local-first, one operator, no subscriptions.

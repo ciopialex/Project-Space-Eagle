@@ -168,6 +168,50 @@ case ":$PATH:" in
      done ;;
 esac
 
+step 95 "Creating the app icon…"
+# Gatekeeper and SmartScreen only inspect files that were *downloaded* — they
+# check a quarantine flag the browser attaches. A launcher we build here, on
+# the user's own machine, never carries it, so this is a real double-clickable
+# icon with no certificate and no signing involved.
+if [ "$OS" = "Darwin" ]; then
+  APP="$HOME/Applications/Aethelark.app"
+  mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+  cat > "$APP/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>Aethelark</string>
+  <key>CFBundleDisplayName</key><string>Aethelark</string>
+  <key>CFBundleIdentifier</key><string>com.aethelark.app</string>
+  <key>CFBundleExecutable</key><string>Aethelark</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Aethelark listens only while you are talking to it.</string>
+  <key>NSCameraUsageDescription</key><string>Aethelark uses the camera only when you ask it to look.</string>
+</dict></plist>
+PLIST
+  # A shell script, not a Mach-O binary — so it needs no signature even on arm64.
+  printf '#!/bin/sh\nexec "%s/.venv/bin/python" "%s/aethelark_web.py" "$@"\n' \
+    "$HOME_DIR" "$HOME_DIR" > "$APP/Contents/MacOS/Aethelark"
+  chmod +x "$APP/Contents/MacOS/Aethelark"
+else
+  APPS="$HOME/.local/share/applications"
+  mkdir -p "$APPS"
+  cat > "$APPS/aethelark.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Aethelark
+Comment=Voice-commanded operator for your machine
+Exec=$BIN_DIR/eagle
+Icon=$HOME_DIR/assets/images/aethelark.png
+Terminal=false
+Categories=Utility;Development;
+DESKTOP
+  command -v update-desktop-database >/dev/null 2>&1 \
+    && update-desktop-database "$APPS" >/dev/null 2>&1 || true
+fi
+
 step 100 "Ready."
 sleep 1.2
 cleanup; ANIM_PID=""
