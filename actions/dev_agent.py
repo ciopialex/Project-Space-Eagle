@@ -1,4 +1,5 @@
 import subprocess
+from core.run_cmd import run_cmd
 import sys
 import json
 import re
@@ -245,7 +246,7 @@ def _install_dependencies(dependencies: list[str], project_dir: Path) -> str:
     to_install = []
     for dep in dependencies:
         pkg_name = re.split(r"[>=<!]", dep)[0].strip()
-        result = subprocess.run(
+        result = run_cmd(
             [sys.executable, "-m", "pip", "show", pkg_name],
             capture_output=True, text=True
         )
@@ -259,7 +260,7 @@ def _install_dependencies(dependencies: list[str], project_dir: Path) -> str:
 
     print(f"[DevAgent] 📦 Installing: {to_install}")
     try:
-        result = subprocess.run(
+        result = run_cmd(
             [sys.executable, "-m", "pip", "install"] + to_install,
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
@@ -301,7 +302,7 @@ def _run_project(run_command: str, project_dir: Path, timeout: int = 30) -> str:
         if parts[0].lower() == "python":
             parts[0] = sys.executable
 
-        result = subprocess.run(
+        result = run_cmd(
             parts,
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
@@ -339,7 +340,7 @@ def _try_auto_install(error_output: str, project_dir: Path) -> bool:
     pkg = match.group(1).replace("_", "-").split(".")[0]
     print(f"[DevAgent] 🔧 Auto-installing missing package: {pkg}")
     try:
-        result = subprocess.run(
+        result = run_cmd(
             [sys.executable, "-m", "pip", "install", pkg],
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",

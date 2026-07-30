@@ -1,4 +1,6 @@
 PyQt6
+PyQt6-WebEngine   # aethelark_web.py / web_shell.py import QtWebEngineWidgets;
+                  # `pip install PyQt6` does NOT provide it (separate distribution)
 sounddevice
 google-genai
 google-generativeai

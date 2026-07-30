@@ -24,6 +24,7 @@ role is swappable — that is what makes agent replacement safe.
 """
 from __future__ import annotations
 
+import atexit
 import os
 import signal
 import threading
@@ -177,3 +178,65 @@ def clear() -> None:
     """Test hook — module state would otherwise leak between cases."""
     with _lock:
         _procs.clear()
+
+
+# ── stopping when we stop ───────────────────────────────────────────────────
+# This module exists to answer "stop everything", and nothing ever called it at
+# exit. Only actions/pty_session registered an atexit hook, so closing the
+# window left agent processes alive — holding worktrees, burning CPU, invisible
+# until the next `ps`. Orphaned work after "quit" is the loudest possible
+# signal of unfinished software.
+
+_exit_handlers_installed = False
+
+
+def _on_exit() -> None:
+    """Reap every registered agent. Safe to call more than once."""
+    try:
+        live = running()
+    except Exception:
+        return
+    if not live:
+        return
+    print(f"[Registry] Stopping {len(live)} agent(s) before exit…")
+    try:
+        result = kill_all()
+    except Exception as e:
+        print(f"[Registry] Shutdown error: {e}")
+        return
+    if result.get("failed"):
+        print(f"[Registry] Could not stop: {result['failed']}")
+
+
+def install_exit_handlers() -> None:
+    """Connect 'we are stopping' to 'stop everything'.
+
+    atexit covers a normal quit; SIGTERM and SIGINT cover being asked to stop
+    from outside, which atexit alone does not see. Previous handlers are
+    chained rather than replaced, so this never silently disables somebody
+    else's shutdown path.
+    """
+    global _exit_handlers_installed
+    if _exit_handlers_installed:
+        return
+    _exit_handlers_installed = True
+
+    atexit.register(_on_exit)
+
+    def _make(previous):
+        def _handler(signum, frame):
+            _on_exit()
+            if callable(previous) and previous not in (
+                signal.SIG_IGN, signal.SIG_DFL
+            ):
+                previous(signum, frame)
+            else:
+                raise SystemExit(128 + signum)
+        return _handler
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _make(signal.getsignal(sig)))
+        except (ValueError, OSError):
+            # Not the main thread, or the platform refuses — atexit still holds.
+            pass

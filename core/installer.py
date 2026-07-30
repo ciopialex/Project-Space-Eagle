@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import platform
 import subprocess
+from core.run_cmd import run_cmd
 import sys
 from typing import Callable
 
@@ -68,7 +69,7 @@ def _available(module: str) -> bool:
 def _pip(package: str, log: Callable | None = None) -> bool:
     if log:
         log(f"SYS: pip install {package} …")
-    result = subprocess.run(
+    result = run_cmd(
         [
             sys.executable, "-m", "pip", "install", package,
             "--quiet", "--disable-pip-version-check",
@@ -127,7 +128,7 @@ def install_for_config(config: dict, log: Callable | None = None) -> None:
         _pip("playwright", log)
         if log:
             log("SYS: Downloading Playwright browser (Chromium, ~150 MB — one-time)…")
-        subprocess.run(
+        run_cmd(
             [sys.executable, "-m", "playwright", "install", "chromium"],
             capture_output=True,
         )

@@ -4,6 +4,7 @@ import sys
 import json
 import shutil
 import subprocess
+from core.run_cmd import run_cmd
 import tempfile
 import platform
 from pathlib import Path
@@ -177,7 +178,7 @@ def set_wallpaper(image_path: str) -> str:
                 f'tell application "System Events" to tell every desktop to '
                 f'set picture to POSIX file "{path}"'
             )
-            subprocess.run(["osascript", "-e", script], capture_output=True)
+            run_cmd(["osascript", "-e", script], capture_output=True)
             return f"Wallpaper set: {path.name}"
 
         else:
@@ -185,11 +186,11 @@ def set_wallpaper(image_path: str) -> str:
             uri = f"file://{path}"
 
             if "gnome" in desktop_env or "unity" in desktop_env:
-                subprocess.run([
+                run_cmd([
                     "gsettings", "set", "org.gnome.desktop.background",
                     "picture-uri", uri
                 ], capture_output=True)
-                subprocess.run([
+                run_cmd([
                     "gsettings", "set", "org.gnome.desktop.background",
                     "picture-uri-dark", uri
                 ], capture_output=True)
@@ -205,21 +206,21 @@ for (var i = 0; i < allDesktops.length; i++) {{
     d.writeConfig("Image", "file://{path}");
 }}
 """
-                subprocess.run(
+                run_cmd(
                     ["qdbus", "org.kde.plasmashell", "/PlasmaShell",
                      "org.kde.PlasmaShell.evaluateScript", script],
                     capture_output=True
                 )
 
             elif "xfce" in desktop_env:
-                subprocess.run([
+                run_cmd([
                     "xfconf-query", "-c", "xfce4-desktop",
                     "-p", "/backdrop/screen0/monitor0/workspace0/last-image",
                     "-s", str(path)
                 ], capture_output=True)
 
             else:
-                result = subprocess.run(
+                result = run_cmd(
                     ["feh", "--bg-scale", str(path)],
                     capture_output=True
                 )
@@ -266,7 +267,7 @@ def get_current_wallpaper() -> str:
             script = (
                 'tell application "System Events" to get picture of desktop 1'
             )
-            result = subprocess.run(
+            result = run_cmd(
                 ["osascript", "-e", script],
                 capture_output=True, text=True
             )
@@ -275,7 +276,7 @@ def get_current_wallpaper() -> str:
         else:
             desktop_env = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
             if "gnome" in desktop_env or "unity" in desktop_env:
-                result = subprocess.run(
+                result = run_cmd(
                     ["gsettings", "get", "org.gnome.desktop.background", "picture-uri"],
                     capture_output=True, text=True
                 )
