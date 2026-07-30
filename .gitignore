@@ -15,9 +15,26 @@ config/certs/*.key
 config/certs/*.crt
 
 
-# Local databases and runtime state
-memory/long_term.json
+# Local databases and runtime state.
+#
+# Every file in memory/ that is not code is the user's private life: names of
+# family and partners, habits, projects. install.sh git-clones into
+# ~/.aethelark, so every installation is a git checkout and anything not
+# ignored here is one `git add -A` away from being published. Naming
+# long_term.json alone was not enough - memory_manager.py writes a sibling
+# long_term.bak on every save, and that .bak reached the public repo with real
+# personal data in it.
+#
+# So: ignore the whole directory and re-admit the code explicitly. A new
+# runtime file cannot leak by being forgotten; it has to be allow-listed.
+memory/*
+!memory/*.py
 memory/__pycache__/
+
+# Whatever the user drops into the dashboard. dashboard/server.py creates
+# BASE_DIR/uploads at runtime, so these are their files, in a git checkout,
+# for the same reason memory/ was.
+uploads/
 dashboard/__pycache__/
 config/__pycache__/
 actions/__pycache__/
