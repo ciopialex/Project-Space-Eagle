@@ -33,9 +33,13 @@ Launch flow (web): `WebShellUI("face.png")` builds the pill + dashboard windows 
 |---|---|---|
 | `main.py` | ~1849 | `AethelarkLive`: Gemini Live session (`google-genai`), audio in/out, tool dispatch/scheduler (`ToolSpec`), session‑resumption resilience, `TOOL_DECLARATIONS`. `main()` wires UI + backend. |
 | `core/llm_client.py` | ~586 | LLM helper client. |
-| `core/tts.py`, `core/stt.py` | ~502 / — | Speech synthesis / recognition helpers. |
 | `core/prompt.txt` | — | System prompt / behavioral guidance (soft‑law layer — see governance). |
-| `core/installer.py` | ~138 | First‑run install helpers. |
+
+Speech has no module of its own. `core/tts.py` and `core/stt.py` were the
+previous generation and were removed once the Gemini Live session took over
+both directions; `core/installer.py` went with them, superseded by
+`requirements.txt` driven from `install.sh` and `setup.py`. Nothing imported
+any of the three.
 
 ### Tools (`actions/*`) — the operator's hands
 `browser_control` (multi‑browser + automation), `file_controller`, `file_processor`, `open_app`, `computer_control`, `computer_settings`, `desktop`, `screen_processor` (webcam/screen capture), `web_search`, `send_message` (email/IG/Twitter), `youtube_video`, `weather_report`, `flight_finder`, `game_updater`, `reminder`, `proactive`, `code_helper`, `dev_agent`, `developer_mode`, `system_monitor`.

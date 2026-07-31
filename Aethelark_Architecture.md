@@ -142,10 +142,10 @@ Agents run in **isolated git worktrees** (spatial partitioning); the **blackboar
 
 - **Entry / shell:** `aethelark_web.py` (web app: `WebShellUI`, `PillWebWindow`, `DashWindow`, bridges), `main.py` (`AethelarkLive` backend + `main()`), `ui.py` (classic QPainter UI + shared helpers: `make_spring_curve`, `load_app_fonts`, `PillWidget`).
 - **Web UI:** `web/build_app_ui.py` → `web/dashboard.html`; `web/build_pill.py` → `web/pill.html`; `web/artifact_reference.html` (the approved design, source of truth).
-- **Brain / IO:** `core/` (llm_client, tts, stt, installer), `google-genai` Live session in `main.py`.
+- **Brain / IO:** `core/` (llm_client, …), `google-genai` Live session in `main.py`. Speech is not a separate layer: the Live session takes 16 kHz microphone PCM and returns 24 kHz audio with `input_audio_transcription` and `output_audio_transcription` enabled, so the model does both directions itself.
 - **Tools:** `actions/*` (browser_control, file_controller, open_app, computer_control, screen_processor, web_search, send_message, youtube_video, …).
 - **Swarm:** `actions/pty_session.py`, `agent_screen.py`, `swarm_orchestrator.py`, `swarm_sentinel.py`, `swarm_reviewer.py`, `visual_verifier.py`, `repo_map.py`.
-- **Memory:** `memory/memory_manager.py` (long‑term facts → `long_term.json`), `memory/config_manager.py`.
+- **Memory:** `memory/memory_manager.py` (long‑term facts → `long_term.json` in the platform user‑data directory, never inside the checkout), `memory/config_manager.py`.
 - **Remote:** `dashboard/server.py` (local HTTPS + SSE swarm telemetry; phone remote via QR).
 
 Full file map with responsibilities: [`Aethelark_Specifications.md`](Aethelark_Specifications.md).
