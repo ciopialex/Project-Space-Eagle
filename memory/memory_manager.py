@@ -48,31 +48,12 @@ from threading import RLock
 
 # ── where the store lives ───────────────────────────────────────────────────
 
-APP_DIRNAME = "Aethelark"
+# One definition of where user data lives, shared with the journal. Two
+# answers to that question is how a data path drifts back into the source
+# tree, which is the whole subject of Amendment I.
+from core.user_paths import ensure_private_dir, user_data_dir  # noqa: E402
 
-
-def _user_data_dir() -> Path:
-    """The platform's per-user data directory, without a new dependency.
-
-    Deliberately not the install directory, not the working directory, and not
-    anywhere a git command will ever look.
-    """
-    override = os.environ.get("AETHELARK_DATA_DIR")
-    if override:
-        return Path(override).expanduser()
-
-    if sys.platform == "win32":
-        root = os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
-        return Path(root) / APP_DIRNAME
-
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / APP_DIRNAME
-
-    root = os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")
-    return Path(root) / APP_DIRNAME.lower()
-
-
-DATA_DIR = _user_data_dir()
+DATA_DIR = user_data_dir()
 MEMORY_PATH = DATA_DIR / "long_term.json"
 BACKUP_PATH = MEMORY_PATH.with_suffix(".bak")
 
@@ -95,7 +76,6 @@ CATEGORIES = ("identity", "preferences", "projects", "relationships",
 
 # Owner-only. This file names the user's family.
 _FILE_MODE = 0o600
-_DIR_MODE = 0o700
 
 
 def _empty_memory() -> dict:
@@ -141,11 +121,7 @@ def _migrate_legacy_store() -> None:
 
 
 def _ensure_dir() -> None:
-    MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(MEMORY_PATH.parent, _DIR_MODE)
-    except OSError:
-        pass  # Windows and some network mounts do not honour POSIX modes.
+    ensure_private_dir(MEMORY_PATH.parent)
 
 
 # ── reading ─────────────────────────────────────────────────────────────────

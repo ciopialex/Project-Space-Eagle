@@ -31,6 +31,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from core import journal
+
 try:
     import send2trash
     _SEND2TRASH = True
@@ -221,19 +223,50 @@ def list_files(path: str = "desktop", show_hidden: bool = False) -> str:
     return f"Contents of {target.name}/ ({len(entries)} items):\n" + "\n".join(entries)
 
 
+_IRREVERSIBLE = (
+    "'{name}' is too large to stage a copy of, so overwriting it could not be "
+    "undone. Nothing was changed. Say so explicitly if you want it replaced "
+    "anyway."
+)
+
+
+def _stage_or_refuse(target: Path):
+    """Capture what a write is about to destroy.
+
+    Returns (token, refusal). A None token means the prior contents cannot be
+    preserved - which is the definition of an irreversible write, and the only
+    case in this module that needs a human. Everything else just proceeds,
+    because it can be taken back.
+    """
+    token = journal.stage(target)
+    if token is None:
+        return None, _IRREVERSIBLE.format(name=target.name)
+    return token, None
+
+
 @_guard
 def create_file(path: str, name: str = "", content: str = "") -> str:
     target = _resolve(path, name)
     target.parent.mkdir(parents=True, exist_ok=True)
-    existed = target.exists()
+
+    token, refusal = _stage_or_refuse(target)
+    if refusal:
+        return refusal
+
+    existed = bool(token)
     target.write_text(content, encoding="utf-8")
+    journal.record("overwrite" if existed else "create",
+                   path=target, blob=token)
     return f"{'Overwrote' if existed else 'Created'} file: {target.name}"
 
 
 @_guard
 def create_folder(path: str, name: str = "") -> str:
     target = _resolve(path, name)
+    if target.is_dir():
+        return f"Folder already exists: {target.name}"
     target.mkdir(parents=True, exist_ok=True)
+    journal.record("mkdir", path=target)
     return f"Folder created: {target.name}"
 
 
@@ -253,7 +286,19 @@ def delete_file(path: str, name: str = "") -> str:
         return ("send2trash is not installed, so deletion is disabled - "
                 "nothing here removes a file permanently. "
                 "Run: pip install send2trash")
+
+    # Two tiers of recoverable. The system trash always applies, so the user
+    # can retrieve this by hand either way; staging the bytes as well is what
+    # makes `eagle undo` able to do it for them. A directory or an oversized
+    # file cannot be staged - still recoverable from the trash, just not
+    # programmatically, which is worth saying rather than implying.
+    token = journal.stage(target)
     send2trash.send2trash(str(target))
+    if token is None:
+        journal.record("trashed_unstaged", path=target)
+        return (f"Moved to Trash: {target.name} — recover it from the system "
+                f"Trash; it is too large to undo from here.")
+    journal.record("trash", path=target, blob=token)
     return f"Moved to Trash: {target.name}"
 
 
@@ -285,6 +330,7 @@ def move_file(path: str, name: str = "", destination: str = "") -> str:
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(src), str(dst))
+    journal.record("move", src=src, dst=dst)
     return f"Moved: {src.name} → {dst.parent.name}/"
 
 
@@ -305,6 +351,7 @@ def copy_file(path: str, name: str = "", destination: str = "") -> str:
         shutil.copytree(str(src), str(dst))
     else:
         shutil.copy2(str(src), str(dst))
+    journal.record("copy", dst=dst)
     return f"Copied: {src.name} → {dst.parent.name}/"
 
 
@@ -327,6 +374,7 @@ def rename_file(path: str, name: str = "", new_name: str = "") -> str:
         return f"A file named '{leaf}' already exists here."
 
     target.rename(new_path)
+    journal.record("rename", src=target, dst=new_path)
     return f"Renamed: {target.name} → {leaf}"
 
 
@@ -358,9 +406,22 @@ def write_file(path: str, name: str = "", content: str = "",
                append: bool = False) -> str:
     target = _resolve(path, name)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with open(target, "a" if append else "w", encoding="utf-8") as handle:
+
+    if append:
+        # Appending destroys nothing; the inverse is a truncate back to here.
+        prev_size = target.stat().st_size if target.exists() else 0
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write(content)
+        journal.record("append", path=target, prev_size=prev_size)
+        return f"Appended to: {target.name}"
+
+    token, refusal = _stage_or_refuse(target)
+    if refusal:
+        return refusal
+    with open(target, "w", encoding="utf-8") as handle:
         handle.write(content)
-    return f"{'Appended to' if append else 'Written to'}: {target.name}"
+    journal.record("overwrite" if token else "create", path=target, blob=token)
+    return f"Written to: {target.name}"
 
 
 @_guard
