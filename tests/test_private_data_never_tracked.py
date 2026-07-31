@@ -10,6 +10,7 @@ These tests encode Amendment I of the Constitution in core/prompt.txt as
 something a machine checks, because prose in a system prompt did not stop it.
 """
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -96,15 +97,28 @@ def test_no_private_key_material_is_tracked():
             pytest.fail(f"private key material is tracked: {path}")
 
 
-def test_memory_is_written_inside_the_checkout_so_it_must_stay_ignored():
-    """Pins the reason the rules above exist.
+def test_memory_is_never_written_inside_the_source_tree():
+    """The root cause, pinned so it cannot come back.
 
-    If memory ever moves to a proper user-data directory this test should be
-    deleted deliberately - which is the point. Right now BASE_DIR is the
-    repository root, and that is why memory/ must be ignored wholesale.
+    The store used to be BASE_DIR/memory/long_term.json - the user's private
+    life inside a git checkout, because install.sh clones into ~/.aethelark.
+    It now resolves through the platform user-data directory. Anything that
+    reintroduces a repo-relative store path reopens the leak, so this fails
+    loudly rather than trusting a .gitignore rule to catch it later.
     """
-    src = (REPO / "memory" / "memory_manager.py").read_text()
-    assert 'BASE_DIR / "memory"' in src, (
-        "memory_manager no longer writes under BASE_DIR - re-check whether "
-        "the ignore rules here still describe reality"
+    sys.path.insert(0, str(REPO))
+    from memory import memory_manager as mm
+
+    store = mm.MEMORY_PATH.resolve()
+    assert REPO.resolve() not in store.parents, (
+        f"the memory store resolves to {store}, inside the repository at "
+        f"{REPO} - that is exactly how long_term.bak was published"
     )
+
+
+def test_memory_store_is_created_owner_only():
+    """It names the user's family. Nothing else on the box should read it."""
+    sys.path.insert(0, str(REPO))
+    from memory import memory_manager as mm
+
+    assert mm._FILE_MODE == 0o600
