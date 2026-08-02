@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from core.tool_result import ToolResult
+from core import user_paths
 
 try:
     import pyautogui
@@ -35,7 +36,7 @@ def _platform_os() -> str:
 def _get_os() -> str:
     try:
         cfg = json.loads(
-            (_base_dir() / "config" / "api_keys.json").read_text(encoding="utf-8")
+            user_paths.api_keys_path().read_text(encoding="utf-8")
         )
         return cfg.get("os_system", _platform_os()).lower()
     except Exception:

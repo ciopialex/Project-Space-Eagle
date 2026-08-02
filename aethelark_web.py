@@ -25,11 +25,12 @@ from PyQt6.QtWebChannel import QWebChannel
 
 from ui import load_app_fonts, _metrics, make_spring_curve
 from memory.memory_manager import load_memory
+from core import user_paths
 
 BASE = pathlib.Path(__file__).resolve().parent
 DASHBOARD_HTML = BASE / "web" / "dashboard.html"
 PILL_HTML = BASE / "web" / "pill.html"
-API_KEYS = BASE / "config" / "api_keys.json"
+API_KEYS = user_paths.api_keys_path()
 PILL_W, PILL_H = 400, 170   # generous so the pill's drop-shadow isn't clipped
 
 
@@ -298,6 +299,12 @@ class WebShellUI(QObject):
     # playback loop reads this to skip that work — keeps voice snappy.
     consumes_audio_level = False
 
+    # Declared at class level so core.ui_contract can verify conformance
+    # statically. The backend assigns these at startup (main.py:850-852).
+    on_text_command = None
+    on_remote_clicked = None
+    on_interrupt = None
+
     _state_sig    = pyqtSignal(str)
     _log_sig      = pyqtSignal(str)
     _audio_sig    = pyqtSignal(float)
@@ -318,6 +325,7 @@ class WebShellUI(QObject):
         self._log_lines = []
         self._assistant_name = "Aethelark"
         self._ui_ready = False
+        self._routing = None      # cached capability routing; drives lane labels
 
         self.on_text_command = None
         self.on_remote_clicked = None
@@ -592,10 +600,21 @@ class WebShellUI(QObject):
         "failed": ("block", "FAILED"), "merged": ("review", "MERGED"),
         "stopped": ("review", "STOPPED"),
     }
-    _AGENT_LABELS = {
-        "claude_code": "Claude Code", "antigravity_cli": "Antigravity CLI",
-        "antigravity_ide": "Antigravity IDE", "opencode": "OpenCode", "kimi": "Kimi",
-    }
+    def _agent_label(self, assignee):
+        """Name a swarm lane honestly, given how the agent is actually running.
+
+        A CLI subprocess is "Claude Code"; the same agent driven through an SDK
+        is "Claude Agent"; a local model is "Gemma Agent". Calling an SDK worker
+        "Claude Code CLI" would claim a subprocess that does not exist.
+        """
+        from core.capability.identity import label_from_routing
+        try:
+            if self._routing is None:
+                from core.capability.profile import load
+                self._routing = load().route()
+        except Exception:
+            self._routing = None
+        return label_from_routing(assignee, self._routing)
 
     def _swarm_view(self):
         """Transform the live swarm blackboard into the #swarm UI's shape.
@@ -649,7 +668,7 @@ class WebShellUI(QObject):
             if st == "merged":
                 merged += 1
             assignee = info.get("assignee") or key
-            name = self._AGENT_LABELS.get(assignee, str(assignee).replace("_", " ").title())
+            name = self._agent_label(assignee)
             age = age_for(info.get("worktree", ""))
             max_age = max(max_age, age)
             agent_list.append({
@@ -826,6 +845,15 @@ class WebShellUI(QObject):
     def set_audio_level(self, level): pass  # web pill waveform is CSS-animated
     def show_content(self, title, text): self._content_sig.emit(str(title)[:48], str(text)[:4000])
     def prompt_reconfig(self): self._win._ready = False; self._reconfig_sig.emit()
+
+    def reconfig_complete(self) -> bool:
+        """Has the user finished re-entering their credentials?"""
+        return bool(self._win._ready)
+
+    def request_shutdown(self) -> None:
+        """Ask the UI to close."""
+        self.root.quit()
+
     def notify_phone_connected(self): pass
     def show_camera_frame(self, img_bytes): pass
     def start_camera_stream(self): pass
@@ -929,12 +957,35 @@ class OnboardingWindow(QMainWindow):
 
     def on_ready(self):
         # Detect the machine off-thread (nvidia-smi / lspci can block briefly).
+        # This is tier 1 of the capability audit: the one expensive full scan,
+        # persisted so every later launch can load it in ~1ms instead of
+        # rediscovering the machine — and so the eagle still knows what it is
+        # running on when you ask it for something hard.
         def _probe():
             try:
-                from actions.machine_profile import detect_machine
-                self.push("setMachine", detect_machine())
+                from core.capability.profile import save, scan
+                profile = scan(full=True)
+                save(profile)
+                routing = profile.route()
+                self.push("setMachine", profile.hardware)
+                self.push("setCapabilities", {
+                    "case": routing.case,
+                    "label": routing.label,
+                    "metric": routing.metric,
+                    "reason": routing.reason,
+                    "brain": routing.brain,
+                    "labour": routing.labour,
+                    "cli_agents": [a["key"] for a in profile.cli_agents],
+                    "gui_apps": profile.gui_apps,
+                    "providers": sorted(profile.providers),
+                })
             except Exception as e:
-                print(f"[onboarding] machine probe failed: {e}")
+                print(f"[onboarding] capability scan failed: {e}")
+                try:
+                    from actions.machine_profile import detect_machine
+                    self.push("setMachine", detect_machine())
+                except Exception as inner:
+                    print(f"[onboarding] machine probe failed: {inner}")
         threading.Thread(target=_probe, daemon=True).start()
 
     def start_google_login(self):

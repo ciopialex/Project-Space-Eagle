@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import json
 import pathlib
+from core import user_paths
 
 BASE = pathlib.Path(__file__).resolve().parent.parent
-CONFIG = BASE / "config" / "api_keys.json"
+CONFIG = user_paths.api_keys_path()
 
 # Fields the UI may write through save(). Anything else in a patch is ignored so
 # a compromised/confused front-end can't set arbitrary config (e.g. api paths).

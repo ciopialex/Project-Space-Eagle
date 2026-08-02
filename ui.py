@@ -33,6 +33,8 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
 )
 
+from core import user_paths
+
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
@@ -40,7 +42,7 @@ def _base_dir() -> Path:
 
 BASE_DIR   = _base_dir()
 CONFIG_DIR = BASE_DIR / "config"
-API_FILE   = CONFIG_DIR / "api_keys.json"
+API_FILE   = user_paths.api_keys_path()
 
 
 def load_app_fonts() -> list:
@@ -3020,7 +3022,7 @@ class MainWindow(QMainWindow):
             cam_idx = 0
             try:
                 import json as _j
-                cfg = _j.loads((CONFIG_DIR / "api_keys.json").read_text())
+                cfg = _j.loads(user_paths.api_keys_path().read_text())
                 cam_idx = int(cfg.get("camera_index", 0))
             except Exception as _e:
                 print(f"[ui.py] Non-fatal error at line 3016: {_e}")
@@ -5007,6 +5009,12 @@ class _RootShim:
 
 
 class AethelarkUI:
+    # Declared at class level so core.ui_contract can verify conformance
+    # statically. The backend assigns these at startup (main.py:850-852).
+    on_text_command = None
+    on_remote_clicked = None
+    on_interrupt = None
+
     def __init__(self, face_path: str, size=None):
         self._app = QApplication.instance() or QApplication(sys.argv)
         load_app_fonts()
@@ -5077,6 +5085,18 @@ class AethelarkUI:
         """Thread-safe: show the API key setup overlay (e.g. after an auth error)."""
         self._win._ready = False
         self._win._reconfig_sig.emit()
+
+    def reconfig_complete(self) -> bool:
+        """Has the user finished re-entering their credentials?
+
+        The backend used to poll `ui._win._ready` directly, which forced every
+        UI to own a private Qt-shaped object just to be asked this question.
+        """
+        return bool(self._win._ready)
+
+    def request_shutdown(self) -> None:
+        """Ask the UI to close. Replaces the backend calling `ui.root.quit()`."""
+        self.root.quit()
 
     def show_camera_frame(self, img_bytes: bytes):
         """Thread-safe: show a webcam frame in the small overlay (screen captures)."""

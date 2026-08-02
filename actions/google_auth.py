@@ -30,10 +30,11 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from core import user_paths
 
 BASE = pathlib.Path(__file__).resolve().parent.parent
-CONFIG = BASE / "config" / "api_keys.json"
-TOKEN_STORE = BASE / "config" / "google_token.json"
+CONFIG = user_paths.api_keys_path()
+TOKEN_STORE = user_paths.google_token_path()
 
 AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URI = "https://oauth2.googleapis.com/token"

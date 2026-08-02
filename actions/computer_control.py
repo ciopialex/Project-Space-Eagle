@@ -15,6 +15,9 @@ import time
 import random
 from pathlib import Path
 
+from actions.grounding import find_element
+from core import user_paths
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
@@ -36,8 +39,8 @@ def _base_dir() -> Path:
 
 
 _BASE         = _base_dir()
-_CONFIG_PATH  = _BASE / "config" / "api_keys.json"
-_MEMORY_PATH  = _BASE / "memory" / "long_term.json"
+_CONFIG_PATH  = user_paths.api_keys_path()
+from memory.memory_manager import MEMORY_PATH as _MEMORY_PATH
 
 def _load_config() -> dict:
     try:
@@ -331,49 +334,86 @@ def _focus_window(title: str) -> str:
     return f"focus_window: unknown OS '{os_name}'"
 
 def _screen_find(description: str) -> tuple[int, int] | None:
-    api_key = _get_api_key()
-    if not api_key:
-        print("[ComputerControl] ⚠️ No API key for screen_find")
-        return None
+    """Locate a UI element on screen.
 
+    Delegates to the tiered resolver: remembered position, then the app's own
+    accessibility tree (local, exact, ~19ms), then a vision model as the last
+    resort. Signature is unchanged — callers do not need to know that grounding
+    got faster.
+    """
     try:
-        from google import genai
-        from google.genai import types as gtypes
-
-        img   = _grab_screen()
-        w, h  = img.size
-        buf   = io.BytesIO()
-        img.save(buf, format="PNG")
-        image_bytes = buf.getvalue()
-
-        client = genai.Client(api_key=api_key)
-        prompt = (
-            f"This is a screenshot of a {w}×{h} pixel screen. "
-            f"Locate the UI element described as: '{description}'. "
-            f"Reply with ONLY the center coordinates as: x,y "
-            f"If the element is not visible, reply: NOT_FOUND"
-        )
-
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[
-                gtypes.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-                prompt,
-            ],
-        )
-
-        text = (response.text or "").strip()
-        if "NOT_FOUND" in text.upper():
-            return None
-
-        match = re.search(r"(\d+)\s*,\s*(\d+)", text)
-        if match:
-            return int(match.group(1)), int(match.group(2))
-
+        element = find_element(description)
     except Exception as e:
         print(f"[ComputerControl] ⚠️ screen_find failed: {e}")
+        return None
+    if element is None:
+        return None
+    return element.center
 
-    return None
+def _grounding_deps():
+    """Imported lazily so a grounding failure can never break tool dispatch."""
+    from actions.grounding import default_resolver
+    from actions.grounding.resolver import platform_hit_test
+    from actions.grounding.verify import act_and_verify
+    from actions.grounding.waiting import wait_for
+    return default_resolver(), platform_hit_test(), act_and_verify, wait_for
+
+
+def _screen_click(description: str, intent: str = "click",
+                  timeout: float = 5.0, force: bool = False) -> str:
+    """Click something on screen — waiting for it, then checking it worked.
+
+    Replaces a hardcoded 200ms sleep followed by an unconditional "Clicked"
+    claim. A person waits for the button to settle, notices if it's greyed
+    out or covered, clicks, and then glances at the screen. The result string
+    says what actually happened, because reporting success without looking is
+    the most common way an agent misleads its operator.
+    """
+    if not description:
+        return "screen_click needs a 'description' of what to click."
+    try:
+        resolver, hit_test, act_and_verify, _ = _grounding_deps()
+    except Exception as e:
+        return f"Grounding unavailable: {e}"
+
+    outcome = act_and_verify(
+        description,
+        lambda el: _click(x=el.x, y=el.y),
+        resolver=resolver, action=intent,
+        timeout=timeout, force=force, hit_test=hit_test,
+    )
+
+    if not outcome["acted"]:
+        return (f"Did not click '{description}'. {outcome['detail']} "
+                f"Nothing was clicked, so the screen is unchanged. Try "
+                f"scroll_into_view first, or wait_for_element if it is still "
+                f"loading.")
+
+    where = outcome["before"]["bounds"] if outcome["before"] else "?"
+    if outcome["changed"]:
+        return f"Clicked '{description}' at {where}; the interface changed."
+    return (f"Clicked '{description}' at {where}, but nothing observably "
+            f"changed — the click may not have taken effect.")
+
+
+def _wait_for_element(description: str, intent: str = "click",
+                      timeout: float = 10.0) -> str:
+    """Wait for something to appear and become usable, as a person would."""
+    if not description:
+        return "wait_for_element needs a 'description' of what to wait for."
+    try:
+        resolver, hit_test, _, wait_for = _grounding_deps()
+    except Exception as e:
+        return f"Grounding unavailable: {e}"
+
+    result = wait_for(description, intent, resolver=resolver,
+                      timeout=timeout, hit_test=hit_test)
+    if result.ok:
+        return (f"'{description}' is ready at {result.element.center} "
+                f"(after {result.elapsed_ms:.0f}ms).")
+    return (f"'{description}' did not become ready for {intent} within "
+            f"{timeout:.0f}s — blocked on: {result.failed_check}.")
+
 
 def computer_control(
     parameters: dict,
@@ -491,13 +531,31 @@ def computer_control(
             return f"{coords[0]},{coords[1]}" if coords else "NOT_FOUND"
 
         if action == "screen_click":
-            desc   = params.get("description", "")
-            coords = _screen_find(desc)
-            if coords:
-                time.sleep(0.2)
-                _click(x=coords[0], y=coords[1])
-                return f"Clicked '{desc}' at {coords}"
-            return f"Element not found on screen: '{desc}'"
+            return _screen_click(
+                params.get("description", ""),
+                intent=params.get("intent", "click"),
+                timeout=float(params.get("timeout", 5.0)),
+                force=bool(params.get("force", False)),
+            )
+
+        if action == "wait_for_element":
+            return _wait_for_element(
+                params.get("description", ""),
+                intent=params.get("intent", "click"),
+                timeout=float(params.get("timeout", 10.0)),
+            )
+
+        if action == "scroll_into_view":
+            desc = params.get("description", "")
+            import sys as _sys
+            if _sys.platform.startswith("win"):
+                from actions.grounding.windows import scroll_to_element
+            else:
+                from actions.grounding.atspi import scroll_to_element
+            if scroll_to_element(desc):
+                return f"Scrolled '{desc}' into view."
+            return (f"Could not scroll '{desc}' into view — it may not exist, "
+                    f"or its application does not support scrolling requests.")
 
         if action == "wait":
             secs = float(params.get("seconds", 1.0))

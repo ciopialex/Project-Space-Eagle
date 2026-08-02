@@ -58,6 +58,7 @@ from actions.dev_agent         import dev_agent
 from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
+from core import user_paths
 from actions.system_monitor    import SystemMonitor, get_system_status
 from actions.autostart         import autostart
 from actions.messages_brief    import messages_brief, gmail_mark_read
@@ -73,7 +74,7 @@ def get_base_dir():
 
 
 BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+API_CONFIG_PATH = user_paths.api_keys_path()
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 
@@ -1286,7 +1287,7 @@ class AethelarkLive:
                             print(f"[main.py] Non-fatal error at line 1065: {_e}")
                     # Signal the UI to close (runs on Qt thread)
                     try:
-                        self.ui.root.quit()
+                        self.ui.request_shutdown()
                     except Exception as _e:
                         print(f"[main.py] Non-fatal error at line 1070: {_e}")
                     # Final fallback — if Qt doesn't exit cleanly within 3s
@@ -2296,7 +2297,7 @@ class AethelarkLive:
                     self.ui.write_log("ERR: API key invalid — please re-enter your key.")
                     self.ui.set_state("SLEEPING")
                     self.ui.prompt_reconfig()
-                    while not self.ui._win._ready:
+                    while not self.ui.reconfig_complete():
                         await asyncio.sleep(1)
                     print("[Aethelark] New API key saved — reconnecting...")
                     self._backoff.set(ConnectionBackoff.BASE)

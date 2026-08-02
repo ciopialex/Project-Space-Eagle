@@ -20,10 +20,12 @@ from playwright.async_api import (
     Playwright,
     TimeoutError as PlaywrightTimeout,
 )
+
+from core import user_paths
 _OS = platform.system()   # "Windows" | "Darwin" | "Linux"
 
 # Path to shared api_keys.json config
-_CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "api_keys.json"
+_CONFIG_FILE = user_paths.api_keys_path()
 
 
 def _read_config() -> dict:

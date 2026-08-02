@@ -1,6 +1,7 @@
 import json
 import sys
 from pathlib import Path
+from core import user_paths
 
 def get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -9,7 +10,7 @@ def get_base_dir() -> Path:
 
 BASE_DIR    = get_base_dir()
 CONFIG_DIR  = BASE_DIR / "config"
-CONFIG_FILE = CONFIG_DIR / "api_keys.json"
+CONFIG_FILE = user_paths.api_keys_path()
 
 def ensure_config_dir() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)

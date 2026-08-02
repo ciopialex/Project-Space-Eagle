@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable, Generator
 
 import requests
+from core import user_paths
 
 # Matches a sentence boundary: [.!?] followed by whitespace, or a blank line.
 # Avoids splitting on decimals (3.5) because those have no space after the dot.
@@ -37,7 +38,7 @@ def get_base_dir() -> Path:
 
 
 BASE_DIR    = get_base_dir()
-CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+CONFIG_PATH = user_paths.api_keys_path()
 
 _DEFAULTS = {
     "llm_url":      "http://localhost:11434",

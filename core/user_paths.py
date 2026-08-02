@@ -10,6 +10,7 @@ Nothing here ever returns a path inside the repository.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -50,3 +51,62 @@ def ensure_private_dir(path: Path) -> Path:
     except OSError:
         pass   # Windows and some network mounts do not honour POSIX modes.
     return path
+
+
+# ── credentials ─────────────────────────────────────────────────────────────
+#
+# Amendment I again: api_keys.json was still being resolved relative to the
+# source tree by 22 modules, each computing it slightly differently. The memory
+# store was moved out for the same reason on 2026-07-30; secrets had not been.
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_LEGACY_CREDENTIALS = ("api_keys.json", "google_token.json")
+_credentials_migrated = False
+
+
+def config_dir() -> Path:
+    """Owner-only directory holding this user's credentials."""
+    return ensure_private_dir(user_data_dir() / "config")
+
+
+def api_keys_path() -> Path:
+    """The one answer to "where are the API keys?"."""
+    _migrate_legacy_credentials()
+    return config_dir() / "api_keys.json"
+
+
+def google_token_path() -> Path:
+    _migrate_legacy_credentials()
+    return config_dir() / "google_token.json"
+
+
+def _migrate_legacy_credentials() -> None:
+    """Move credentials out of the source tree, once.
+
+    Mirrors the memory store's migration: copy, tighten the mode, verify the
+    copy is readable, then remove the original - leaving it behind is what let
+    private data reach a commit before. Best-effort throughout; a failure here
+    must never stop the app from starting.
+    """
+    global _credentials_migrated
+    if _credentials_migrated:
+        return
+    _credentials_migrated = True
+
+    for name in _LEGACY_CREDENTIALS:
+        try:
+            legacy = _REPO_ROOT / "config" / name
+            target = config_dir() / name
+            if target.exists() or not legacy.is_file():
+                continue
+            shutil.copy2(legacy, target)
+            try:
+                os.chmod(target, FILE_MODE)
+            except OSError:
+                pass
+            # Only drop the original once the copy is provably readable.
+            if target.read_bytes() == legacy.read_bytes():
+                legacy.unlink(missing_ok=True)
+                print(f"[Paths] Moved {name} out of the source tree -> {target}")
+        except Exception:
+            continue

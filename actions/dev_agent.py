@@ -5,6 +5,7 @@ import json
 import re
 import time
 from pathlib import Path
+from core import user_paths
 
 
 def get_base_dir():
@@ -14,7 +15,7 @@ def get_base_dir():
 
 
 BASE_DIR         = get_base_dir()
-API_CONFIG_PATH  = BASE_DIR / "config" / "api_keys.json"
+API_CONFIG_PATH  = user_paths.api_keys_path()
 # Prefer the new AethelarkProjects folder; keep using an existing legacy
 # JarvisProjects dir if one is already there so prior projects aren't orphaned.
 _LEGACY_PROJECTS = Path.home() / "Desktop" / "JarvisProjects"

@@ -35,6 +35,7 @@ except ImportError:
 
 from google import genai
 from google.genai import types as gtypes
+from core import user_paths
 
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -43,7 +44,7 @@ def _base_dir() -> Path:
 
 
 _BASE        = _base_dir()
-_CONFIG_PATH = _BASE / "config" / "api_keys.json"
+_CONFIG_PATH = user_paths.api_keys_path()
 
 
 def _load_config() -> dict:
