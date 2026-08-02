@@ -97,7 +97,15 @@ def _migrate_legacy_credentials() -> None:
         try:
             legacy = _REPO_ROOT / "config" / name
             target = config_dir() / name
-            if target.exists() or not legacy.is_file():
+            if not legacy.is_file():
+                continue
+            if target.exists():
+                # An earlier migration copied but did not clean up. Leaving the
+                # original behind is the condition that let private data reach a
+                # commit before, so finish the job when the copies agree.
+                if target.read_bytes() == legacy.read_bytes():
+                    legacy.unlink(missing_ok=True)
+                    print(f"[Paths] Removed stale in-repo {name}")
                 continue
             shutil.copy2(legacy, target)
             try:
