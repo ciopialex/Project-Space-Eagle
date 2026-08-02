@@ -87,10 +87,20 @@ uv python install $PyVer 2>&1 | Out-Null
 Show-Crest 34 "Downloading Aethelark..."
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Die "git is required. Install it from https://git-scm.com and re-run." }
 if (Test-Path (Join-Path $HomeDir ".git")) {
+  # Only ever update a checkout that is actually ours - reset --hard inside
+  # someone else's repository would destroy their uncommitted work.
+  $ExistingRemote = (git -C $HomeDir remote get-url origin 2>$null)
+  if ($ExistingRemote -notmatch "Space-Eagle") {
+    Die "$HomeDir is a git repository, but not Aethelark's ($ExistingRemote). Refusing to touch it. Install elsewhere by setting AETHELARK_HOME first."
+  }
   git -C $HomeDir fetch --quiet --depth 1 origin main 2>&1 | Out-Null
   git -C $HomeDir reset --hard --quiet origin/main 2>&1 | Out-Null
+} elseif ((Test-Path $HomeDir) -and (Get-ChildItem -Force $HomeDir | Select-Object -First 1)) {
+  # This used to be Remove-Item -Recurse -Force. AETHELARK_HOME is user-settable
+  # and the default name is one other tools use too, so that could silently
+  # delete unrelated data. Never destroy a directory we did not create.
+  Die "$HomeDir already exists and is not empty, and is not an Aethelark checkout. Refusing to delete it. Move it aside, or set AETHELARK_HOME to another path."
 } else {
-  if (Test-Path $HomeDir) { Remove-Item -Recurse -Force $HomeDir }
   git clone --quiet --depth 1 $Repo $HomeDir 2>&1 | Out-Null
   if (-not (Test-Path $HomeDir)) { Die "could not download Aethelark" }
 }

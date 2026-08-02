@@ -10,6 +10,7 @@ set -euo pipefail
 
 REPO="${AETHELARK_REPO:-https://github.com/ciopialex/Project-Space-Eagle.git}"
 HOME_DIR="${AETHELARK_HOME:-$HOME/.aethelark}"
+INSTALL_URL="https://raw.githubusercontent.com/ciopialex/Project-Space-Eagle/main/install.sh"
 BIN_DIR="$HOME/.local/bin"
 PY_VERSION="3.12"
 
@@ -129,10 +130,28 @@ uv python install "$PY_VERSION" >/dev/null 2>&1 || die "could not install Python
 
 step 34 "Downloading Aethelark…"
 if [ -d "$HOME_DIR/.git" ]; then
-  git -C "$HOME_DIR" fetch --quiet --depth 1 origin main 2>/dev/null || true
-  git -C "$HOME_DIR" reset --hard --quiet origin/main 2>/dev/null || true
+  # Only ever update a checkout that is actually ours. Resetting --hard inside
+  # someone else's repository would destroy their uncommitted work.
+  existing_remote="$(git -C "$HOME_DIR" remote get-url origin 2>/dev/null || echo '')"
+  case "$existing_remote" in
+    *Project-Space-Eagle*|*Space-Eagle*)
+      git -C "$HOME_DIR" fetch --quiet --depth 1 origin main 2>/dev/null || true
+      git -C "$HOME_DIR" reset --hard --quiet origin/main 2>/dev/null || true
+      ;;
+    *)
+      die "$HOME_DIR is a git repository, but not Aethelark's ($existing_remote).
+   Refusing to touch it. Install elsewhere with:
+       AETHELARK_HOME=~/aethelark curl -fsSL $INSTALL_URL | bash"
+      ;;
+  esac
+elif [ -e "$HOME_DIR" ] && [ -n "$(ls -A "$HOME_DIR" 2>/dev/null)" ]; then
+  # This used to be `rm -rf "$HOME_DIR"`. AETHELARK_HOME is user-settable, and
+  # the default ~/.aethelark is a name other tools use too, so that could
+  # silently delete unrelated data. Never destroy a directory we did not create.
+  die "$HOME_DIR already exists and is not empty, and is not an Aethelark
+   checkout. Refusing to delete it. Move it aside, or install elsewhere:
+       AETHELARK_HOME=~/aethelark curl -fsSL $INSTALL_URL | bash"
 else
-  rm -rf "$HOME_DIR"
   git clone --quiet --depth 1 "$REPO" "$HOME_DIR" || die "could not download Aethelark"
 fi
 
