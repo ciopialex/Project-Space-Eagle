@@ -19,6 +19,7 @@ from __future__ import annotations
 LINUX = "linux"
 WINDOWS = "windows"
 MACOS = "macos"
+WEB = "web"
 
 #: Windows UI Automation control types -> AT-SPI canonical names.
 _WINDOWS: dict[str, str] = {
@@ -87,7 +88,67 @@ _MACOS: dict[str, str] = {
     "sheet":             "dialog",
 }
 
-_TABLES = {WINDOWS: _WINDOWS, MACOS: _MACOS}
+#: ARIA roles -> AT-SPI canonical names. The DOM collector emits explicit
+#: `role=` attributes where a page sets one and an implicit role otherwise, so
+#: this table is keyed on ARIA's vocabulary plus the two implicit roles HTML
+#: has and ARIA does not name: "password" and "generic".
+_WEB: dict[str, str] = {
+    "button":        "push button",
+    "link":          "link",
+    "textbox":       "text",
+    "searchbox":     "text",
+    "password":      "password text",
+    "combobox":      "combo box",
+    "listbox":       "list",
+    "checkbox":      "check box",
+    "radio":         "radio button",
+    "switch":        "toggle button",
+    "menuitem":      "menu item",
+    "menuitemcheckbox": "check box",
+    "menuitemradio": "radio button",
+    "menu":          "menu",
+    "menubar":       "menu bar",
+    "tab":           "page tab",
+    "tablist":       "page tab list",
+    "tabpanel":      "panel",
+    "option":        "list item",
+    "listitem":      "list item",
+    "list":          "list",
+    "img":           "image",
+    "image":         "image",
+    "figure":        "image",
+    "heading":       "heading",
+    "slider":        "slider",
+    "spinbutton":    "spin button",
+    "progressbar":   "progress bar",
+    "dialog":        "dialog",
+    "alertdialog":   "dialog",
+    "alert":         "notification",
+    "status":        "status bar",
+    "toolbar":       "tool bar",
+    "table":         "table",
+    "grid":          "table",
+    "row":           "table row",
+    "cell":          "table cell",
+    "gridcell":      "table cell",
+    "columnheader":  "column header",
+    "rowheader":     "row header",
+    "tree":          "tree",
+    "treeitem":      "tree item",
+    "separator":     "separator",
+    "group":         "panel",
+    "region":        "panel",
+    "form":          "panel",
+    "navigation":    "panel",
+    "main":          "panel",
+    "article":       "panel",
+    "banner":        "panel",
+    "contentinfo":   "panel",
+    "complementary": "panel",
+    "search":        "panel",
+}
+
+_TABLES = {WINDOWS: _WINDOWS, MACOS: _MACOS, WEB: _WEB}
 
 
 def normalize(role: str, platform: str = LINUX) -> str:
