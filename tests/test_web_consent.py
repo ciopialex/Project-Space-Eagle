@@ -538,3 +538,177 @@ def test_braille_blank_still_refuses_now_via_the_specific_reason():
 # Critical-1/2/3 test already re-exercise it against this round's code on
 # every run — a second copy would be a no-op tautology of exactly the kind
 # flagged and removed last round. See the report for the full-suite output.
+
+
+# ---------------------------------------------------------------------------
+# Task 6c: Romanian and Spanish vocabulary.
+#
+# Task 6b's diacritic folding (NFD + strip category Mn) made Latin-script
+# labels the guard has no vocabulary for *readable* without making them
+# *understood*: "Plătește" folds cleanly to "plateste", passes the
+# readability check, matches nothing in an English-only _COMMITTING, and
+# falls through to ALLOW — a measured fail-open landing on the primary
+# user's own language (Romanian) and, second, Spanish. This section adds
+# Romanian and Spanish entries to the same four mechanisms the file already
+# has (_COMMITTING bare verbs, _COMMITTING_PAIRS co-occurrence, the
+# _READ_ONLY_LABELS whole-label whitelist, and — unchanged — benign
+# prefixes) rather than inventing a fifth. Every entry is stored
+# ASCII-folded, matching what `_words()` actually produces after Task 6b's
+# pipeline runs — verified directly against `_words()`, not assumed (see
+# the task report for the probe).
+# ---------------------------------------------------------------------------
+
+RO_MUST_REFUSE = [
+    "Plătește", "Plătiți",
+    "Cumpără", "Cumpără acum", "Cumpărați",
+    "Șterge contul",
+    "Confirmă plata",
+    "Trimite banii",
+    "Plasează comanda",
+    "Semnează contractul",
+    "Abonează-te",
+    "Dezabonează-te", "Anulează abonamentul",
+    "Retrage",
+    "Transferă",
+    "Donează",
+    "Licitează",
+    "Publică",
+    "Închide contul",
+    "Dezactivează contul",
+    "Aplică",
+]
+
+RO_MUST_ALLOW = [
+    "Caută", "Acasă", "Înapoi", "Următorul", "Setări", "Coș",
+    "Adaugă în coș",
+    "Contul meu",
+    "Autentificare", "Conectare", "Deconectare",
+    "Vezi mai multe", "Filtrează", "Sortează",
+    "Istoricul plăților",
+]
+
+ES_MUST_REFUSE = [
+    "Pagar", "Pague",
+    "Comprar ahora", "Compre",
+    "Eliminar cuenta",
+    "Realizar pedido", "Tramitar pedido", "Confirmar pedido",
+    "Confirmar pago",
+    "Finalizar compra",
+    "Enviar dinero",
+    "Borrar",
+    "Cancelar suscripción", "Suscribirse",
+    "Darse de baja",
+    "Retirar",
+    "Transferir",
+    "Donar",
+    "Pujar",
+    "Firmar contrato",
+    "Publicar",
+    "Solicitar",
+    "Cerrar cuenta",
+    "Desactivar cuenta",
+]
+
+ES_MUST_ALLOW = [
+    "Buscar", "Inicio", "Atrás", "Volver", "Siguiente",
+    "Ajustes", "Configuración",
+    "Añadir al carrito",
+    "Historial de pedidos", "Detalles del pedido",
+    "Mi cuenta",
+    "Iniciar sesión", "Cerrar sesión",
+    "Ver más", "Filtrar", "Ordenar por fecha",
+]
+
+
+@pytest.mark.parametrize("name", RO_MUST_REFUSE)
+def test_romanian_committing_labels_refuse(name):
+    assert irreversible_reason(name, "button") != "", name
+
+
+@pytest.mark.parametrize("name", RO_MUST_ALLOW)
+def test_romanian_benign_labels_allow(name):
+    assert irreversible_reason(name, "button") == "", name
+
+
+@pytest.mark.parametrize("name", ES_MUST_REFUSE)
+def test_spanish_committing_labels_refuse(name):
+    assert irreversible_reason(name, "button") != "", name
+
+
+@pytest.mark.parametrize("name", ES_MUST_ALLOW)
+def test_spanish_benign_labels_allow(name):
+    assert irreversible_reason(name, "button") == "", name
+
+
+# --- The three named traps -------------------------------------------------
+
+def test_romanian_add_to_cart_allows_while_place_order_refuses():
+    # "Adaugă în coș" (add to cart) shares no vocabulary with the
+    # committing "comanda" (order); "Finalizează comanda" (place order)
+    # does.
+    assert irreversible_reason("Adaugă în coș", "button") == ""
+    assert irreversible_reason("Finalizează comanda", "button") != ""
+
+
+def test_romanian_order_history_allows_while_order_now_refuses():
+    # "Istoric comenzi" uses the plural "comenzi", a different token from
+    # the singular committing "comanda" — it already allows without a
+    # whitelist entry. "Comandă acum" uses the singular imperative and
+    # refuses via the bare verb.
+    assert irreversible_reason("Istoric comenzi", "button") == ""
+    assert irreversible_reason("Comandă acum", "button") != ""
+
+
+def test_spanish_sign_out_allows_while_close_account_refuses():
+    # "Cerrar" is only committing when paired with "cuenta"/"cuentas"
+    # (_COMMITTING_PAIRS) — never bare — so "Cerrar sesión" (sign out)
+    # allows exactly the way English "Close" (dismiss) does, while
+    # "Cerrar cuenta" (close account) refuses via the pair.
+    assert irreversible_reason("Cerrar sesión", "button") == ""
+    assert irreversible_reason("Cerrar cuenta", "button") != ""
+
+
+def test_spanish_sort_by_date_allows_while_place_order_refuses():
+    # "Ordenar" (to sort) is never added to the vocabulary — it must not
+    # be conflated with the English "order" or the Spanish noun "pedido".
+    # "Realizar pedido" (place order) refuses via "pedido".
+    assert irreversible_reason("Ordenar por fecha", "button") == ""
+    assert irreversible_reason("Realizar pedido", "button") != ""
+
+
+# --- Diacritic-form / stripped-form equivalence -----------------------------
+# A user's page may render either form (server-rendered accented copy, or a
+# JS framework/CMS that strips diacritics for URLs/IDs and sometimes for
+# display too). Both must refuse identically.
+
+def test_diacritic_and_stripped_romanian_forms_both_refuse():
+    assert irreversible_reason("Plătește", "button") != ""
+    assert irreversible_reason("Plateste", "button") != ""
+    assert irreversible_reason("Cumpără", "button") != ""
+    assert irreversible_reason("Cumpara", "button") != ""
+
+
+# --- Cross-language and cross-vocabulary collision checks -------------------
+
+def test_new_romanian_and_spanish_words_do_not_collide_with_english_vocabulary():
+    # None of the Romanian/Spanish tokens added this task are also English
+    # committing words — spelled out explicitly (per the task brief's own
+    # named shapes: "Comanda", "Plata"/"Pago", "Firma", "Postează"/"post",
+    # "Aplica"/"apply") rather than only inferred from the pass/fail tables
+    # above.
+    assert irreversible_reason("Comanda", "button") != ""  # RO: refuses (it's the order verb)
+    assert irreversible_reason("Firm offer", "button") == ""       # EN "firm" unaffected by ES "firmar"
+    assert irreversible_reason("Confirmation email", "button") == ""  # EN unaffected by RO/ES "confirma(r)"
+    assert irreversible_reason("Solicitation policy", "button") == ""  # EN "solicit-" unaffected by ES "solicitar"
+    assert irreversible_reason("Cont.", "button") == ""            # RO pair-object "cont" alone never refuses
+
+
+def test_pinned_english_tables_still_hold_after_new_vocabulary():
+    # Direct re-assertion that the pinned English tables were not moved by
+    # adding Romanian/Spanish vocabulary — belt-and-braces alongside
+    # test_pinned_must_refuse/test_pinned_must_allow, which already run
+    # this data on every collection of this module.
+    for name in MUST_REFUSE:
+        assert irreversible_reason(name, "button") != "", name
+    for name in MUST_ALLOW:
+        assert irreversible_reason(name, "button") == "", name

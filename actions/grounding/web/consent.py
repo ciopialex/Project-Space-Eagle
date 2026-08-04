@@ -9,17 +9,32 @@ The list is a heuristic and will be wrong in both directions. It errs toward
 refusing, because the cost of one unnecessary question is a sentence and the
 cost of one unnecessary payment is a payment.
 
-The vocabulary this file matches against (`_COMMITTING`, `_READ_ONLY_LABELS`,
-`_BENIGN_PREFIXES`, ...) is English, ASCII words. That is a real, deliberate
-limitation, not an oversight: a label is only ever treated as readable if,
-after Unicode normalisation, it reduces to plain ASCII letters, digits,
-ordinary punctuation and whitespace (see `_words()`). A button on a Russian,
-Greek, Japanese, or Arabic site — including the pay button — will not match
-anything in the vocabulary and will refuse, asking the human, on every
-control. That is the safe direction (refuse means "ask", never "allow blind"),
-but it means this guard currently gives non-English sites no more nuance than
-"stop and ask about everything". Extending it to actually understand
-non-English committing words is future work, not attempted here.
+The vocabulary this file matches against (`_COMMITTING`, `_COMMITTING_PAIRS`,
+`_READ_ONLY_LABELS`, `_BENIGN_PREFIXES`, ...) is ASCII words, and — as of
+Task 6c — it covers three languages: **English, Romanian, and Spanish**
+(Romanian and English first-class; Spanish close behind). Every non-Latin
+script (Russian, Greek, Japanese, Arabic, Hebrew, Chinese, Korean, ...) is
+still refused outright: it will not survive `_words()` into readable ASCII
+tokens at all, so it refuses via the "not in a script this guard can read"
+branch, asking the human about every control on that site.
+
+The gap this task closed, and the gap that remains, are different shapes.
+Before Task 6c, a Latin-script language the guard had no vocabulary for was
+*worse off* than a non-Latin one: Task 6b's diacritic folding (NFD + strip
+category `Mn`) makes `Plătește`, `Cumpără`, `Pagar`, `Confirmar` etc. read as
+clean ASCII words, which means they pass the "is this readable" check, match
+nothing in an English-only `_COMMITTING`, and fall through to ALLOW — a
+silent fail-open, not a refusal. Adding Romanian and Spanish vocabulary
+closes that hole for those two languages specifically. It does **not**
+close it in general: any other Latin-script language with no vocabulary
+entry — Italian, French, Portuguese, German, Polish, Turkish, Vietnamese,
+and every other language that folds to readable ASCII — still fails open the
+same way a pay button in Romanian used to. `Plătește` refuses now because
+`plateste` is in the table; `Paga` (Italian "pay") still does not, because
+nothing put it there. This is a real, live limitation: it is not fixed by
+this task, only narrowed to the two languages named in the brief. Extending
+it further — Italian, French, Portuguese, German, or any other language — is
+future work, not attempted here except where explicitly noted below.
 
 Two mechanisms are deliberately absent from this file, on purpose rather than
 by oversight:
@@ -231,6 +246,74 @@ _COMMITTING = {
     "authorise": "it authorises a payment",
     "donate": "it makes a donation",
     "bid": "it places a bid",
+
+    # --- Romanian (Task 6c) -------------------------------------------
+    # Stored ASCII-folded, because `_words()` runs NFD + strips category
+    # `Mn` before matching (Task 6b), so a page's "Plătește" and "Cumpără"
+    # arrive here as "plateste" and "cumpara" — an entry containing ă, â,
+    # î, ș or ț would never match anything. Verified against `_words()`
+    # directly (see the task report), not assumed.
+    "plateste": "it pays something",
+    "platiti": "it pays something",
+    "cumpara": "it buys something",
+    "cumparati": "it buys something",
+    # "comanda" is Romanian for "order" and is exactly as ambiguous —
+    # both the imperative verb ("Comandă acum" / order now) and the noun
+    # ("Detalii comandă" / order details). Treated as bare-committing the
+    # same way English "order" is, with the noun uses whitelisted in
+    # `_READ_ONLY_LABELS` rather than exempted here — same mechanism,
+    # same reasoning as the English order/order-details split.
+    "comanda": "it places an order",
+    "trimite": "it sends something",
+    "sterge": "it deletes something",
+    "elimina": "it removes something",
+    "confirma": "it confirms something that may not be undoable",
+    "semneaza": "it signs something",
+    "aboneaza": "it starts a subscription",
+    "dezaboneaza": "it cancels a subscription",
+    "retrage": "it withdraws funds",
+    "transfera": "it transfers something",
+    "doneaza": "it makes a donation",
+    "liciteaza": "it places a bid",
+    "rezerva": "it books something",
+    "publica": "it publishes something",
+    "posteaza": "it posts something publicly",
+    "aplica": "it submits an application",
+    # Bare and unconditional, mirroring the English "deactivate"/
+    # "terminate" choice above (not paired with "cont" the way
+    # "close"/"cancel" are — see _COMMITTING_PAIRS for why those two are
+    # different).
+    "dezactiveaza": "it deactivates an account",
+
+    # --- Spanish (Task 6c) ---------------------------------------------
+    "pagar": "it pays something",
+    "pague": "it pays something",
+    "comprar": "it buys something",
+    "compre": "it buys something",
+    # "pedido" is Spanish for "order" (the noun) and carries the same
+    # ambiguity "comanda" and English "order" do: "Realizar pedido" (place
+    # order) commits, "Detalles del pedido" (order details) only reads.
+    # Whitelisted in `_READ_ONLY_LABELS`, not exempted here — same
+    # mechanism as the other two languages' order-word.
+    "pedido": "it places an order",
+    "confirmar": "it confirms something that may not be undoable",
+    # "compra" (purchase, noun) — "Finalizar compra" (finalize/complete
+    # purchase) has no other committing word in it; mirrors English
+    # "purchase" being a bare noun/verb entry rather than needing
+    # "finalizar" added as its own verb.
+    "compra": "it makes a purchase",
+    "enviar": "it sends something",
+    "eliminar": "it deletes something",
+    "borrar": "it deletes something",
+    "suscribirse": "it starts a subscription",
+    "retirar": "it withdraws funds",
+    "transferir": "it transfers something",
+    "donar": "it makes a donation",
+    "pujar": "it places a bid",
+    "firmar": "it signs something",
+    "publicar": "it publishes something",
+    "solicitar": "it submits an application",
+    "desactivar": "it deactivates an account",
 }
 
 #: Verbs that are ordinary dismiss/undo actions on their own ("Close",
@@ -241,6 +324,29 @@ _COMMITTING = {
 _COMMITTING_PAIRS = {
     "close": ({"account", "accounts"}, "it closes an account"),
     "cancel": ({"subscription", "subscriptions"}, "it cancels a subscription"),
+
+    # --- Romanian (Task 6c) ---------------------------------------------
+    # "Închide" (close) is a dismiss word on its own — plausibly a bare
+    # "Close" button on a Romanian site the same way English "Close" is —
+    # so it is paired with its object rather than made bare-committing,
+    # exactly mirroring why English "close" isn't in `_COMMITTING` either.
+    "inchide": ({"cont", "contul"}, "it closes an account"),
+    # "Anulează" (cancel) has the same dismiss-word-on-its-own shape as
+    # English "cancel" ("Anulează" alone is plausibly a Cancel button).
+    "anuleaza": ({"abonament", "abonamentul"}, "it cancels a subscription"),
+
+    # --- Spanish (Task 6c) -----------------------------------------------
+    # "Cerrar" is both "close" (a dismiss word, and also "Cerrar sesión" /
+    # sign out — benign) and, paired with "cuenta", "close account". A
+    # bare "cerrar" entry would refuse "Cerrar sesión"; the pair does not.
+    "cerrar": ({"cuenta", "cuentas"}, "it closes an account"),
+    "cancelar": ({"suscripcion", "suscripciones"}, "it cancels a subscription"),
+    # "Darse de baja" (unsubscribe) is an idiom with no single word that
+    # unambiguously means "unsubscribe" on its own; "darse" bare would be
+    # too broad ("to give oneself" / reflexive marker in many phrases), so
+    # it is paired with "baja" the same way close/cancel are paired with
+    # their objects, rather than either word being made bare-committing.
+    "darse": ({"baja"}, "it cancels a subscription"),
 }
 
 #: Whole labels that read a record rather than commit an act. Matched against
@@ -257,6 +363,15 @@ _READ_ONLY_LABELS = {
     "payment methods", "saved payment methods",
     "transfer history", "transfer details", "transfer status",
     "billing history", "post history", "your orders", "your purchases",
+    # Romanian and Spanish: only the phrases that actually collide with a
+    # bare-committing word above need an entry here. "Istoric comenzi"
+    # (order history) and "Historial de pedidos" (order history) use the
+    # plural ("comenzi", "pedidos"), a different token from the singular
+    # committing word ("comanda", "pedido"), so they already allow without
+    # a whitelist entry — verified against `_words()`, not assumed. Only
+    # the singular-noun phrasings below actually need whitelisting.
+    "detalii comanda",       # Detalii comandă (Romanian: order details)
+    "detalles del pedido",   # Detalles del pedido (Spanish: order details)
 }
 
 #: Login/navigation prefixes that are benign on their own. Stripped as a
