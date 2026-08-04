@@ -32,6 +32,18 @@ _NAV_TIMEOUT_MS = 30_000
 # (45s outer vs. 30s inner).
 _CALL_TIMEOUT = 45.0
 
+# How long close() waits, per teardown step, before it stops trying to
+# confirm the step finished and moves on. Unlike _CALL_TIMEOUT, this number
+# has no correctness weight: teardown jobs are submitted with
+# cancellable=False, so a caller giving up here never causes the job to be
+# dropped (see _submit). It only trades "how promptly close() can return"
+# against "how often it can synchronously confirm a normal-speed teardown
+# actually finished" - a modest window, well under _CALL_TIMEOUT, since
+# there's no safety reason for close() to sit for tens of seconds on a
+# wedged browser just to find out what cancellable=False already guarantees:
+# the teardown will still run once the thread is free.
+_TEARDOWN_TIMEOUT = 5.0
+
 
 def _default_playwright():
     from playwright.sync_api import sync_playwright
@@ -179,16 +191,33 @@ class EagleBrowser:
         if self._thread is None:
             return
         page, self._page = self._page, None
-        try:
-            # Playwright pages expose their own context; the fakes do not.
-            context = getattr(page, "context", None)
-            if context is not None and hasattr(context, "close"):
-                self._submit(lambda: context.close(), timeout=10)
-            playwright = self._playwright
-            if playwright is not None and hasattr(playwright, "stop"):
-                self._submit(lambda: playwright.stop(), timeout=10)
-        except Exception:
-            pass
+
+        # Each step gets its own try/except. A context.close() that times out
+        # must not stop playwright.stop() from being attempted - they are two
+        # separate leaks (a chromium process, and the playwright driver
+        # process), and a failure in the first used to swallow the second
+        # entirely. Both are submitted with cancellable=False: close() giving
+        # up on waiting for a result must not mean the teardown never
+        # happens, or the browser leaks along with the profile lock it holds
+        # - which is exactly the state a later start() would retry into.
+
+        # Playwright pages expose their own context; the fakes do not.
+        context = getattr(page, "context", None)
+        if context is not None and hasattr(context, "close"):
+            try:
+                self._submit(lambda: context.close(), _TEARDOWN_TIMEOUT,
+                             cancellable=False)
+            except Exception:
+                pass
+
+        playwright = self._playwright
+        if playwright is not None and hasattr(playwright, "stop"):
+            try:
+                self._submit(lambda: playwright.stop(), _TEARDOWN_TIMEOUT,
+                             cancellable=False)
+            except Exception:
+                pass
+
         self._jobs.put(None)
         self._thread.join(timeout=5)
         self._thread = None
@@ -196,7 +225,19 @@ class EagleBrowser:
 
     # ── work ────────────────────────────────────────────────────────────────
 
-    def _submit(self, fn: Callable[[], Any], timeout: float) -> Any:
+    def _submit(self, fn: Callable[[], Any], timeout: float,
+               cancellable: bool = True) -> Any:
+        """Run `fn` on the browser thread and wait up to `timeout` for it.
+
+        `cancellable` distinguishes "the caller gave up waiting" from "the
+        job should not happen." They are the same thing for an ordinary
+        click or fill - the caller no longer wants a result it will never
+        see, so the job must not fire. They are not the same thing for
+        teardown: close() giving up on waiting for context.close() to
+        confirm is not a reason to skip closing the context - that is
+        exactly what leaks the browser and its profile lock. close() passes
+        cancellable=False for that reason.
+        """
         if self._thread is None or not self._thread.is_alive():
             raise RuntimeError("browser thread is not running")
         box: list = []
@@ -204,14 +245,16 @@ class EagleBrowser:
         cancelled = threading.Event()
         self._jobs.put((fn, box, done, cancelled))
         if not done.wait(timeout):
-            # Setting `cancelled` here is the only thing that can still stop
-            # this job. If `_serve` has not reached it yet, it will see the
-            # flag and drop it - the caller has been told the call failed, so
-            # it must not go on to fire anyway. If `_serve` has already
-            # started running it, the flag is checked too late to matter and
-            # the job runs to completion, because a click already dispatched
-            # cannot be un-clicked; only its result is lost, not its effect.
-            cancelled.set()
+            if cancellable:
+                # Setting `cancelled` here is the only thing that can still
+                # stop this job. If `_serve` has not reached it yet, it will
+                # see the flag and drop it - the caller has been told the
+                # call failed, so it must not go on to fire anyway. If
+                # `_serve` has already started running it, the flag is
+                # checked too late to matter and the job runs to completion,
+                # because a click already dispatched cannot be un-clicked;
+                # only its result is lost, not its effect.
+                cancelled.set()
             raise TimeoutError(f"browser call exceeded {timeout}s")
         kind, payload = box[0]
         if kind == "err":

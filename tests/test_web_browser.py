@@ -194,8 +194,7 @@ def test_page_marshals_onto_the_owning_thread_not_just_call(tmp_path,
         browser.close()
 
 
-def test_pageport_url_also_marshals_and_no_longer_swallows_failure(tmp_path,
-                                                                    monkeypatch):
+def test_pageport_url_marshals_onto_the_owning_thread(tmp_path, monkeypatch):
     monkeypatch.setenv("AETHELARK_DATA_DIR", str(tmp_path))
     seen = {}
 
@@ -213,6 +212,21 @@ def test_pageport_url_also_marshals_and_no_longer_swallows_failure(tmp_path,
         assert seen["thread"] == "EagleBrowser"
     finally:
         browser.close()
+
+
+def test_pageport_url_propagates_failure_instead_of_returning_empty_string():
+    """The defect finding 2 caught: url() used to read the page inline and
+    swallow any exception into "" — a silent wrong answer a caller could
+    mistake for a real, empty URL, rather than the failure every other
+    PagePort method surfaces."""
+    class BrokenPage:
+        @property
+        def url(self):
+            raise RuntimeError("page is closed")
+
+    port = PagePort(BrokenPage(), call=lambda fn: fn())
+    with pytest.raises(RuntimeError, match="page is closed"):
+        port.url()
 
 
 def test_goto_marshals_onto_the_owning_thread_and_returns_the_landed_url(
@@ -294,6 +308,13 @@ def test_a_job_still_queued_when_its_caller_gives_up_does_not_run(tmp_path,
 
         unblock.set()
         occupier.join(5)
+        # `abandoned` was queued strictly before this call, on the same
+        # single-consumer queue, so its dequeue - and the cancellation check
+        # that decides whether to run it - is guaranteed to have already
+        # happened by the time this synchronous call returns. Without this,
+        # the assertion below would rest on thread-scheduling luck instead of
+        # a guarantee.
+        assert browser.call(lambda page: "sync", timeout=5) == "sync"
         assert ran == []
     finally:
         browser.close()
@@ -322,3 +343,72 @@ def test_a_job_already_running_completes_even_though_its_caller_times_out(
         assert ran.wait(5)
     finally:
         browser.close()
+
+
+# ── review round 2 ────────────────────────────────────────────────────────
+#
+# Round 1's cancellation fix introduced its own regression: close() submitted
+# its teardown jobs (context.close(), playwright.stop()) the same way any
+# ordinary call is submitted — cancellable. If the browser thread was still
+# occupied by a slow job when close() gave up waiting, the still-queued
+# teardown job was cancelled and dropped exactly like an abandoned click
+# would be, except dropping *this* job leaks a live chromium process holding
+# the profile lock for the rest of the process — precisely the state
+# start()'s round-1 retry fix would then relaunch straight into.
+
+
+class FakeContext:
+    """Records which thread actually ran close() — the seam this section
+    exists to prove is exercised even when close() itself gives up early."""
+
+    def __init__(self):
+        self.closed_on = []
+
+    def close(self):
+        self.closed_on.append(threading.current_thread().name)
+
+
+class PageWithContext(FakePlaywrightPage):
+    def __init__(self):
+        super().__init__()
+        self.context = FakeContext()
+
+
+def test_close_still_tears_down_even_after_it_gives_up_waiting(tmp_path,
+                                                                monkeypatch):
+    """Occupy the browser thread well past the 10s teardown timeout the
+    pre-fix close() used, then call close(). The teardown job cannot possibly
+    finish before close() gives up waiting on it — that is exactly the
+    condition that used to cancel it and drop it forever. It must still run
+    once the thread is free.
+
+    10.5s is deliberately not tied to _TEARDOWN_TIMEOUT (now 5.0s): it is
+    chosen to exceed the specific 10s value the pre-fix close() hard-coded,
+    so this test discriminates against that code, not just against whatever
+    the constant happens to be tuned to today."""
+    monkeypatch.setenv("AETHELARK_DATA_DIR", str(tmp_path))
+    page = PageWithContext()
+    occupier_seconds = 10.5
+
+    browser = EagleBrowser(launcher=lambda p, d, h: page,
+                           playwright_fn=lambda: object())
+    browser.start()
+
+    occupier = threading.Thread(
+        target=lambda: browser.call(
+            lambda page: time.sleep(occupier_seconds), timeout=60))
+    occupier.start()
+    time.sleep(0.1)  # let the occupier actually start on the browser thread
+
+    browser.close()  # must give up waiting on context.close() here...
+    occupier.join(occupier_seconds + 5)
+
+    # ...but the job must not have been dropped. Poll rather than assume the
+    # exact instant it lands: close() giving up on its own wait tells us
+    # nothing about when the still-queued job actually runs, only that it
+    # eventually must.
+    deadline = time.monotonic() + 5.0
+    while not page.context.closed_on and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    assert page.context.closed_on == ["EagleBrowser"]
