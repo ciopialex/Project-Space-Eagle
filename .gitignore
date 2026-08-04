@@ -52,3 +52,8 @@ config/certs/*.crt
 
 # debug screenshots
 screenshot_*.png
+
+# agent workspaces: worktrees and per-plan scratch. Both are scratch that must
+# never be committed back into the repository they are checked out from.
+.claude/worktrees/
+.superpowers/
