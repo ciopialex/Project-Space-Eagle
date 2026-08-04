@@ -17,7 +17,7 @@ change instead of narrowing them to make a change pass.
 """
 import pytest
 
-from actions.grounding.web.consent import irreversible_reason
+from actions.grounding.web.consent import _CONFUSABLES, irreversible_reason
 
 
 # ---------------------------------------------------------------------------
@@ -186,3 +186,117 @@ def test_confirm_verb_specifically_pinned():
     """Confirm must refuse even without another verb to hide behind (I2, Fix Round 2)."""
     assert irreversible_reason("Confirm", "button") != ""
     assert "confirm" in irreversible_reason("Confirm", "button").lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 6b: Unicode hardening.
+#
+# The label text comes from the page being browsed, so the site controls it.
+# Pre-fix, `_words()` split on `[^a-z0-9]+` after `.lower()`, which treats
+# every non-ASCII character as a delimiter. A single homoglyph therefore
+# shattered the token it appeared in and the label was allowed — e.g.
+# "Оrder now" (Cyrillic О) tokenised to ["rder", "now"], neither of which is
+# a committing word. Measured: all 46 MUST_REFUSE labels above become
+# ALLOWED under whole-label Cyrillic substitution. This section is the
+# discrimination evidence and the attack-form coverage for the fix
+# (NFKC normalisation, Cf-category stripping, and a hand-rolled confusables
+# fold — see consent.py for the design write-up).
+# ---------------------------------------------------------------------------
+
+#: Built from the implementation's own `_CONFUSABLES` table (Cyrillic/Greek
+#: entries only — the digit-lookalikes are exercised separately below) so
+#: this helper can never silently drift out of sync with the guard: if a
+#: mapping is ever added to or removed from consent.py, this inverted table
+#: picks up the change automatically instead of the test data going stale.
+_LATIN_TO_HOMOGLYPH = {}
+for _src, _tgt in _CONFUSABLES.items():
+    if not _src.isdigit():
+        _LATIN_TO_HOMOGLYPH.setdefault(_tgt, _src)
+
+
+def _cyrillicize(label: str) -> str:
+    """Replace every character in `label` that has a known Latin->homoglyph
+    mapping with its look-alike, leaving spaces, punctuation, digits, and
+    letters with no table entry untouched. This deliberately does not
+    substitute every letter — a real attacker only needs to touch enough of
+    the label to defeat naive matching, and a partial substitution is also
+    the harder case for the guard, since more genuinely-Latin text survives
+    to look benign.
+    """
+    return "".join(_LATIN_TO_HOMOGLYPH.get(ch, ch) for ch in label.lower())
+
+
+# The four attack forms named in the task brief, using its own examples.
+
+def test_single_character_cyrillic_substitution_still_refuses():
+    assert irreversible_reason("Оrder now", "button") != ""       # Cyrillic О
+    assert irreversible_reason("Рay now", "button") != ""          # Cyrillic Р
+    assert irreversible_reason("Deleтe account", "button") != ""   # Cyrillic т
+
+
+def test_whole_label_cyrillic_substitution_still_refuses():
+    assert irreversible_reason(_cyrillicize("Order now"), "button") != ""
+    assert irreversible_reason(_cyrillicize("Pay now"), "button") != ""
+    assert irreversible_reason(_cyrillicize("Delete account"), "button") != ""
+
+
+def test_zero_width_space_insertion_still_refuses():
+    assert irreversible_reason("Or​der now", "button") != ""
+    # Zero-width joiner and zero-width non-joiner, not just zero-width space.
+    assert irreversible_reason("Pa‍y now", "button") != ""
+    assert irreversible_reason("De‌lete account", "button") != ""
+
+
+def test_fullwidth_form_still_refuses():
+    assert irreversible_reason("Ｐay now", "button") != ""     # fullwidth P
+    assert irreversible_reason("Ｏrder now", "button") != ""   # fullwidth O
+
+
+def test_mixed_unicode_attack_still_refuses():
+    # Fullwidth P, a zero-width space, and a Cyrillic о in the same label —
+    # the "combine techniques" case, not just one mechanism at a time.
+    assert irreversible_reason("Ｐay​ nоw", "button") != ""
+
+
+@pytest.mark.parametrize("name", MUST_REFUSE)
+def test_pinned_must_refuse_survives_whole_label_cyrillic_substitution(name):
+    # Driven from the exact same MUST_REFUSE data used by
+    # test_pinned_must_refuse above, so attack coverage cannot silently
+    # drift away from the pinned behaviour table.
+    assert irreversible_reason(_cyrillicize(name), "button") != "", name
+
+
+def test_must_allow_list_is_unaffected_by_the_unicode_hardening():
+    # None of the MUST_ALLOW labels contain fullwidth forms, invisible
+    # characters, or homoglyphs, so NFKC normalisation, Cf-stripping and
+    # confusable-folding must be no-ops on every one of them.
+    # test_pinned_must_allow above already proves this against the shipped
+    # code; this test names it explicitly as task 6b's required evidence.
+    for name in MUST_ALLOW:
+        assert irreversible_reason(name, "button") == "", name
+
+
+def test_digit_lookalike_substitution_still_refuses():
+    # Leetspeak digit-for-letter substitution, e.g. zero for O. Not one of
+    # the four named attack forms, but part of the same confusables table
+    # and the same failure class.
+    assert irreversible_reason("0rder n0w", "button") != ""
+    assert irreversible_reason("de1ete account", "button") != ""
+
+
+def test_non_latin_label_still_refuses_with_an_accurate_reason():
+    # A genuinely non-English label ("Pay" in Japanese) is not an attack,
+    # but the guard still cannot read it, so it must still refuse — that is
+    # the safe direction, unchanged by this fix. What does change: the
+    # reason string no longer claims the control "has no readable label"
+    # (misleading — there plainly is one) when there is visible text that
+    # simply isn't in a script this guard folds to Latin.
+    reason = irreversible_reason("支払う", "button")
+    assert reason != ""
+    assert "script" in reason.lower()
+
+
+def test_a_genuinely_empty_label_keeps_its_original_reason():
+    reason = irreversible_reason("", "button")
+    assert reason != ""
+    assert "no readable label" in reason.lower()
