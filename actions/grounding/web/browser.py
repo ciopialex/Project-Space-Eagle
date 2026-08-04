@@ -24,7 +24,13 @@ from core import user_paths
 
 # A page that has not settled in this long is not going to.
 _NAV_TIMEOUT_MS = 30_000
-_CALL_TIMEOUT = 30.0
+# Strictly greater than _NAV_TIMEOUT_MS. If the two race on the same clock, a
+# slow Playwright action can time out _submit() at the same moment Playwright
+# itself would have timed out the action - and _submit()'s caller is told the
+# call failed while the job is still sitting in, or running from, the queue.
+# The outer deadline must lose that race, the same margin goto() already uses
+# (45s outer vs. 30s inner).
+_CALL_TIMEOUT = 45.0
 
 
 def _default_playwright():
@@ -79,10 +85,12 @@ class PagePort:
         self._call(lambda: self._page.fill(selector, text))
 
     def url(self) -> str:
-        try:
-            return str(self._page.url)
-        except Exception:
-            return ""
+        # Every other method here marshals onto the browser thread and lets
+        # failure raise. This one used to read `self._page.url` inline on the
+        # caller's thread and swallow any exception into "" - a stale or
+        # closed page would silently report the empty string as "the current
+        # URL" instead of surfacing that the read failed.
+        return self._call(lambda: str(self._page.url))
 
 
 class EagleBrowser:
@@ -117,7 +125,18 @@ class EagleBrowser:
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
-            return
+            if self._page is not None:
+                return  # already up and serving
+            # The thread is alive but page-less: a previous launch failed,
+            # and _serve deliberately kept the thread looping so close() had
+            # somewhere to send its teardown jobs. That is correct for
+            # close(), but left alone it also means a transient failure - a
+            # stale profile lock from a crash, chromium mid-install - bricks
+            # this object for the rest of the process. Since default_browser()
+            # is a process-wide singleton, that bricks web grounding entirely.
+            # Tear the dead thread down and retry.
+            self.close()
+        self.last_error = ""
         self._ready.clear()
         self._thread = threading.Thread(target=self._serve, daemon=True,
                                         name="EagleBrowser")
@@ -140,7 +159,15 @@ class EagleBrowser:
             job = self._jobs.get()
             if job is None:
                 return
-            fn, box, done = job
+            fn, box, done, cancelled = job
+            if cancelled.is_set():
+                # The caller's _submit() already gave up and raised
+                # TimeoutError - nobody is waiting on `done` any more. This
+                # job never started, so skipping it is free: no click has
+                # fired, no fill has happened. A job already in flight is a
+                # different story (see _submit) - this check only ever stops
+                # one that is still waiting in line.
+                continue
             try:
                 box.append(("ok", fn()))
             except Exception as e:
@@ -174,8 +201,17 @@ class EagleBrowser:
             raise RuntimeError("browser thread is not running")
         box: list = []
         done = threading.Event()
-        self._jobs.put((fn, box, done))
+        cancelled = threading.Event()
+        self._jobs.put((fn, box, done, cancelled))
         if not done.wait(timeout):
+            # Setting `cancelled` here is the only thing that can still stop
+            # this job. If `_serve` has not reached it yet, it will see the
+            # flag and drop it - the caller has been told the call failed, so
+            # it must not go on to fire anyway. If `_serve` has already
+            # started running it, the flag is checked too late to matter and
+            # the job runs to completion, because a click already dispatched
+            # cannot be un-clicked; only its result is lost, not its effect.
+            cancelled.set()
             raise TimeoutError(f"browser call exceeded {timeout}s")
         kind, payload = box[0]
         if kind == "err":
