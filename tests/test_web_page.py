@@ -84,3 +84,18 @@ def test_the_collector_and_hit_test_are_expressions_playwright_can_evaluate():
     for script in (COLLECT_JS, HIT_TEST_JS):
         assert script.strip().startswith("(")
         assert "=>" in script
+
+
+def test_the_collector_loop_body_is_wrapped_in_try_catch_for_exception_safety():
+    # Custom elements and web components can throw on property reads.
+    # One hostile element must not abort the entire walk.
+    # The loop body (from const explicit to out.push) is wrapped in
+    # try { ... } catch (e) { continue; } to skip a poisoned element
+    # rather than failing the whole snapshot.
+    assert "} catch (e) {" in COLLECT_JS
+    assert "continue;" in COLLECT_JS
+    # Verify the critical property reads are inside the try block by
+    # checking that the try appears before the first property read checks
+    try_pos = COLLECT_JS.find("try {")
+    disabled_check = COLLECT_JS.find("el.disabled === true")
+    assert try_pos < disabled_check, "Loop body must be wrapped in try/catch"

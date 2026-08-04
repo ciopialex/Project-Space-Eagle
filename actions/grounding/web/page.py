@@ -95,53 +95,57 @@ COLLECT_JS = r"""
   for (const el of document.querySelectorAll('*')) {
     if (n >= MAX_NODES) break;
 
-    const explicit = (el.getAttribute('role') || '').trim().toLowerCase();
-    if (explicit === 'presentation' || explicit === 'none') continue;
-    const role = explicit || implicitRole(el);
-    if (!role || role === 'generic') continue;
+    try {
+      const explicit = (el.getAttribute('role') || '').trim().toLowerCase();
+      if (explicit === 'presentation' || explicit === 'none') continue;
+      const role = explicit || implicitRole(el);
+      if (!role || role === 'generic') continue;
 
-    const name = accName(el);
-    if (!name) continue;
+      const name = accName(el);
+      if (!name) continue;
 
-    const rect = el.getBoundingClientRect();
-    let style;
-    try { style = window.getComputedStyle(el); } catch (e) { style = null; }
-    const hidden = (style && (style.visibility === 'hidden' || style.display === 'none'))
-                || el.hasAttribute('hidden')
-                || el.getAttribute('aria-hidden') === 'true';
+      const rect = el.getBoundingClientRect();
+      let style;
+      try { style = window.getComputedStyle(el); } catch (e) { style = null; }
+      const hidden = (style && (style.visibility === 'hidden' || style.display === 'none'))
+                  || el.hasAttribute('hidden')
+                  || el.getAttribute('aria-hidden') === 'true';
 
-    const disabled = el.disabled === true
-                  || el.getAttribute('aria-disabled') === 'true';
-    const readonly = el.readOnly === true
-                  || el.getAttribute('aria-readonly') === 'true';
-    const typable = (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'
-                     || el.isContentEditable === true);
+      const disabled = el.disabled === true
+                    || el.getAttribute('aria-disabled') === 'true';
+      const readonly = el.readOnly === true
+                    || el.getAttribute('aria-readonly') === 'true';
+      const typable = (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'
+                       || el.isContentEditable === true);
 
-    const states = [];
-    if (!disabled) { states.push('ENABLED'); states.push('SENSITIVE'); }
-    if (!hidden && rect.width > 0 && rect.height > 0) {
-      states.push('VISIBLE'); states.push('SHOWING');
+      const states = [];
+      if (!disabled) { states.push('ENABLED'); states.push('SENSITIVE'); }
+      if (!hidden && rect.width > 0 && rect.height > 0) {
+        states.push('VISIBLE'); states.push('SHOWING');
+      }
+      if (typable && !readonly && !disabled) states.push('EDITABLE');
+      if (el === document.activeElement) states.push('FOCUSED');
+      if (el.checked === true || el.getAttribute('aria-checked') === 'true') {
+        states.push('CHECKED');
+      }
+      if (el.selected === true || el.getAttribute('aria-selected') === 'true') {
+        states.push('SELECTED');
+      }
+
+      const ref = 'e' + n;
+      try { el.setAttribute('data-ae-ref', ref); } catch (e) { continue; }
+
+      out.push({
+        ref: ref, name: name, role: role,
+        left: rect.left, top: rect.top,
+        width: rect.width, height: rect.height,
+        states: states,
+        value: (el.value === undefined || el.value === null) ? '' : String(el.value).slice(0, 200),
+      });
+      n += 1;
+    } catch (e) {
+      continue;
     }
-    if (typable && !readonly && !disabled) states.push('EDITABLE');
-    if (el === document.activeElement) states.push('FOCUSED');
-    if (el.checked === true || el.getAttribute('aria-checked') === 'true') {
-      states.push('CHECKED');
-    }
-    if (el.selected === true || el.getAttribute('aria-selected') === 'true') {
-      states.push('SELECTED');
-    }
-
-    const ref = 'e' + n;
-    try { el.setAttribute('data-ae-ref', ref); } catch (e) { continue; }
-
-    out.push({
-      ref: ref, name: name, role: role,
-      left: rect.left, top: rect.top,
-      width: rect.width, height: rect.height,
-      states: states,
-      value: (el.value === undefined || el.value === null) ? '' : String(el.value).slice(0, 200),
-    });
-    n += 1;
   }
   return out;
 })()
