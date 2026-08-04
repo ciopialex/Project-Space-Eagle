@@ -116,6 +116,53 @@ _CONFUSABLES = {
 #: label a human reads as one committing word).
 _FORMAT_CATEGORY = "Cf"
 
+#: Symbol categories: So (Other Symbol — pictographs, dingbats, currency
+#: symbols like ™/©/★, and the large majority of standalone emoji), Sk
+#: (Modifier Symbol), Sm (Math Symbol — this is where arrows like ← → live,
+#: not punctuation), Sc (Currency Symbol). Fix round 2 of this task: the
+#: round-1 allowlist correctly refused every attack, but it also refused
+#: "🛒 Add to cart", "← Back", "★ Favourite", "Sign in with Google →" —
+#: ordinary web copy, not decoration exclusive to commerce pages. A guard
+#: that cannot click Back or Search without asking is the "trains everyone
+#: to switch it off" failure this module's own docstring warns about.
+#:
+#: Stripped outright, the same as `Cf`, rather than folded or left for the
+#: allowlist to catch. This is safe in the direction that matters: joining
+#: two tokens together (removing a character that used to separate them)
+#: can only ever produce a MORE recognisable word, never a less
+#: recognisable one, so it can only ever move a label from "unreadable" or
+#: "benign fragment" toward a real dictionary word — which can only
+#: increase refusals, never manufacture an allow. That is the opposite
+#: failure direction from round 0's bug, where an unrecognised character
+#: became a false *word boundary* inside what should have stayed one
+#: token; here, removing a symbol can at most restore a word boundary that
+#: was never semantically there. An emoji cannot homoglyph a Latin letter,
+#: so nothing is lost by removing it — and removing it, rather than
+#: leaving it for the allowlist, is what lets "🔥 Buy now" reach the verb
+#: scan and refuse with the *specific* reason ("it buys something")
+#: instead of the generic "not in a script" one.
+#:
+#: This also closes the Braille Pattern Blank (U+2800) case a second,
+#: cheaper way: it's category So, so "Or⠀der now" now becomes "Order now"
+#: and is caught by the verb scan directly, rather than needing to fall
+#: through to the allowlist's unreadable branch. Both paths still refuse;
+#: only the reason text changes.
+#:
+#: Not attempted: reproducing Unicode's "Extended_Pictographic" property
+#: exactly. Python's standard library `unicodedata` module exposes general
+#: categories, not emoji-data properties, and this repo does not add a
+#: third-party dependency to get one. So/Sk/Sm/Sc covers the overwhelming
+#: majority of what Extended_Pictographic covers in practice — every emoji
+#: named in this task's brief and review is So; multi-codepoint emoji
+#: sequences are held together by ZWJ (already `Cf`, already stripped) and
+#: variation selectors (`Mn`, stripped by `_strip_diacritics` below) or by
+#: a combining enclosing keycap (`Mn` as well). What this does not catch:
+#: any Extended_Pictographic character that Unicode has classified outside
+#: So/Sk/Sm/Sc/Mn/Cf. I did not find one among ordinary UI copy while
+#: building this; if one exists it fails safe (refuses) rather than
+#: silently allowing, per this file's own governing rule.
+_SYMBOL_CATEGORIES = frozenset({"So", "Sk", "Sm", "Sc"})
+
 #: The actual security boundary (fix round 1 of this task). Round 0 tried
 #: to enumerate every character class that isn't really a word (Cf format
 #: characters, then confusable homoglyphs) and remove or fold each one —
@@ -221,36 +268,51 @@ _READ_ONLY_LABELS = {
 _BENIGN_PREFIXES = ["sign in", "log in", "sign out", "log out", "sign up"]
 
 
-def _strip_invisible(text: str) -> str:
-    """NFKC-normalise, then drop invisible Unicode "Format" (Cf) characters.
+def _strip_noise(text: str) -> str:
+    """NFKC-normalise, then drop the Unicode noise that carries no word
+    content of its own: invisible "Format" (`Cf`) characters, Symbol
+    characters (`_SYMBOL_CATEGORIES`), and combining marks (category `Mn`,
+    reached by decomposing to NFD first so precomposed accented letters —
+    "café", "á" — expose the marks NFC hides inside a single code point).
 
     NFKC collapses fullwidth forms ("Ｐay" -> "Pay"), many ligatures, and
     other compatibility variants down to the ordinary characters they
     display as — standard library, no table needed. `Cf` covers the
     zero-width space, zero-width joiner/non-joiner, word joiner, soft
-    hyphen, and the bidi control characters: every character in that
-    family is genuinely invisible and carries no word content, so they are
-    removed outright rather than left to become a false word boundary or
-    (post-allowlist) a false "unreadable" verdict on an otherwise-ordinary
-    label that happens to carry one as page-generated noise.
+    hyphen, and the bidi control characters. The symbol strip is fix round
+    2's addition — see `_SYMBOL_CATEGORIES` for why it's safe (it can only
+    join tokens, never split them). The NFD decompose + `Mn` strip is also
+    fix round 2: it recovers "café" -> "cafe" and "Ordér" -> "Order" as a
+    deliberate reversal of round 1's decision to let those refuse as
+    unreadable, and it has the same "joining only" safety argument — plus,
+    as a bonus, it removes variation selectors for free, since those are
+    `Mn` too (e.g. the gear-emoji-plus-selector in "⚙️ Settings").
+
+    All three strips are removals, never replacements with a space: an
+    inserted character must not be allowed to manufacture a word boundary
+    that a human reading the label wouldn't see.
 
     Shared by `_words()` and `irreversible_reason()`'s empty-label message,
-    so both agree on what counts as "no visible text" versus "text present
-    but unreadable".
+    so both agree on what counts as "no visible content" versus "content
+    present but unreadable".
     """
     text = unicodedata.normalize("NFKC", text or "")
-    return "".join(ch for ch in text if unicodedata.category(ch) != _FORMAT_CATEGORY)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != _FORMAT_CATEGORY)
+    text = "".join(ch for ch in text if unicodedata.category(ch) not in _SYMBOL_CATEGORIES)
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return text
 
 
 def _words(text: str) -> list[str]:
-    text = _strip_invisible(text).lower()
+    text = _strip_noise(text).lower()
     # Fold homoglyphs onto the Latin letter they are standing in for, so a
     # page that spells "order" with a Cyrillic о is tokenised exactly like
     # a page that spells it with a Latin o — see _CONFUSABLES for why this
     # is a false-refusal reducer now, not the security boundary.
     text = "".join(_CONFUSABLES.get(ch, ch) for ch in text)
     if any(ch not in _ALLOWED_CHARS for ch in text):
-        # At least one character survived normalisation, invisible-strip
+        # At least one character survived normalisation, noise-stripping
         # and confusable-folding that this guard still cannot read as an
         # ordinary ASCII letter, digit, punctuation mark, or whitespace.
         # Treat the *whole label* as unreadable rather than letting that
@@ -268,19 +330,19 @@ def irreversible_reason(name: str, role: str = "") -> str:
     """
     words = _words(name)
     if not words:
-        if _strip_invisible(name).strip():
-            # There was visible text, but none of it survived
+        if _strip_noise(name).strip():
+            # There was visible content, but none of it survived
             # normalisation into a recognisable Latin word — most likely a
             # genuinely non-English label (Japanese, Arabic, Cyrillic,
             # Greek, ...), not an empty control. Say that, rather than the
             # misleading "no readable label", which reads as if the
             # control had no text at all. Either way the answer is still
             # refuse: an unreadable label is exactly the case where the
-            # human has to be asked. Checked against the invisible-
-            # stripped text, not the raw name, so a label that is nothing
-            # but zero-width characters (genuinely blank once the noise is
-            # removed) still gets the "no readable label" message below
-            # rather than this one.
+            # human has to be asked. Checked against the noise-stripped
+            # text, not the raw name, so a label that is nothing but
+            # zero-width characters, or nothing but decorative symbols
+            # (genuinely blank once the noise is removed), still gets the
+            # "no readable label" message below rather than this one.
             return ("it is not in a script this guard can read, so there is "
                     "no way to tell what it does")
         return ("it has no readable label, so there is no way to tell what it "

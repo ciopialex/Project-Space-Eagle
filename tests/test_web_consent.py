@@ -437,3 +437,104 @@ def test_confusable_letters_with_no_reachable_vocabulary_word_still_fold():
     assert _words("х") == ["x"]
     assert _words("ј") == ["j"]
     assert _words("ν") == ["v"]
+
+
+# ---------------------------------------------------------------------------
+# Task 6b, fix round 2: the round-1 allowlist correctly closed every attack,
+# but it also refused ordinary English UI copy that merely carries an icon
+# or arrow — "🛒 Add to cart", "← Back", "Sign in with Google →" — which is
+# not decoration exclusive to commerce pages, it is how buttons are written
+# across the modern web. `_words()` now also strips Symbol characters
+# (`_SYMBOL_CATEGORIES`: So/Sk/Sm/Sc) and, via NFD + dropping category `Mn`,
+# combining marks — recovering "café"/"Ordér" as their base Latin spelling
+# and incidentally cleaning up variation selectors (also `Mn`) attached to
+# emoji. Both strips are safe in the same direction: removing a character
+# can only ever *join* two fragments into a more recognisable word, never
+# split one recognisable word into less recognisable pieces — the opposite
+# of round 0's bug, where an unrecognised character became a false word
+# boundary. See `_SYMBOL_CATEGORIES` and `_strip_noise` in consent.py for
+# the full reasoning.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", [
+    "🛒 Add to cart",
+    "🔍 Search",
+    "⚙️ Settings",
+    "← Back",
+    "🏠 Home",
+    "Add to cart 🛒",
+    "★ Favourite",
+    "Sign in with Google →",
+])
+def test_symbol_decorated_ordinary_labels_are_allowed(name):
+    # The exact eight labels measured, by hand, as wrongly-refused on the
+    # round-1 code.
+    assert irreversible_reason(name, "button") == "", name
+
+
+def test_diacritic_recovery_allows_an_ordinary_accented_label():
+    # Round 1 left this refusing and documented the choice as acceptable
+    # under the instruction at the time. Reversed this round: an accented
+    # Latin label that isn't a committing word must read as ordinary text,
+    # not as unreadable.
+    assert irreversible_reason("Café menu", "button") == ""
+
+
+@pytest.mark.parametrize("name, expected_substring", [
+    # Diacritic recovery makes these refuse via the SPECIFIC verb reason
+    # now (the label reconstructs to the real word), which is the more
+    # robust and more informative path than the generic "not in a script"
+    # fallback round 1 left them with.
+    ("Páy now", "pay"),
+    ("Ordér now", "order"),
+])
+def test_diacritic_recovery_gives_a_specific_reason_not_a_generic_one(name, expected_substring):
+    reason = irreversible_reason(name, "button")
+    assert reason != ""
+    assert expected_substring in reason.lower()
+
+
+def test_turkish_dotless_i_still_refuses_generically():
+    # U+0131 LATIN SMALL LETTER DOTLESS I is a base letter, not a
+    # precomposed-with-mark character, so NFD does nothing to it: no
+    # combining mark to strip, no recovery possible. Must still refuse —
+    # via the generic "not in a script" branch, since nothing reconstructs
+    # it to "sign".
+    reason = irreversible_reason("Sıgn contract", "button")
+    assert reason != ""
+    assert "script" in reason.lower()
+
+
+@pytest.mark.parametrize("name, expected_substring", [
+    # A symbol-decorated label that IS committing must still refuse, and
+    # with the specific reason — proof that stripping the decoration lets
+    # the verb scan see the real word, rather than merely making the
+    # refuse/allow outcome accidentally line up.
+    ("🔥 Buy now", "buy"),
+    ("💳 Pay now", "pay"),
+    ("✅ Confirm and pay", "pay"),
+])
+def test_symbol_decorated_committing_labels_refuse_with_the_specific_reason(name, expected_substring):
+    reason = irreversible_reason(name, "button")
+    assert reason != ""
+    assert expected_substring in reason.lower(), (name, reason)
+
+
+def test_braille_blank_still_refuses_now_via_the_specific_reason():
+    # U+2800 BRAILLE PATTERN BLANK is category So, so the symbol strip
+    # closes this case a second, cheaper way: "Or<blank>der now" becomes
+    # "Order now" and is caught by the verb scan directly, rather than by
+    # falling through to the unreadable branch the round-1 allowlist used.
+    # Both paths refuse; this pins that the specific one now fires.
+    reason = irreversible_reason("Or⠀der now", "button")
+    assert reason != ""
+    assert "order" in reason.lower()
+
+# The full attack set (MUST_REFUSE / MUST_ALLOW, both Criticals sections,
+# the confusables pins, the digit-lookalike and mixed-attack tests above)
+# is re-asserted by simply running the existing suite, not duplicated here
+# under new names: none of that data contains a symbol or a diacritic, so
+# round 1's `test_pinned_must_refuse`/`test_pinned_must_allow` and every
+# Critical-1/2/3 test already re-exercise it against this round's code on
+# every run — a second copy would be a no-op tautology of exactly the kind
+# flagged and removed last round. See the report for the full-suite output.
