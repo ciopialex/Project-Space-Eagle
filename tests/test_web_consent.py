@@ -88,3 +88,19 @@ def test_an_empty_name_is_refused_because_we_cannot_tell_what_it_does():
 
 def test_links_that_merely_read_are_allowed():
     assert irreversible_reason("Your orders", "link") == ""
+
+
+@pytest.mark.parametrize("name", [
+    "Unsubscribe", "Deactivate account", "Terminate service",
+    "Erase data", "Wipe device", "Withdraw funds",
+    "Authorize payment", "Authorise payment", "Donate now", "Place bid",
+])
+def test_each_new_verb_added_in_fix_round_is_caught(name):
+    """Coverage for each verb added to catch vocabulary gaps (I2, Fix Round 2)."""
+    assert irreversible_reason(name, "button") != ""
+
+
+def test_confirm_verb_specifically_pinned():
+    """Confirm must refuse even without another verb to hide behind (I2, Fix Round 2)."""
+    assert irreversible_reason("Confirm", "button") != ""
+    assert "confirm" in irreversible_reason("Confirm", "button").lower()

@@ -21,7 +21,6 @@ _COMMITTING = {
     "purchase": "it makes a purchase",
     "buy": "it buys something",
     "checkout": "it starts a checkout",
-    "order": "it places an order",
     "transfer": "it transfers something",
     "submit": "it submits something",
     "file": "it files something",
@@ -32,13 +31,11 @@ _COMMITTING = {
     "unsubscribe": "it cancels a subscription",
     "agree": "it agrees to something on the user's behalf",
     "accept": "it accepts something on the user's behalf",
-    "sign": "it signs something",
     "send": "it sends something",
     "publish": "it publishes something",
     "post": "it posts something publicly",
     "book": "it books something",
     "apply": "it submits an application",
-    "close": "it closes an account or service",
     "deactivate": "it deactivates an account",
     "terminate": "it terminates a service",
     "erase": "it erases data",
@@ -50,16 +47,32 @@ _COMMITTING = {
     "bid": "it places a bid",
 }
 
-#: Whole labels that are benign despite containing a committing verb. Matched
-#: as complete normalised labels (space-joined words), never token-by-token, so
-#: "Sign in" is exempt while "Sign in and pay" is not.
-_BENIGN_LABELS = {"sign in", "log in", "sign out", "log out", "sign up",
-                  "signin", "login", "logout"}
+#: Login/navigation prefixes that are benign. Matched as prefixes to allow
+#: variations like "Sign in with Google", but strict enough to refuse
+#: "Sign in and pay" (remainder "and pay" has a verb).
+_BENIGN_PREFIXES = [
+    "sign in",
+    "log in",
+    "sign out",
+    "log out",
+    "sign up",
+]
 
 #: Multi-word phrases that commit something. Matched against consecutive
 #: words, so "Cancel subscription" is caught but "Cancel" alone is allowed.
+#: These are verbs that are ambiguous as bare words (also nouns or navigation),
+#: so they are pinned to specific contexts only.
 _COMMITTING_PHRASES = {
     "cancel subscription": "it cancels a subscription",
+    "place order": "it places an order",
+    "order now": "it places an order",
+    "confirm order": "it confirms an order",
+    "submit order": "it submits an order",
+    "close account": "it closes an account",
+    "close my account": "it closes an account",
+    "sign agreement": "it signs something",
+    "sign document": "it signs something",
+    "sign in and": "it signs in to pay",  # catches "Sign in and pay" variants
 }
 
 #: Words that turn a committing verb back into a noun — a page you read rather
@@ -86,25 +99,44 @@ def irreversible_reason(name: str, role: str = "") -> str:
         return ("it has no readable label, so there is no way to tell what it "
                 "does")
 
-    # Check for benign whole labels (e.g., "sign in" is allowed despite "sign"
-    # being a committing verb).
     label = " ".join(words)
-    if label in _BENIGN_LABELS:
-        return ""
 
-    # Reading words exempt only short noun phrases (at most 2 words, ending in
-    # the reading word). This prevents "Confirm order details" from being
-    # allowed just because it contains "details".
-    if len(words) <= 2 and words[-1] in _READING:
-        return ""
+    # Check for benign prefixes (e.g., "Sign in with Google" is allowed).
+    # Strip the matching prefix and check the remainder for verbs.
+    for prefix in _BENIGN_PREFIXES:
+        if label.startswith(prefix):
+            # Extract remainder after the prefix
+            remainder = label[len(prefix):].strip()
+            if not remainder:
+                # Just the prefix, nothing after → benign
+                return ""
+            # Check if remainder contains any committing verbs
+            remainder_words = _words(remainder)
+            has_verb = any(w in _COMMITTING for w in remainder_words)
+            # Also check if any phrase from _COMMITTING_PHRASES is in remainder
+            for phrase in _COMMITTING_PHRASES:
+                if phrase in remainder:
+                    has_verb = True
+                    break
+            if not has_verb:
+                # Remainder has no verbs → benign
+                return ""
+            # If remainder has a verb (e.g., "and pay"), fall through to verb checks
 
     # Check for multi-word phrases that commit something. This catches cases
     # like "Cancel subscription" where the words don't match individually but
     # the phrase does (since "Cancel" alone is navigation).
-    label = " ".join(words)
     for phrase, reason in _COMMITTING_PHRASES.items():
         if phrase in label:
             return reason
+
+    # Reading words exempt only short noun phrases (at most 2 words, ending in
+    # the reading word), and only if the first word is not itself a committing
+    # verb. This prevents "Confirm payments" from being allowed just because
+    # it ends in a reading word, while still allowing "Payment history".
+    if (len(words) <= 2 and words[-1] in _READING
+            and words[0] not in _COMMITTING):
+        return ""
 
     # Iterate in reverse to prioritize the final (most important) verb: in
     # "Confirm and pay", that is "pay", not "confirm". This is structurally
