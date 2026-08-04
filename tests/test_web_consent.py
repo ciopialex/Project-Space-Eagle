@@ -19,6 +19,12 @@ from actions.grounding.web.consent import irreversible_reason
     "Checkout", "Transfer funds", "Submit return", "File my taxes",
     "Confirm and pay", "Delete account", "Send payment",
     "Accept and continue", "Sign agreement", "Subscribe",
+    # Holes found in review: multi-word phrases and additional verbs
+    "Pay in full", "Pay in 4 interest-free payments", "Sign in and pay",
+    "Confirm order details", "Submit payment details",
+    "Pay with saved payment method", "Delete all history",
+    "Cancel subscription", "Unsubscribe", "Close account",
+    "Withdraw funds", "Donate now",
 ])
 def test_controls_that_commit_something_are_refused(name):
     assert irreversible_reason(name, "push button") != ""
@@ -49,6 +55,31 @@ def test_a_word_inside_another_word_does_not_trip_it():
     assert irreversible_reason("Payment history", "link") == ""
     assert irreversible_reason("Order history", "link") == ""
     assert irreversible_reason("Purchases", "link") == ""
+    # Verify that multi-word reading phrases (3+ words) do NOT exempt the
+    # label when they contain a committing verb.
+    assert irreversible_reason("Confirm order details", "button") != ""
+    assert irreversible_reason("Submit payment details", "button") != ""
+
+
+def test_benign_labels_that_contain_committing_verbs_are_allowed():
+    # "Sign in" contains "sign" (a committing verb) but is exempted as a whole
+    # label. "Sign in and pay" does not match the whole-label exemption.
+    assert irreversible_reason("Sign in", "link") == ""
+    assert irreversible_reason("Login", "link") == ""
+    assert irreversible_reason("Sign out", "link") == ""
+    # Multi-word variants must be explicitly in the exemption set or they will
+    # be checked for verbs.
+    assert irreversible_reason("Sign in and pay", "button") != ""
+
+
+def test_reading_words_only_exempt_short_phrases():
+    # Reading words exempt labels only when they are short noun phrases
+    # (≤2 words) ending in the reading word. This prevents false negatives.
+    assert irreversible_reason("Payment history", "link") == ""  # 2 words, ends in reading word
+    assert irreversible_reason("Order history", "link") == ""  # 2 words, ends in reading word
+    assert irreversible_reason("Your orders", "link") == ""  # 2 words, ends in reading word
+    assert irreversible_reason("Delete all history", "button") != ""  # 3 words, has "delete"
+    assert irreversible_reason("Pay with saved payment method", "button") != ""  # 5 words, has "pay"
 
 
 def test_an_empty_name_is_refused_because_we_cannot_tell_what_it_does():
