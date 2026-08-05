@@ -1,7 +1,16 @@
 # Web Agency — Design
 
 **Created:** 2026-08-04
-**Status:** approved, not yet implemented
+**Status:** v1 implemented 2026-08-05 — see `docs/superpowers/plans/2026-08-04-web-agency.md`
+
+**Measured structural coverage at v1:** 71.8% average across 5 sites, measured
+2026-08-05 (`tools/web_coverage.py`): en.wikipedia.org 60.7% (hit the
+`MAX_NODES=600` ceiling — the true number is lower than this floor),
+news.ycombinator.com 86.6%, developer.mozilla.org/.../CSS 21.0% (1,150 of
+1,151 misses traced to one cause: content inside a closed `<details>` reads
+as unnamed because Chromium's `innerText` is empty there even though
+`textContent` is not), www.python.org 99.6%, ro.wikipedia.org 91.2%.
+Automatisms and the submission gate remain unbuilt.
 
 ## Why
 
