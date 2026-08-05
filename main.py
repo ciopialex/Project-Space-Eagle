@@ -52,6 +52,7 @@ from actions.screen_processor  import _capture_camera, _capture_screen
 from actions.youtube_video     import youtube_video
 from actions.desktop           import desktop_control
 from actions.browser_control   import browser_control
+from actions.web_agency        import web_agency
 from actions.file_controller   import file_controller
 from actions.code_helper       import code_helper
 from actions.dev_agent         import dev_agent
@@ -432,6 +433,35 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "web_agency",
+        "description": (
+            "Uses a website the way a person would, in the eagle's OWN browser — "
+            "reads what controls the page actually has, then clicks and types by "
+            "name. Use this for working INSIDE a site: pressing buttons, filling "
+            "fields, navigating an interface the eagle has never seen. Runs in the "
+            "background, so it does not take over the user's screen. "
+            "Works on pages in English, Romanian and Spanish; on other languages it "
+            "errs toward asking the user before acting. "
+            "REFUSES irreversible actions (paying, ordering, deleting an account, signing) "
+            "and reports why, so the model must relay that to the user and let them decide. "
+            "STOPS and ASKS when a site wants a human — a login, a verification code, "
+            "a 'not a robot' check. "
+            "Use browser_control instead when the user just wants a page opened in "
+            "THEIR browser with their own logins."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":      {"type": "STRING", "description": "open | look | click | type | close"},
+                "url":         {"type": "STRING", "description": "URL for the open action"},
+                "description": {"type": "STRING", "description": "Which control, in plain words: 'the Sign in button', 'the Email field'. Use a name from the last look."},
+                "text":        {"type": "STRING", "description": "Text to type, for the type action"},
+                "want_pixels": {"type": "BOOLEAN", "description": "Force a screenshot on look, when the structural read is not enough"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "file_controller",
         "description": "Manages files and folders: list, create, delete, move, copy, rename, read, write, find, disk usage.",
         "parameters": {
@@ -793,6 +823,10 @@ TOOL_SPECS = {
     "open_app": ToolSpec(writes=["desktop"], priority=1),
     "weather_report": ToolSpec(reads=["web"], priority=1),
     "browser_control": ToolSpec(writes=["desktop"], priority=1),
+    # Reads the web in its own browser; touches neither the user's screen nor
+    # their browser. Non-exclusive on purpose — this is the tool that can run
+    # while the user is doing something else.
+    "web_agency": ToolSpec(reads=["web"], priority=1, timeout_s=90.0),
     "file_controller": ToolSpec(writes=["file"], priority=1),
     "send_message": ToolSpec(writes=["desktop"], exclusive=True, priority=1, timeout_s=130.0),
     "reminder": ToolSpec(writes=["system"], priority=1),
@@ -1124,6 +1158,10 @@ class AethelarkLive:
 
             elif name == "browser_control":
                 r = await loop.run_in_executor(self._tool_executor, lambda: browser_control(parameters=args, player=self.ui))
+                result = r or "Done."
+
+            elif name == "web_agency":
+                r = await loop.run_in_executor(self._tool_executor, lambda: web_agency(parameters=args, player=self.ui))
                 result = r or "Done."
 
             elif name == "file_controller":
