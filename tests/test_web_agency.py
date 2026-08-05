@@ -244,20 +244,71 @@ def test_actuation_timeout_is_reported_as_unknown_not_as_failure():
     assert "look" in result.guidance.lower()
 
 
-def test_actuation_dead_browser_thread_gets_distinct_guidance():
-    """A RuntimeError from a dead browser thread is a different situation
-    from a timeout — nothing was even sent to the browser — and must get
-    guidance that says so, not the same "go look" text a timeout gets."""
-    timeout_result = _call("click", FakeBrowser(page=RaisingPage(
-        PAGE, TimeoutError("browser call exceeded 5.0s"))),
-        description="the Sign in button")
-    dead_result = _call("click", FakeBrowser(page=RaisingPage(
-        PAGE, RuntimeError("browser thread is not running"))),
-        description="the Sign in button")
+class _DyingPage(RaisingPage):
+    """Records that it raised, so the browser can report its thread as gone."""
 
-    assert dead_result.ok is False
-    assert dead_result.guidance != timeout_result.guidance
-    assert "open" in dead_result.guidance.lower()
+    def __init__(self, records, exc):
+        super().__init__(records, exc)
+        self.raised = False
+
+    def click(self, ref):
+        self.raised = True
+        raise self._exc
+
+    def fill(self, ref, text):
+        self.raised = True
+        raise self._exc
+
+
+def test_a_dead_browser_thread_may_claim_nothing_was_sent():
+    """When the worker thread dies mid-call, nothing reached the page and the
+    tool is entitled to say so — a stronger, more useful claim than a
+    timeout's "unknown".
+
+    The browser must read as running while the tool sets the call up (or
+    `_ready` short-circuits before actuation is ever attempted) and as dead
+    once the page has raised. That ordering is what `EagleBrowser` actually
+    produces when its thread goes away in flight.
+    """
+    class Dying(FakeBrowser):
+        @property
+        def running(self):
+            return not self._page.raised
+
+        def page(self):
+            return self._page
+
+    dead = Dying(page=_DyingPage(
+        PAGE, RuntimeError("browser thread is not running")))
+    result = _call("click", dead, description="the Sign in button")
+
+    assert result.ok is False
+    assert "nothing was sent" in result.guidance.lower()
+    assert "open" in result.guidance.lower()
+    assert dead._page.clicked == []
+
+
+def test_a_runtime_error_from_a_live_browser_must_not_claim_nothing_was_sent():
+    """The critical distinction. `EagleBrowser` re-raises worker-side
+    exceptions with their original types, so a RuntimeError from *inside* the
+    page call is indistinguishable by type from a dead thread. Claiming
+    "nothing was sent to the page" there would be a specific, potentially
+    false statement about whether the action landed — the exact class of lie
+    `core/tool_result.py` exists to prevent."""
+    live = FakeBrowser(page=RaisingPage(
+        PAGE, RuntimeError("something failed inside the page call")))
+    timeout = FakeBrowser(page=RaisingPage(
+        PAGE, TimeoutError("browser call exceeded 5.0s")))
+
+    live_result = _call("click", live, description="the Sign in button")
+    timeout_result = _call("click", timeout, description="the Sign in button")
+
+    assert live_result.ok is False
+    assert "nothing was sent" not in live_result.guidance.lower()
+    assert "nothing was sent" not in live_result.message.lower()
+    # Still a different situation from a timeout, and still actionable.
+    assert live_result.guidance != timeout_result.guidance
+    assert live_result.guidance.strip()
 
 
 def test_actuation_unexpected_exception_never_escapes_as_a_raise():
