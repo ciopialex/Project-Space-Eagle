@@ -32,6 +32,21 @@ _NAV_TIMEOUT_MS = 30_000
 # (45s outer vs. 30s inner).
 _CALL_TIMEOUT = 45.0
 
+# A ref names an element by a `data-ae-ref` attribute COLLECT_JS stamped
+# during the snapshot that found it — and COLLECT_JS strips every such
+# attribute at the start of the *next* collect (see page.py), so a ref
+# outlives exactly one navigation and no more. `context.set_default_timeout`
+# above sizes Playwright's default per-call wait for navigation, not for
+# discovering a selector matches nothing: a ref gone stale between being
+# resolved and being used (an async redirect, an SPA route change) would
+# otherwise block a click or fill for the full 30s before failing. Ref-based
+# actuation gets its own, much shorter timeout instead, so a stale ref is
+# reported fast enough for the caller to re-resolve and retry within the same
+# tool call — see `_act_with_reresolve` in actions/web_agency.py, the seam
+# that owns the retry because it is the one place that still has the
+# description a fresh resolve needs.
+_REF_TIMEOUT_MS = 4_000
+
 # How long close() waits, per teardown step, before it stops trying to
 # confirm the step finished and moves on. Unlike _CALL_TIMEOUT, this number
 # has no correctness weight: teardown jobs are submitted with
@@ -90,11 +105,12 @@ class PagePort:
 
     def click(self, ref: str) -> None:
         selector = f'[data-ae-ref="{ref}"]'
-        self._call(lambda: self._page.click(selector))
+        self._call(lambda: self._page.click(selector, timeout=_REF_TIMEOUT_MS))
 
     def fill(self, ref: str, text: str) -> None:
         selector = f'[data-ae-ref="{ref}"]'
-        self._call(lambda: self._page.fill(selector, text))
+        self._call(lambda: self._page.fill(selector, text,
+                                           timeout=_REF_TIMEOUT_MS))
 
     def url(self) -> str:
         # Every other method here marshals onto the browser thread and lets

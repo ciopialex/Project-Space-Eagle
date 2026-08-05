@@ -384,3 +384,54 @@ def test_look_on_a_password_page_surfaces_the_handoff_reason():
     assert result.ok is True
     assert result.data.get("needs_human")
     assert "sign in" in result.message.lower()
+
+
+# ── the stale-ref bug: a ref that goes bad between resolve and act ─────────
+#
+# Found live: a navigation (redirect, SPA route change, form submit) between
+# `find_node` stamping a ref and the browser actually using it leaves that
+# ref pointing at nothing. `_act_with_reresolve` (actions/web_agency.py) is
+# meant to catch that failure and retry once against a freshly re-resolved
+# node. This pins the retry itself, deterministically and instantly, against
+# a fake — the live version in test_web_live_smoke.py proves the same thing
+# is true against real Playwright timeouts and real elapsed time.
+
+
+class StaleThenFreshPage(FakePage):
+    """`collect()` reports ref "e1" for the Sign in button until a click on
+    "e1" is actually attempted and fails — from that point on it reports
+    "e1-fresh" instead, and only that ref can be clicked. Mirrors a page
+    whose DOM has moved on since the node was first resolved: the ref that
+    was correct at resolve time is wrong by the time it is used, and the
+    *next* resolve is what would have found the ref that now works.
+    """
+
+    def __init__(self, records):
+        super().__init__(records)
+        self.invalidated = False
+
+    def collect(self):
+        recs = super().collect()
+        if not self.invalidated:
+            return recs
+        return [dict(r, ref="e1-fresh") if r["ref"] == "e1" else r
+                for r in recs]
+
+    def click(self, ref):
+        if ref == "e1" and not self.invalidated:
+            self.invalidated = True
+            raise TimeoutError("stale ref: element detached from the DOM")
+        if ref == "e1-fresh":
+            self.clicked.append(ref)
+            return
+        raise AssertionError(f"unexpected ref reached click(): {ref!r}")
+
+
+def test_a_stale_ref_is_retried_once_against_a_fresh_resolve():
+    b = FakeBrowser(page=StaleThenFreshPage(PAGE))
+    result = _call("click", b, description="the Sign in button")
+
+    assert result.ok is True
+    # The stale "e1" was attempted and failed; the click that actually
+    # landed used the re-resolved "e1-fresh" ref, not the original one.
+    assert b._page.clicked == ["e1-fresh"]

@@ -171,6 +171,39 @@ def _look(browser, want_pixels: bool) -> ToolResult:
     )
 
 
+def _act_with_reresolve(grounder: WebGrounder, description: str, node,
+                        actuate) -> Any:
+    """Actuate on `node`'s ref; if that fails, re-resolve `description` once
+    against the page's current state and retry with whatever ref it reports
+    now.
+
+    A ref is only good until the next `collect()` — COLLECT_JS strips every
+    `data-ae-ref` at the start of each fresh snapshot (see page.py) — so a
+    ref captured before an async redirect or SPA route change can be stale
+    by the time this runs, even though `node` itself was resolved correctly.
+    `PagePort.click`/`fill` fail fast on a stale ref (`_REF_TIMEOUT_MS` in
+    browser.py, a few seconds rather than Playwright's 30s navigation
+    default) specifically so this can recover within the same tool call:
+    re-perceive the page once, the way a person would when it moves under
+    them, rather than either hanging or giving up on the first miss.
+
+    Lives here rather than in `PagePort` because the retry needs
+    `description` to re-resolve — `PagePort` only ever sees a ref, by design
+    (see its docstring), so it has nothing to re-resolve *with*. Lives here
+    rather than in `WebGrounder` because it is specifically about retrying an
+    *actuation*, not about finding a node — `WebGrounder` has no notion of
+    "try to act, and retry if that failed."
+    """
+    try:
+        return actuate(ref_of(node))
+    except Exception:
+        fresh = grounder.find_node(description)
+        fresh_ref = ref_of(fresh) if fresh is not None else ""
+        if not fresh_ref:
+            raise
+        return actuate(fresh_ref)
+
+
 def _safe_act(act):
     """Wrap an `act(element)` callable so nothing it raises can escape.
 
@@ -354,10 +387,10 @@ def _click(browser, grounder: WebGrounder, description: str) -> ToolResult:
                       "irreversible actions on their behalf."))
 
     page = browser.page()
-    ref = ref_of(node)
     outcome = act_and_verify(
         description,
-        _safe_act(lambda _el: page.click(ref)),
+        _safe_act(lambda _el: _act_with_reresolve(
+            grounder, description, node, lambda ref: page.click(ref))),
         resolver=grounder,
         action="click",
         hit_test=grounder.hit_test,
@@ -418,10 +451,10 @@ def _type(browser, grounder: WebGrounder, description: str,
             guidance=("Call action='look' and pick a control whose role is "
                       "a textbox, searchbox, or password field."))
 
-    ref = ref_of(node)
     outcome = act_and_verify(
         description,
-        _safe_act(lambda _el: page.fill(ref, text)),
+        _safe_act(lambda _el: _act_with_reresolve(
+            grounder, description, node, lambda ref: page.fill(ref, text))),
         resolver=grounder,
         action="fill",
         hit_test=grounder.hit_test,
