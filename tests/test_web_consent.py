@@ -15,9 +15,19 @@ neighbour. The two big parametrised lists below (`MUST_REFUSE`,
 that closed the `order`/`sign` holes — keep them in sync with any future
 change instead of narrowing them to make a change pass.
 """
+import pathlib
+
 import pytest
 
-from actions.grounding.web.consent import _CONFUSABLES, _words, irreversible_reason
+from actions.grounding.web.consent import (
+    _COMMITTING,
+    _COMMITTING_PAIRS,
+    _CONFUSABLES,
+    _READ_ONLY_LABELS,
+    _words,
+    _words_split,
+    irreversible_reason,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +586,12 @@ RO_MUST_REFUSE = [
     "Închide contul",
     "Dezactivează contul",
     "Aplică",
+    # --- Task 6d, Fix 2: payment noun/verb register (no "confirmă" present) ---
+    "Efectuează plata", "Continuă spre plată", "Mergi la plată",
+    "Achită acum", "Achită factura",
+    # --- Task 6d, Fix 4: nominalised/supin register ---
+    "Ștergere cont", "Dezactivare cont", "Închidere cont", "Abonare",
+    "Renunță la abonament",
 ]
 
 RO_MUST_ALLOW = [
@@ -585,6 +601,14 @@ RO_MUST_ALLOW = [
     "Autentificare", "Conectare", "Deconectare",
     "Vezi mai multe", "Filtrează", "Sortează",
     "Istoricul plăților",
+    # --- Task 6d, Fix 5: dezactivează/dezactivare paired, not bare ---
+    "Dezactivează notificările",
+    # --- Task 6d, Fix 6: order/purchase whitelist parity ---
+    "Sumar comandă", "Comanda mea",
+    # --- Task 6d, Fix 7: publica/aplica/rezerva homographs ---
+    "Informație publică", "Ofertă publică",
+    "Aplică filtrul", "Aplică filtre",
+    "Piese de rezervă", "Rezervă de energie",
 ]
 
 ES_MUST_REFUSE = [
@@ -607,6 +631,15 @@ ES_MUST_REFUSE = [
     "Solicitar",
     "Cerrar cuenta",
     "Desactivar cuenta",
+    # --- Task 6d, Fix 2: payment noun (no "confirmar" present) ---
+    "Realizar pago", "Realizar el pago", "Proceder al pago",
+    "Continuar con el pago", "Ir al pago",
+    # --- Task 6d, Fix 4: imperative-tú register, the dominant consumer-site
+    # form, plus the non-reflexive "dar de baja" and the missing
+    # accept verb ---
+    "Paga ahora", "Suscríbete", "Borra mi cuenta", "Envía el formulario",
+    "Firma aquí", "Retira fondos", "Transfiere fondos", "Dona ahora",
+    "Dar de baja", "Aceptar", "Acepto los términos",
 ]
 
 ES_MUST_ALLOW = [
@@ -617,6 +650,17 @@ ES_MUST_ALLOW = [
     "Mi cuenta",
     "Iniciar sesión", "Cerrar sesión",
     "Ver más", "Filtrar", "Ordenar por fecha",
+    # --- Task 6d, Fix 5: desactivar paired, not bare ---
+    "Desactivar notificaciones", "Desactivar el modo oscuro",
+    "Desactivar 2FA",
+    # --- Task 6d, Fix 6: order/purchase whitelist parity ---
+    "Estado del pedido", "Resumen del pedido", "Seguimiento del pedido",
+    "Confirmación de pedido", "Mi pedido",
+    "Detalles de la compra", "Resumen de compra", "Recibo de compra",
+    "Mi compra",
+    # --- Task 6d, Fix 7: publica/retirar/solicitar homographs ---
+    "Información pública", "Retirar en tienda",
+    "Solicitar información", "Solicitar presupuesto",
 ]
 
 
@@ -703,12 +747,235 @@ def test_new_romanian_and_spanish_words_do_not_collide_with_english_vocabulary()
     assert irreversible_reason("Cont.", "button") == ""            # RO pair-object "cont" alone never refuses
 
 
-def test_pinned_english_tables_still_hold_after_new_vocabulary():
-    # Direct re-assertion that the pinned English tables were not moved by
-    # adding Romanian/Spanish vocabulary — belt-and-braces alongside
-    # test_pinned_must_refuse/test_pinned_must_allow, which already run
-    # this data on every collection of this module.
-    for name in MUST_REFUSE:
-        assert irreversible_reason(name, "button") != "", name
-    for name in MUST_ALLOW:
-        assert irreversible_reason(name, "button") == "", name
+# Task 6d, Fix 9: the hand-picked collision test above was mostly vacuous
+# (four of its five assertions test English words the new vocabulary never
+# touches at all, rather than testing the new vocabulary itself). Replaced
+# below with the property the review actually asked to be verified: sweep
+# every non-English committing word/verb — the full, live set, not five
+# examples chosen by hand — against a real English word list and assert
+# none of them is an ordinary English word. `_ENGLISH_COMMITTING_KEYS` /
+# `_ENGLISH_PAIR_VERBS` name the *original* English-only entries (as of
+# before Task 6c), so this sweep — and the data-driven tests below it —
+# automatically pick up every Romanian/Spanish entry added since, present
+# or future, with no hand-maintained list to fall out of sync.
+_ENGLISH_COMMITTING_KEYS = frozenset({
+    "pay", "paying", "purchase", "buy", "checkout", "order", "transfer",
+    "submit", "file", "confirm", "delete", "remove", "subscribe",
+    "unsubscribe", "agree", "accept", "sign", "signing", "send", "publish",
+    "post", "book", "apply", "deactivate", "terminate", "erase", "wipe",
+    "withdraw", "authorize", "authorise", "donate", "bid",
+})
+_ENGLISH_PAIR_VERBS = frozenset({"close", "cancel"})
+
+_NON_ENGLISH_COMMITTING = sorted(set(_COMMITTING) - _ENGLISH_COMMITTING_KEYS)
+_NON_ENGLISH_PAIR_VERBS = sorted(set(_COMMITTING_PAIRS) - _ENGLISH_PAIR_VERBS)
+_NON_ENGLISH_VOCABULARY = sorted(set(_NON_ENGLISH_COMMITTING) | set(_NON_ENGLISH_PAIR_VERBS))
+
+_ENGLISH_READ_ONLY_LABELS = frozenset({
+    "order history", "order details", "order summary", "order status",
+    "purchase history", "purchase details", "purchase summary",
+    "purchase receipt", "purchase receipts",
+    "payment history", "payment details", "payment method",
+    "payment methods", "saved payment methods",
+    "transfer history", "transfer details", "transfer status",
+    "billing history", "post history", "your orders", "your purchases",
+})
+_NON_ENGLISH_READ_ONLY_LABELS = sorted(_READ_ONLY_LABELS - _ENGLISH_READ_ONLY_LABELS)
+
+
+def test_new_vocabulary_does_not_collide_with_ordinary_english_words():
+    # Case-sensitive against the dictionary's *lowercase* entries only, so a
+    # capitalised proper-noun-only entry (the dictionary has "Dona" — a
+    # name — but never lowercase "dona") does not count as a collision with
+    # the ordinary English word it isn't. This is deliberate, not a loophole
+    # to dodge a real finding: "Dona" is required by Fix 4 ("Dona ahora"
+    # must refuse) and a name colliding with a committing verb is the same
+    # residual risk this file already accepts for "close"/"cancel"/every
+    # other short verb that might also be somebody's name — flagged in the
+    # task report, not silently special-cased away.
+    dict_path = pathlib.Path("/usr/share/dict/words")
+    if not dict_path.exists():
+        pytest.skip("no system dictionary available at /usr/share/dict/words")
+    lowercase_words = {
+        w.strip() for w in dict_path.read_text().splitlines() if w.strip().islower()
+    }
+    collisions = sorted(w for w in _NON_ENGLISH_VOCABULARY if w in lowercase_words)
+    assert collisions == [], collisions
+
+
+# --- Task 6d, Fix 8: pin every non-English vocabulary entry, data-driven ---
+# so a future round cannot silently delete one (as three separate entries —
+# "elimina", "rezerva", "posteaza" — and the "detalii comanda" whitelist
+# entry were all found to be deletable with the suite green before this
+# fix) without a named, parametrised test failing.
+
+@pytest.mark.parametrize("word", _NON_ENGLISH_COMMITTING)
+def test_every_non_english_committing_word_refuses_bare(word):
+    assert irreversible_reason(word, "button") != "", word
+
+
+@pytest.mark.parametrize("verb", _NON_ENGLISH_PAIR_VERBS)
+def test_every_non_english_pair_verb_refuses_with_its_object(verb):
+    objects, reason = _COMMITTING_PAIRS[verb]
+    obj = sorted(objects)[0]
+    assert irreversible_reason(f"{verb} {obj}", "button") != "", (verb, obj)
+
+
+@pytest.mark.parametrize("label", _NON_ENGLISH_READ_ONLY_LABELS)
+def test_every_non_english_read_only_label_allows(label):
+    assert irreversible_reason(label, "button") == "", label
+
+# `test_pinned_english_tables_still_hold_after_new_vocabulary` (a
+# verbatim-duplicate loop over MUST_REFUSE/MUST_ALLOW, the exact tautology a
+# previous round's own comment says was already removed once) is deleted,
+# not replaced — MUST_REFUSE/MUST_ALLOW already run on every collection of
+# this module via `test_pinned_must_refuse`/`test_pinned_must_allow` above,
+# and RO/ES equivalents already run via `test_romanian_committing_labels_
+# refuse` etc.; a third copy under a new name would be the same no-op this
+# task was asked to remove, not to reinstate.
+
+
+# ---------------------------------------------------------------------------
+# Task 6d, Fix 9: no RO/ES test asserted a reason *string* before this round
+# — every RO/ES assertion above only checks non-empty/empty. Mirrors the
+# `expected_substring` pattern the English `_CONFUSABLE_PINS` tests already
+# use: proof that the specific verb/noun is what's actually driving the
+# refusal, not merely that *something* in the label matched *something*.
+# ---------------------------------------------------------------------------
+
+RO_REASON_PINS = [
+    ("Plătește", "pay"),
+    ("Șterge contul", "delet"),
+    ("Ștergere cont", "delet"),
+    ("Achită acum", "pay"),
+    ("Continuă spre plată", "pay"),
+    ("Dezactivare cont", "deactivat"),
+    ("Închidere cont", "clos"),
+    ("Renunță la abonament", "subscri"),
+]
+
+ES_REASON_PINS = [
+    ("Pagar", "pay"),
+    ("Paga ahora", "pay"),
+    ("Realizar pago", "pay"),
+    ("Borra mi cuenta", "delet"),
+    ("Firma aquí", "sign"),
+    ("Dona ahora", "donat"),
+    ("Dar de baja", "subscri"),
+    ("Aceptar", "accept"),
+    ("Acepto los términos", "accept"),
+    ("Desactivar cuenta", "deactivat"),
+]
+
+
+@pytest.mark.parametrize("name, expected_substring", RO_REASON_PINS)
+def test_romanian_reasons_are_the_specific_verb_not_just_nonempty(name, expected_substring):
+    reason = irreversible_reason(name, "button")
+    assert reason != "", name
+    assert expected_substring in reason.lower(), (name, reason)
+
+
+@pytest.mark.parametrize("name, expected_substring", ES_REASON_PINS)
+def test_spanish_reasons_are_the_specific_verb_not_just_nonempty(name, expected_substring):
+    reason = irreversible_reason(name, "button")
+    assert reason != "", name
+    assert expected_substring in reason.lower(), (name, reason)
+
+
+# ---------------------------------------------------------------------------
+# Task 6d, Fix 1 / Fix 9: adversarial splitting-character tests.
+#
+# Nothing in the suite before this round exercised the actual tokenisation
+# claim `_strip_noise()`'s old docstring made ("stripping only ever joins
+# tokens, never splits them"). That claim was false — see consent.py's
+# `_strip_noise()` docstring for the root cause (NFKC decomposing `Sk`
+# spacing diacritics into SPACE + combining mark *before* the old pipeline's
+# strip pass ever ran) — and these are the tests that would have caught it.
+# Each case is discrimination evidence: run against `git show
+# HEAD~1:actions/grounding/web/consent.py` (the pre-Task-6d code) before
+# this fix, every one of these failed; see the task report for the recorded
+# run.
+# ---------------------------------------------------------------------------
+
+# --- Sk spacing-diacritic family (dead keys on real keyboard layouts) ------
+
+@pytest.mark.parametrize("name, expected_substring", [
+    ("P´ay now", "pay"),           # U+00B4 ACUTE ACCENT — Spanish/Romanian dead key
+    ("Del¨ete account", "delet"),  # U+00A8 DIAERESIS — Spanish dead key
+    ("Confir˜m payment", "confirm"),  # U+02DC SMALL TILDE
+    ("Ord¯er now", "order"),       # U+00AF MACRON
+    ("Sig˘n contract", "sign"),    # U+02D8 BREVE
+])
+def test_sk_spacing_diacritics_do_not_manufacture_a_word_boundary(name, expected_substring):
+    reason = irreversible_reason(name, "button")
+    assert reason != "", name
+    assert expected_substring in reason.lower(), (name, reason)
+
+
+# --- The nine ASCII characters excluded from the symbol strip -------------
+# These are ordinary ASCII punctuation (`string.punctuation`, already in
+# `_ALLOWED_CHARS`) that Unicode happens to classify as Sc/Sm/Sk. Before
+# this fix they were swept into the same removal as emoji/arrows, fusing
+# the words on either side into one unrecognisable token.
+
+@pytest.mark.parametrize("name, expected_substring", [
+    ("Pay$50 now", "pay"),
+    ("Delete=all", "delet"),
+    ("Confirm+submit", "submit"),  # reverse-iteration prioritises the final verb
+    ("Close<account>", "clos"),
+    ("Sign^here", "sign"),
+    ("Order`now", "order"),
+    ("Cancel|subscription", "cancel"),
+    ("Buy~now", "buy"),
+])
+def test_the_nine_ascii_symbol_exceptions_still_act_as_separators(name, expected_substring):
+    reason = irreversible_reason(name, "button")
+    assert reason != "", name
+    assert expected_substring in reason.lower(), (name, reason)
+
+
+# --- Zs family (non-ASCII space separators) --------------------------------
+# NFKC maps most of these onto an ordinary space, which then acts as a
+# perfectly normal word-splitting delimiter — the review's "visually
+# identical to 'Pay now'" example.
+
+@pytest.mark.parametrize("name, expected_substring", [
+    ("P ay now", "pay"),          # U+200A HAIR SPACE, mid-word
+    ("Ord er now", "order"),      # U+2009 THIN SPACE, mid-word
+    ("Si gn here", "sign"),       # U+00A0 NO-BREAK SPACE, mid-word
+    ("Cl ose account", "clos"),   # U+2002 EN SPACE, mid-word pair-verb
+    ("De lete history", "delet"),  # U+2003 EM SPACE, mid-word
+])
+def test_zs_family_non_ascii_spaces_do_not_hide_inside_a_word(name, expected_substring):
+    reason = irreversible_reason(name, "button")
+    assert reason != "", name
+    assert expected_substring in reason.lower(), (name, reason)
+
+
+def test_zs_space_still_allows_an_ordinary_two_word_label():
+    # The mirror image of the case above: a non-ASCII space genuinely
+    # separating two unrelated, non-committing words must not itself cause
+    # a refusal — only a *committing* word appearing after the split does.
+    assert irreversible_reason("Close menu", "button") == ""
+
+
+# --- The mechanism itself: both readings checked, join preferred ----------
+
+def test_words_split_treats_noise_as_a_separator_where_words_removes_it():
+    # Direct, mechanism-level pin of the dual-tokenisation design, not just
+    # its effect through irreversible_reason(). The join reading recovers
+    # one token; the split reading recovers two.
+    assert _words("Pay★ment method") == ["payment", "method"]
+    assert _words_split("Pay★ment method") == ["pay", "ment", "method"]
+
+
+def test_split_reading_does_not_fragment_a_combining_mark_mid_word():
+    # A combining mark is never a separator in either reading — only the
+    # standalone noise categories (Cf, Symbol, non-ASCII Zs) are. Romanian
+    # "informație" has its comma-below mark in the *middle* of the word
+    # (on the ț), which — if Mn were split-able — would fragment into
+    # "informat" + "ie" and spuriously match nothing useful while losing
+    # the intact "publica" match's own whitelist protection. Both readings
+    # must agree on "informatie".
+    assert _words("Informație publică") == ["informatie", "publica"]
+    assert _words_split("Informație publică") == ["informatie", "publica"]
