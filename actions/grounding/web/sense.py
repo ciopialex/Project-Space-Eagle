@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from actions.grounding.web.page import PageLike, WebNode, nodes_from_records
+from actions.grounding.web.page import (PageLike, WebNode, collector_truncated,
+                                        nodes_from_records)
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,10 @@ class Sense:
     nodes: tuple[WebNode, ...]
     screenshot: bytes | None
     reason: str
+    #: True when `COLLECT_JS` had to stop before it could return every named
+    #: control on the page (see `collector_truncated`). `nodes` is a floor,
+    #: not the true count, whenever this is set.
+    truncated: bool = False
 
     @property
     def escalated(self) -> bool:
@@ -80,17 +85,21 @@ class PageSense:
     def look(self, page: PageLike, *, want_pixels: bool = False) -> Sense:
         """Perceive `page`. Never raises — a page mid-navigation is normal."""
         try:
-            nodes = nodes_from_records(page.collect())
+            records = page.collect()
+            nodes = nodes_from_records(records)
+            truncated = collector_truncated(records)
         except Exception:
             nodes = ()
+            truncated = False
 
         reason = self._escalation_reason(nodes, want_pixels)
         if not reason:
             return Sense("snapshot", nodes, None,
-                         f"read {len(nodes)} controls structurally")
+                         f"read {len(nodes)} controls structurally",
+                         truncated=truncated)
 
         try:
             shot = page.screenshot()
         except Exception:
             shot = None
-        return Sense("screenshot", nodes, shot, reason)
+        return Sense("screenshot", nodes, shot, reason, truncated=truncated)

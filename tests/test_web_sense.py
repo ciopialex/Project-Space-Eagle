@@ -79,6 +79,21 @@ def test_a_page_that_explodes_while_collecting_degrades_to_pixels():
     assert sense.nodes == ()
 
 
+def test_a_truncated_collection_is_reported_on_the_sense():
+    # COLLECT_JS appends {"truncated": true} when it had to stop before
+    # returning every named control (see collector_truncated in page.py).
+    # The sentinel itself must not count as a node.
+    page = FakePage(_records(20) + [{"truncated": True}])
+    sense = PageSense().look(page)
+    assert sense.truncated is True
+    assert len(sense.nodes) == 20
+
+
+def test_an_untruncated_collection_reports_no_truncation():
+    sense = PageSense().look(FakePage(_records(20)))
+    assert sense.truncated is False
+
+
 def test_a_page_that_cannot_even_screenshot_still_returns_a_sense():
     class Dead(FakePage):
         def collect(self):

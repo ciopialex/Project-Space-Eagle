@@ -24,7 +24,8 @@ pytest.importorskip("playwright", reason="playwright not installed")
 from actions.grounding.web.browser import EagleBrowser        # noqa: E402
 from actions.grounding.web.grounder import WebGrounder        # noqa: E402
 from actions.grounding.web.handoff import wall_reason          # noqa: E402
-from actions.grounding.web.page import nodes_from_records, ref_of  # noqa: E402
+from actions.grounding.web.page import (MAX_NODES, collector_truncated,  # noqa: E402
+                                        nodes_from_records, ref_of)
 from actions.web_agency import _act_with_reresolve             # noqa: E402
 
 PAGE_URL = (Path(__file__).parent / "fixtures" / "web"
@@ -182,3 +183,126 @@ def test_a_stale_ref_recovers_by_reresolving_the_description(browser):
         "stale ref and recover on the retry, not wait out the old timeout")
     # No exception above is the point: `_act_with_reresolve` raises only if
     # both the original ref AND the re-resolved retry fail.
+
+
+# ── Gap 1: a closed <details> must not make its contents invisible ─────────
+#
+# Chromium reports an empty `innerText` for content inside a closed
+# <details>, even though `textContent` still holds it — this is what made
+# 1,150 of 1,151 misses on developer.mozilla.org's coverage run one single
+# cause (task-11-report.md). `accName()` now falls back to `textContent`,
+# but the state flags must still tell the truth: a control that is present
+# but not currently visible must come back without SHOWING/VISIBLE, exactly
+# like the pre-existing display:none case — a collected control that
+# falsely claims to be showing is a regression, because `wait_for` would
+# then try to click something that is not there.
+#
+# `browser.call(lambda p: p.set_content(...))` swaps the document in place
+# rather than navigating to a new fixture file, so these tests do not need
+# their own `file://` fixture; each restores `PAGE_URL` afterward so later
+# tests in this module see the fixture they expect.
+
+_DETAILS_HTML = """<!doctype html><html><body>
+<details><summary>Menu</summary>
+  <a href="/a">Hidden link A</a><button>Hidden button B</button>
+</details>
+<details open><summary>Open menu</summary><a href="/c">Visible link C</a></details>
+</body></html>"""
+
+
+def test_a_closed_details_content_is_collected_but_not_showing(browser):
+    browser.call(lambda p: p.set_content(_DETAILS_HTML))
+    try:
+        nodes = nodes_from_records(browser.page().collect())
+        by_name = {n.name: n for n in nodes}
+        assert "Hidden link A" in by_name, (
+            "a control inside a closed <details> was dropped entirely — "
+            "the textContent fallback did not fire")
+        assert "Hidden button B" in by_name
+
+        for name in ("Hidden link A", "Hidden button B"):
+            node = by_name[name]
+            assert "SHOWING" not in node.states, (
+                f"{name!r} claims SHOWING while inside a closed <details> — "
+                "wait_for would try to click something that is not there")
+            assert "VISIBLE" not in node.states
+    finally:
+        browser.goto(PAGE_URL)
+
+
+def test_an_open_details_content_is_collected_and_showing(browser):
+    browser.call(lambda p: p.set_content(_DETAILS_HTML))
+    try:
+        nodes = nodes_from_records(browser.page().collect())
+        by_name = {n.name: n for n in nodes}
+        visible = by_name["Visible link C"]
+        assert "SHOWING" in visible.states
+        assert "VISIBLE" in visible.states
+    finally:
+        browser.goto(PAGE_URL)
+
+
+# ── Gap 2: MAX_NODES used to be a silent, document-order ceiling ───────────
+
+def test_the_truncation_flag_appears_once_the_page_exceeds_the_cap(browser):
+    html = "".join(
+        ["<!doctype html><html><body>"]
+        + [f"<button>btn{i}</button>" for i in range(MAX_NODES + 150)]
+        + ["</body></html>"])
+    browser.call(lambda p: p.set_content(html))
+    try:
+        records = browser.page().collect()
+        nodes = nodes_from_records(records)
+        assert collector_truncated(records) is True, (
+            "more than MAX_NODES named controls were on the page, but "
+            "nothing reported the collector stopped counting")
+        assert len(nodes) == MAX_NODES, (
+            "the output cap must still hold at exactly MAX_NODES even "
+            "though more controls existed")
+    finally:
+        browser.goto(PAGE_URL)
+
+
+def test_the_truncation_flag_is_absent_under_the_cap(browser):
+    browser.goto(PAGE_URL)  # the small sample_page.html fixture
+    records = browser.page().collect()
+    assert collector_truncated(records) is False
+
+
+def test_truncation_prefers_controls_in_or_near_the_viewport(browser):
+    """Before this fix, truncation kept document order: the first MAX_NODES
+    elements found, wherever they sat on screen. This fixture puts 700
+    off-screen buttons *first* in the DOM and 50 on-screen buttons *last* —
+    under naive document-order truncation, document order alone fills the
+    entire 600-slot budget on the earlier off-screen block, and none of the
+    on-screen buttons would survive at all. If this test starts failing,
+    the most likely cause is the viewport-preference cut in COLLECT_JS
+    silently going back to plain document order.
+
+    `position: absolute; top: <px>` is what decouples on-screen-ness from
+    DOM order here — `getBoundingClientRect()` (what COLLECT_JS's viewport
+    check uses) reports the CSS position, not the position in the markup.
+    """
+    parts = ["<!doctype html><html><body>"]
+    for i in range(700):
+        parts.append(f'<button style="position:absolute; top:{5000+i}px; '
+                     f'left:10px;">off{i}</button>')
+    for i in range(50):
+        parts.append(f'<button style="position:absolute; top:{10+i*15}px; '
+                     f'left:10px;">near{i}</button>')
+    parts.append("</body></html>")
+    browser.call(lambda p: p.set_content("".join(parts)))
+    try:
+        records = browser.page().collect()
+        nodes = nodes_from_records(records)
+        names = {n.name for n in nodes}
+
+        missing_near = [f"near{i}" for i in range(50) if f"near{i}" not in names]
+        assert not missing_near, (
+            f"{len(missing_near)} on-screen controls were dropped in favour "
+            "of off-screen controls earlier in the DOM — truncation is not "
+            "preferring the viewport")
+        assert collector_truncated(records) is True
+        assert len(nodes) == MAX_NODES
+    finally:
+        browser.goto(PAGE_URL)

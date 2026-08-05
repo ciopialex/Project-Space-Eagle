@@ -133,6 +133,23 @@ def test_look_on_a_thin_page_escalates_and_says_so():
     assert result.data.get("tier") == "screenshot"
 
 
+def test_look_says_so_when_the_collector_had_to_stop_counting():
+    # ToolResult.data never reaches the model (see this module's docstring)
+    # — the truncation note has to live in `message`, or it does not exist
+    # as far as the model is concerned.
+    b = FakeBrowser(records=PAGE + [{"truncated": True}])
+    result = _call("look", b)
+    assert result.ok is True
+    assert result.data.get("truncated") is True
+    assert "stopped at" in result.message.lower()
+
+
+def test_look_says_nothing_about_truncation_when_nothing_was_dropped():
+    result = _call("look", FakeBrowser())
+    assert result.data.get("truncated") is False
+    assert "stopped at" not in result.message.lower()
+
+
 def test_click_acts_and_confirms():
     b = FakeBrowser()
     result = _call("click", b, description="the Sign in button")

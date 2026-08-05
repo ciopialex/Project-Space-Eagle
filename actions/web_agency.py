@@ -140,6 +140,20 @@ def _look(browser, want_pixels: bool) -> ToolResult:
                 f"Looked closer because {sense.reason} — the screenshot "
                 "also failed, so this is everything that could be read.")
 
+    # `sense.truncated` means COLLECT_JS had to stop before it could return
+    # every named control (see `collector_truncated` in page.py). Below the
+    # empty-nodes check on purpose: a truncated read still found controls to
+    # report, so it belongs with the count, not the "found nothing" branch —
+    # and `ToolResult.data` never reaches the model (see this module's
+    # docstring), so this line in `message` is the only place this can be
+    # said at all.
+    truncation_note = ""
+    if sense.truncated:
+        truncation_note = (
+            f"Stopped at {len(sense.nodes)} controls — this page has more "
+            "than one read returns. Controls near the current viewport were "
+            "kept; others may be missing. Scroll and look again to see more.")
+
     if not sense.nodes:
         lines = [f"Could not read any controls on {current_url or 'the page'}."]
         if escalation_note:
@@ -153,10 +167,13 @@ def _look(browser, want_pixels: bool) -> ToolResult:
                       "want_pixels=true, or action='open' with the URL "
                       "again if the page seems gone."),
             tier=sense.tier, controls=[], needs_human=needs_human,
-            has_screenshot=sense.screenshot is not None)
+            has_screenshot=sense.screenshot is not None,
+            truncated=sense.truncated)
 
     lines = [f"{len(sense.nodes)} controls on {current_url or 'the page'}:",
              _describe(sense.nodes)]
+    if truncation_note:
+        lines.append(f"({truncation_note})")
     if escalation_note:
         lines.append(f"({escalation_note})")
     if needs_human:
@@ -168,6 +185,7 @@ def _look(browser, want_pixels: bool) -> ToolResult:
         controls=[n.name for n in sense.nodes],
         needs_human=needs_human,
         has_screenshot=sense.screenshot is not None,
+        truncated=sense.truncated,
     )
 
 

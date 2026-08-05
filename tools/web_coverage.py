@@ -23,7 +23,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from actions.grounding.web.browser import EagleBrowser      # noqa: E402
-from actions.grounding.web.page import MAX_NODES, nodes_from_records  # noqa: E402
+from actions.grounding.web.page import (MAX_NODES, collector_truncated,  # noqa: E402
+                                        nodes_from_records)
 
 # Everything a person could plausibly click or type into.
 _INTERACTIVE_JS = """
@@ -83,7 +84,14 @@ _MISSED_JS = r"""
         && /^(submit|button|reset)$/i.test(el.type || '') && clean(el.value)) {
       return true;
     }
-    return !!(clean(el.innerText) || clean(el.getAttribute('alt'))
+    // Mirrors accName()'s fallback chain in page.py exactly (innerText,
+    // *then* textContent — the fix for the closed-<details> gap) so this
+    // diagnostic reports the same "has a name" verdict the real collector
+    // would reach. Before this matched, a closed-<details> element that the
+    // real collector now names via textContent still read here as "no
+    // accessible name", which mislabeled a MAX_NODES-cutoff miss as if the
+    // fallback had never fired.
+    return !!(clean(el.innerText) || clean(el.textContent) || clean(el.getAttribute('alt'))
       || clean(el.getAttribute('placeholder')) || clean(el.getAttribute('title'))
       || clean(el.getAttribute('name')));
   };
@@ -104,21 +112,13 @@ _MISSED_JS = r"""
     } else if (!role || role === 'generic') {
       reason = 'no usable role (missing or generic)';
     } else if (!hasName(el)) {
-      // A closed <details> collapses its non-summary content: Chromium
-      // reports an empty innerText for it (innerText is layout-dependent)
-      // even though textContent still holds the real text. The collector's
-      // accName() falls back to innerText, so anything inside a closed
-      // <details> reads as unnamed until the widget is expanded — a
-      // distinct, fixable cause worth telling apart from "genuinely no
-      // text anywhere" (an icon-only link, say).
-      const closedDetails = el.closest('details:not([open])');
-      const textContent = clean(el.textContent);
-      if (closedDetails && textContent) {
-        reason = `no accessible name — inside a closed <details> `
-          + `(innerText is empty there; textContent has "${textContent}")`;
-      } else {
-        reason = 'no accessible name';
-      }
+      // hasName() now shares accName()'s textContent fallback (task 12), so
+      // reaching this branch means textContent was ALSO empty — a closed
+      // <details> whose collapsed content has no name (an icon-only link
+      // with no aria-label inside a collapsed section, say), not the
+      // closed-<details>-hides-everything gap that used to dominate this
+      // bucket on MDN before the fallback existed.
+      reason = 'no accessible name';
     } else {
       reason = 'named + roled, but not collected (likely MAX_NODES cutoff)';
     }
@@ -166,19 +166,15 @@ def measure(browser: EagleBrowser, url: str) -> dict:
         "interactive": total,
         "perceived": len(named),
         "share": (len(named) / total) if total else 0.0,
-        "hit_ceiling": len(nodes) >= MAX_NODES,
+        # The collector's own word for "I stopped before I could return
+        # everything" (see `collector_truncated` in page.py), not a guess
+        # inferred from the node count — `len(nodes) >= MAX_NODES` used to
+        # stand in for this, but that is only ever a coincidence, not a
+        # signal: a page with exactly MAX_NODES named controls and nothing
+        # else would trip it despite never having truncated anything.
+        "hit_ceiling": collector_truncated(records),
         "missed": missed,
     }
-
-
-def _bucket_of(reason: str) -> str:
-    """Collapse a reason string with page-specific text baked in (the closed-
-    <details> case quotes the actual textContent) down to a stable category,
-    so counts can be tallied across elements instead of every row looking
-    unique."""
-    if reason.startswith("no accessible name — inside a closed <details>"):
-        return "no accessible name (inside a closed <details>)"
-    return reason
 
 
 def _print_missed(row: dict) -> None:
@@ -189,9 +185,14 @@ def _print_missed(row: dict) -> None:
         return
     print(f"    missed {len(missed)} of {row['interactive']} interactive "
           f"controls, by reason:")
+    # `_MISSED_JS`'s reasons are already stable, fixed strings — no
+    # page-specific text baked in (the closed-<details> quoting this used to
+    # do went away with task 12's `hasName()` fix, since that branch is only
+    # reachable now when textContent is genuinely empty too) — so no extra
+    # collapsing step is needed before tallying them.
     buckets: dict[str, list[dict]] = {}
     for m in missed:
-        buckets.setdefault(_bucket_of(m["reason"]), []).append(m)
+        buckets.setdefault(m["reason"], []).append(m)
     for reason, items in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
         print(f"      {len(items):4d}  {reason}")
         for m in items[:_MISSED_EXAMPLES_PER_BUCKET]:
