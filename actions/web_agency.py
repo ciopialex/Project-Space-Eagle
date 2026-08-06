@@ -64,7 +64,8 @@ from actions.grounding.actionability import is_editable
 from actions.grounding.verify import act_and_verify
 from actions.grounding.web.consent import irreversible_reason
 from actions.grounding.web.grounder import WebGrounder
-from actions.grounding.web.handoff import cookie_wall_choice, wall_reason
+from actions.grounding.web.handoff import (cookie_wall_choice,
+                                           signed_out_reason, wall_reason)
 from actions.grounding.web.page import element_from, nodes_from_records, ref_of
 from actions.grounding.web.sense import PageSense
 from core.tool_result import ToolResult
@@ -141,6 +142,61 @@ def _current_url(page) -> str:
         return ""
 
 
+def _clear_consent_walls(browser, grounder: WebGrounder) -> list[str]:
+    """Decline cookie/consent walls automatically. Returns what was clicked.
+
+    Not left to the model's judgement, because live testing showed why that
+    fails: shown the wall and told which control clears it, the model asked
+    the user for permission, then offered to open their own browser instead,
+    then repeated the false claim that it could not reach their account. A
+    consent banner is not a decision a person deliberates over — they dismiss
+    it and carry on — and every turn spent negotiating one is a turn not spent
+    on what was actually asked.
+
+    Safe to automate precisely because of what it will click. `cookie_wall_choice`
+    only ever names a decline-style control, every one of which
+    `irreversible_reason` already permits; the assert below states that
+    contract rather than trusting it. An "Accept all"-only wall yields no
+    choice, so this does nothing and the user is asked — the eagle never
+    consents to tracking on their behalf.
+
+    Loops because Google's is two steps: the banner offers only "More options",
+    which opens a second page carrying the actual "Reject all".
+    """
+    cleared: list[str] = []
+    for _step in range(3):
+        page = browser.page()
+        if page is None:
+            break
+        choice = cookie_wall_choice(_current_nodes(page), _current_url(page))
+        if not choice or choice in cleared:
+            break
+        # The whole safety argument in one line: only ever a control the
+        # consent gate would have allowed anyway.
+        if irreversible_reason(choice):
+            break
+        try:
+            _act_with_reresolve(grounder, choice, _gate_click,
+                                lambda ref: page.click(ref))
+        except Exception:
+            break
+        cleared.append(choice)
+        # The click navigates, and the destination is a single-page app that
+        # mounts its content well after the navigation resolves. A fixed pause
+        # is the wrong tool: too short and the next read sees a bare footer
+        # (measured), too long and every consent wall costs that much. Wait
+        # until the page actually has something on it, with a hard cap.
+        for _ in range(6):
+            try:
+                browser.call(lambda pg: pg.wait_for_timeout(500), timeout=20.0)
+            except Exception:
+                break
+            page = browser.page()
+            if page is None or len(_current_nodes(page)) >= 20:
+                break
+    return cleared
+
+
 def _look(browser, want_pixels: bool) -> ToolResult:
     page = browser.page()
     if page is None:
@@ -153,7 +209,8 @@ def _look(browser, want_pixels: bool) -> ToolResult:
 
     sense = _SENSE.look(page, want_pixels=want_pixels)
     current_url = _current_url(page)
-    needs_human = wall_reason(sense.nodes, current_url)
+    needs_human = (wall_reason(sense.nodes, current_url)
+                   or signed_out_reason(sense.nodes))
     # A cookie/consent wall is not a "needs a human" wall: it can be cleared
     # without consenting to anything, by declining. Surfaced explicitly
     # because the alternative is what happened live — the eagle sat on
@@ -723,7 +780,15 @@ def _web_agency(params: dict, player: Any, browser: Any) -> ToolResult:
         # A deliberate navigation invalidates whatever suspicion the last
         # page earned; a fresh site shouldn't inherit a stale failure count.
         _SENSE.note_success()
-        return _look(browser, want_pixels=False)
+        cleared = _clear_consent_walls(browser, WebGrounder(browser.page))
+        result = _look(browser, want_pixels=False)
+        if cleared:
+            note = ("Declined tracking on the consent wall ("
+                    + ", ".join(repr(c) for c in cleared) + ") and carried on.")
+            result = ToolResult.success(note + "\n" + result.message,
+                                        **{**result.data,
+                                           "consent_cleared": cleared})
+        return result
 
     if action == "look":
         return _look(browser, want_pixels=bool(params.get("want_pixels")))

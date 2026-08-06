@@ -271,3 +271,37 @@ def cookie_wall_choice(nodes: Iterable[object], url: str = "") -> str:
             if target and target <= words and len(words) <= len(target) + 2:
                 return raw
     return ""
+
+
+#: Phrases where a site is telling the user that the CONTENT is gated, as
+#: opposed to merely offering a sign-in link the way nearly every homepage
+#: does. The distinction matters: treating any "Sign in" control as a wall
+#: would fire on most of the web and train the user to ignore it.
+#:
+#: Found live: signed out, youtube.com/feed/liked renders 91 controls and
+#: reads perfectly — it just says "Conectează-te pentru a aprecia
+#: videoclipuri" (sign in to like videos) instead of showing them. Nothing
+#: detected that, so the eagle had no honest way to say what was wrong.
+_SIGNED_OUT_PHRASES = (
+    "sign in to", "log in to", "sign in for", "please sign in", "please log in",
+    "conecteaza-te pentru", "conectati-va pentru", "autentifica-te pentru",
+    "inicia sesion para", "iniciar sesion para", "accede para",
+)
+
+_SIGNED_OUT_REASON = (
+    "this page is only showing signed-out content — the site wants the user "
+    "signed in before it will show what they asked for")
+
+
+def signed_out_reason(nodes: Iterable[object]) -> str:
+    """Why this page is withholding content until someone signs in, or "".
+
+    Deliberately phrase-based, never role- or name-based: a "Sign in" button
+    is not evidence of a wall, it is evidence of a website.
+    """
+    for node in nodes or ():
+        folded = " ".join(_label_words(str(getattr(node, "name", "") or "")))
+        if any(phrase.replace("-", " ") in folded
+               for phrase in _SIGNED_OUT_PHRASES):
+            return _SIGNED_OUT_REASON
+    return ""
