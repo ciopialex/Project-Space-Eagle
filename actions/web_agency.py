@@ -64,7 +64,7 @@ from actions.grounding.actionability import is_editable
 from actions.grounding.verify import act_and_verify
 from actions.grounding.web.consent import irreversible_reason
 from actions.grounding.web.grounder import WebGrounder
-from actions.grounding.web.handoff import wall_reason
+from actions.grounding.web.handoff import cookie_wall_choice, wall_reason
 from actions.grounding.web.page import element_from, nodes_from_records, ref_of
 from actions.grounding.web.sense import PageSense
 from core.tool_result import ToolResult
@@ -154,6 +154,13 @@ def _look(browser, want_pixels: bool) -> ToolResult:
     sense = _SENSE.look(page, want_pixels=want_pixels)
     current_url = _current_url(page)
     needs_human = wall_reason(sense.nodes, current_url)
+    # A cookie/consent wall is not a "needs a human" wall: it can be cleared
+    # without consenting to anything, by declining. Surfaced explicitly
+    # because the alternative is what happened live — the eagle sat on
+    # consent.youtube.com unable to proceed, because the only buttons it
+    # considered ("Accept all", "I agree") are refused by the consent gate,
+    # and it told the user the task was impossible.
+    cookie_choice = cookie_wall_choice(sense.nodes, current_url)
 
     # `PageSense.look` swallows a `page.collect()` exception into an empty
     # node tuple — indistinguishable, from here, from a page that is
@@ -214,11 +221,23 @@ def _look(browser, want_pixels: bool) -> ToolResult:
         lines.append(f"This needs the user — {needs_human} "
                     f"({_NO_HANDOFF_WINDOW}).")
 
+    if cookie_choice:
+        lines.append(
+            f"This is a cookie/consent wall. Click '{cookie_choice}' to get "
+            f"past it without agreeing to tracking, then carry on — do not "
+            f"click Accept.")
+    elif needs_human and "consent" in (current_url or "").lower():
+        lines.append(
+            "This is a consent wall with no decline option the eagle may "
+            "click on its own. Tell the user what it is asking and let them "
+            "decide.")
+
     return ToolResult.success(
         "\n".join(lines),
         tier=sense.tier,
         controls=[n.name for n in sense.nodes],
         needs_human=needs_human,
+        cookie_wall=cookie_choice,
         has_screenshot=sense.screenshot is not None,
         truncated=sense.truncated,
     )

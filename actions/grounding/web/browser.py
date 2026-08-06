@@ -348,12 +348,43 @@ class EagleBrowser:
                         call=lambda fn: self._submit(fn, _CALL_TIMEOUT))
 
     def goto(self, url: str) -> str:
-        """Navigate. Returns the URL actually landed on."""
+        """Navigate, let the page render, and return the URL landed on."""
         def _go(page):
-            page.goto(url, timeout=_NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            page.goto(url, timeout=_NAV_TIMEOUT_MS,
+                      wait_until="domcontentloaded")
+            _settle(page)
             return str(page.url)
 
         return self.call(_go, timeout=45.0)
+
+
+
+#: How long to let a page keep rendering after `domcontentloaded` before
+#: reading it. Single-page apps have almost nothing in the DOM at that point:
+#: measured live, youtube.com yielded **6 controls** because the collector ran
+#: while React was still mounting. Waiting for `networkidle` instead is not an
+#: option — YouTube polls continuously and never goes idle, so it would burn
+#: the whole timeout on every navigation.
+_SETTLE_MS = 1200
+
+
+def _settle(page) -> None:
+    """Give a single-page app a moment to actually render.
+
+    Best-effort by design: a page that never settles is still worth reading,
+    so every wait here is capped and every failure is ignored. The `body`
+    wait catches the common case cheaply, and the short fixed pause covers
+    frameworks that mount their real content a tick later.
+    """
+    try:
+        page.wait_for_selector("body", timeout=_SETTLE_MS)
+    except Exception:
+        pass
+    try:
+        page.wait_for_timeout(_SETTLE_MS)
+    except Exception:
+        pass
+
 
 
 _DEFAULT: EagleBrowser | None = None

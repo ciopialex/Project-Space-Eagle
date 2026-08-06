@@ -226,3 +226,59 @@ def test_await_human_survives_a_check_that_explodes():
 
     assert await_human(check, timeout=100, poll=0,
                        clock=lambda: 0.0, sleep=lambda _s: None) is True
+
+
+# --- Cookie/consent walls (found live on consent.youtube.com) -------------
+
+def _buttons(*names):
+    return nodes_from_records([
+        {"ref": f"e{i}", "name": n, "role": "button", "left": 0, "top": i * 20,
+         "width": 80, "height": 24,
+         "states": ["ENABLED", "SENSITIVE", "VISIBLE", "SHOWING"], "value": ""}
+        for i, n in enumerate(names)])
+
+
+def test_a_google_consent_wall_is_recognised_by_its_url():
+    """The decisive signal. Google's wall never says "cookie" in readable
+    text — it says "Before you continue to YouTube" — but it always moves you
+    to a consent host, which is unambiguous."""
+    from actions.grounding.web.handoff import cookie_wall_choice
+    assert cookie_wall_choice(
+        _buttons("Accept all", "Reject all"),
+        "https://consent.youtube.com/m?continue=x") == "Reject all"
+
+
+def test_the_romanian_wall_the_eagle_actually_hit():
+    from actions.grounding.web.handoff import cookie_wall_choice
+    assert cookie_wall_choice(
+        _buttons("Acceptă tot", "Respinge tot"),
+        "https://consent.youtube.com/m?hl=ro") == "Respinge tot"
+
+
+def test_it_never_accepts_tracking_on_the_users_behalf():
+    """A wall offering only "Accept all" has no move the eagle may make
+    alone. Returning nothing is what routes it to telling the user, and
+    `consent.irreversible_reason` refuses "Accept all" independently — two
+    separate reasons it cannot happen."""
+    from actions.grounding.web.consent import irreversible_reason
+    from actions.grounding.web.handoff import cookie_wall_choice
+    assert cookie_wall_choice(_buttons("We use cookies", "Accept all")) == ""
+    assert irreversible_reason("Accept all") != ""
+    assert irreversible_reason("I agree") != ""
+
+
+def test_the_decline_control_is_one_the_consent_gate_permits():
+    """The whole design rests on this: the privacy-preserving choice and the
+    unblocking choice are the same choice, so clearing a wall needs no
+    exception to the gate."""
+    from actions.grounding.web.consent import irreversible_reason
+    for label in ["Reject all", "Only necessary", "Respinge tot",
+                  "Refuz tot", "Doar necesare", "Rechazar todo"]:
+        assert irreversible_reason(label) == "", label
+
+
+def test_an_ordinary_page_is_not_mistaken_for_a_consent_wall():
+    from actions.grounding.web.handoff import cookie_wall_choice
+    assert cookie_wall_choice(
+        _buttons("Search", "Sign in", "Home", "Reject"),
+        "https://news.ycombinator.com") == ""

@@ -185,3 +185,89 @@ def await_human(check: Callable[[], str], *,
         if clock() - start >= timeout:
             return False
         sleep(poll)
+
+
+# --- Cookie / tracking consent walls ---------------------------------------
+#
+# Found live, on the user's own machine: the eagle opened YouTube from Romania,
+# was redirected to consent.youtube.com, and stopped dead — then told the user
+# it couldn't reach their liked videos "for security reasons", which was
+# invented. Nothing was wrong with perception; it read 200 controls fine.
+#
+# It was deadlocked by its own safety gate. "Accept all" and "I agree" are
+# refused by `consent.irreversible_reason` — correctly, they *do* commit
+# something on the user's behalf. But those were the only buttons it
+# considered, so every EU site became a dead end, and these walls sit in front
+# of essentially the whole web for a European user.
+#
+# The way out was already there: "Reject all" and "Only necessary" are not
+# committing, so the gate permits them. Rejecting is also the privacy-
+# preserving answer and the one a careful person picks anyway — the safe move
+# and the unblocking move are the same move, which is why this needs no
+# exception to the gate and no new actuation path.
+
+_COOKIE_MARKERS = {
+    "cookie", "cookies", "consent", "consimtamant", "consimtamintul",
+    "gdpr", "tracking", "personalizate", "personalised", "personalized",
+}
+
+#: Google's wall never says "cookie" in the part you can read — it says
+#: "Before you continue to YouTube". Measured on the real page, which is how
+#: this gap was found.
+_COOKIE_PHRASES = (
+    "before you continue", "inainte de a continua", "antes de continuar",
+    "we use cookies", "folosim cookie", "usamos cookies",
+    "your privacy choices", "manage your privacy",
+)
+
+#: The most reliable signal of all: Google, YouTube and many others move the
+#: wall to a dedicated consent host, so the URL says it outright.
+_CONSENT_HOSTS = ("consent.", "consent-", "/consent", "cookiewall", "gdpr")
+
+#: Rejecting/minimising, in preference order. All are permitted by the gate.
+_COOKIE_DECLINE = (
+    "reject all", "reject", "refuse all", "decline", "decline all",
+    "only necessary", "necessary only", "necessary cookies only",
+    "essential only", "only essential", "strictly necessary",
+    "manage options", "manage preferences", "more options",
+    # Romanian
+    "refuz tot", "refuza tot", "respinge tot", "doar necesare",
+    "doar cele necesare", "gestioneaza optiunile", "mai multe optiuni",
+    # Spanish
+    "rechazar todo", "rechazar", "solo necesarias", "solo las necesarias",
+    "gestionar opciones", "mas opciones",
+)
+
+
+def cookie_wall_choice(nodes: Iterable[object], url: str = "") -> str:
+    """The name of the control that clears a cookie wall *without consenting*.
+
+    Returns "" when this is not a cookie wall, or when it is one and nothing
+    on it can be clicked without agreeing to tracking — in which case the
+    honest move is to tell the user rather than accept on their behalf.
+    """
+    names = []
+    for node in nodes or ():
+        raw = str(getattr(node, "name", "") or "")
+        if raw:
+            names.append((raw, set(_label_words(raw))))
+
+    lowered = (url or "").lower()
+    looks_like_consent = (
+        any(host in lowered for host in _CONSENT_HOSTS)
+        or any(w & _COOKIE_MARKERS for _raw, w in names)
+        or any(phrase in raw.lower()
+               for raw, _w in names for phrase in _COOKIE_PHRASES)
+    )
+    if not looks_like_consent:
+        return ""
+
+    for wanted in _COOKIE_DECLINE:
+        target = set(_label_words(wanted))
+        for raw, words in names:
+            # Whole-label match on the folded words, so "Reject all" matches
+            # "Reject all" and "Reject All Cookies" but never "Reject" inside
+            # some unrelated sentence.
+            if target and target <= words and len(words) <= len(target) + 2:
+                return raw
+    return ""
