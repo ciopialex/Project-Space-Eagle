@@ -67,6 +67,13 @@ class Dispatcher:
     _session_is_wedged      = main.AethelarkLive._session_is_wedged
     _batch_needs_exclusion  = main.AethelarkLive._batch_needs_exclusion
     _cancel_inflight_tools  = main.AethelarkLive._cancel_inflight_tools
+    # Borrowed too, and deliberately not stubbed out. `_run_and_reply` marks
+    # the trace, and its broad `except Exception` turns anything missing here
+    # into a silent "Tool dispatch failed" with no tool response sent — so a
+    # double that fakes the tracing would hide exactly the class of breakage
+    # this file exists to catch.
+    _trace_mark             = main.AethelarkLive._trace_mark
+    _trace                  = None
 
     def __init__(self, tool_duration=0.2, fail=False, durations=None):
         self._inflight_tools = set()
