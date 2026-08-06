@@ -360,8 +360,13 @@ TOOL_DECLARATIONS = [
     {
         "name": "youtube_video",
         "description": (
-            "Controls YouTube. Use for: playing videos, summarizing a video's content, "
-            "getting video info, or showing trending videos."
+            "Plays a YouTube video by name, summarizes a video's content, gets video "
+            "info, or shows trending videos. It works by searching YouTube publicly — "
+            "it is NOT signed in as the user and cannot see anything account-specific. "
+            "For the user's own liked videos, watch history, subscriptions, playlists, "
+            "comments, or anything else behind their login, use web_agency instead: it "
+            "drives a real browser and can be signed in. Never tell the user something "
+            "is private or impossible without trying web_agency first."
         ),
         "parameters": {
             "type": "OBJECT",
