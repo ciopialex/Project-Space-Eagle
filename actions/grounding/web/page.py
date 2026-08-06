@@ -22,12 +22,29 @@ from actions.grounding.base import Element
 # hand back a hundred thousand records and stall the eagle either.
 MAX_NODES = 600
 
-#: Walks the DOM and returns one record per *named* control.
+#: The name/role derivation shared by `COLLECT_JS`, `HIT_TEST_JS`, and (via
+#: `tools/web_coverage.py`'s import of this constant) the coverage
+#: instrument's `_MISSED_JS`.
 #:
-#: Named is the filter that matters. An unnamed div is not a control a person
-#: could ask for, and including it would bury the ones they can.
+#: This used to be three separate copies. `COLLECT_JS` computed the full
+#: `accName()` chain and `implicitRole()`; `HIT_TEST_JS` computed a cut-down
+#: `aria-label || innerText` for the name and `getAttribute('role') ||
+#: tagName` for the role. The two never agreed except by coincidence (a bare
+#: `<button>text</button>`) — every `<a href>`, every `<input>` named by
+#: `label[for]`/`aria-labelledby`/a wrapping label/`alt`/`placeholder`/
+#: `title`, and every checkbox named by a wrapping label came back from
+#: `HIT_TEST_JS` with a *different* `(name, role)` than `COLLECT_JS` reported
+#: for the exact same element. `actionability._identity` compares
+#: `(name, role, bounds)` between the two, so `receives_events` could never
+#: pass for any of those — every click on a link or a labelled input timed
+#: out after 5s, and the model was told "it was covered by something else on
+#: the page," which was false. Fixed by making both scripts call the exact
+#: same functions instead of hand-maintaining two readings of "what is this
+#: element called" that could drift again the moment either one changed.
 #:
-#: Two things past that:
+#: `implicitRole()` maps an element to its ARIA role when none is stated
+#: explicitly. `accName()` is a deliberately simplified accessible-name
+#: computation:
 #:
 #: 1. `accName()` falls back to `textContent` when `innerText` is empty.
 #:    Chromium reports an empty `innerText` for content inside a *closed*
@@ -36,32 +53,13 @@ MAX_NODES = 600
 #:    if the widget opened — without this fallback, everything inside a
 #:    collapsed disclosure widget is invisible to the collector. It is
 #:    still collected without SHOWING/VISIBLE (see `checkVisibility()`
-#:    below) — present-but-not-currently-actionable is the correct claim,
-#:    not "does not exist."
-#: 2. On a page with more named controls than `MAX_NODES`, document order
-#:    would always keep the top of the DOM and lose whatever is near the
-#:    user's current viewport. Controls that intersect the viewport are
-#:    preferred when the cut has to be made, and the walk reports whether
-#:    it had to truncate at all (a `{truncated: true}` record appended to
-#:    the output — see `collector_truncated()`), so a caller can tell "every
-#:    control" from "every control up to the point we stopped counting."
-COLLECT_JS = r"""
-(() => {
-  const MAX_NODES = 600;
-  // How many named candidates get fully evaluated (geometry, states, and a
-  // spot in line for the viewport-preference cut below) before the walk
-  // gives up looking for anything better. Bigger than MAX_NODES so a page
-  // with more controls than that still gets to compare candidates against
-  // each other instead of just keeping the first 600 in document order —
-  // but still a fixed, small multiple, so a pathological page cannot make
-  // this walk unbounded.
-  const CANDIDATE_CAP = MAX_NODES * 3;
-
-  // Refs from the previous snapshot must not survive, or a click resolves
-  // against an element that has since moved or been replaced.
-  document.querySelectorAll('[data-ae-ref]')
-          .forEach(e => e.removeAttribute('data-ae-ref'));
-
+#:    in `COLLECT_JS` below) — present-but-not-currently-actionable is the
+#:    correct claim, not "does not exist."
+#: 2. `roleOf()` bundles the explicit-role filtering (`presentation`/`none`
+#:    suppress the element; an unrecognised or `generic` role means "not a
+#:    control") with the implicit-role fallback, so `COLLECT_JS`'s walk and
+#:    `HIT_TEST_JS`'s point lookup make that decision identically too.
+_ACCESSIBLE_NAME_JS = r"""
   const implicitRole = (el) => {
     const tag = el.tagName;
     if (tag === 'A') return el.hasAttribute('href') ? 'link' : null;
@@ -84,6 +82,16 @@ COLLECT_JS = r"""
     }
     if (el.isContentEditable) return 'textbox';
     return null;
+  };
+
+  // Explicit `role=` (filtered for presentation/none/generic), else the
+  // implicit role, else null — "not a control this collector names."
+  const roleOf = (el) => {
+    const explicit = (el.getAttribute('role') || '').trim().toLowerCase();
+    if (explicit === 'presentation' || explicit === 'none') return null;
+    const role = explicit || implicitRole(el);
+    if (!role || role === 'generic') return null;
+    return role;
   };
 
   const clean = (s) => (s || '').replace(/\s+/g, ' ').trim().slice(0, 120);
@@ -127,7 +135,37 @@ COLLECT_JS = r"""
         || clean(el.getAttribute('placeholder')) || clean(el.getAttribute('title'))
         || clean(el.getAttribute('name'));
   };
+"""
 
+#: Walks the DOM and returns one record per *named* control.
+#:
+#: Named is the filter that matters. An unnamed div is not a control a person
+#: could ask for, and including it would bury the ones they can.
+#:
+#: On a page with more named controls than `MAX_NODES`, document order would
+#: always keep the top of the DOM and lose whatever is near the user's
+#: current viewport. Controls that intersect the viewport are preferred when
+#: the cut has to be made, and the walk reports whether it had to truncate at
+#: all (a `{truncated: true}` record appended to the output — see
+#: `collector_truncated()`), so a caller can tell "every control" from
+#: "every control up to the point we stopped counting."
+COLLECT_JS = r"""
+(() => {
+  const MAX_NODES = 600;
+  // How many named candidates get fully evaluated (geometry, states, and a
+  // spot in line for the viewport-preference cut below) before the walk
+  // gives up looking for anything better. Bigger than MAX_NODES so a page
+  // with more controls than that still gets to compare candidates against
+  // each other instead of just keeping the first 600 in document order —
+  // but still a fixed, small multiple, so a pathological page cannot make
+  // this walk unbounded.
+  const CANDIDATE_CAP = MAX_NODES * 3;
+
+  // Refs from the previous snapshot must not survive, or a click resolves
+  // against an element that has since moved or been replaced.
+  document.querySelectorAll('[data-ae-ref]')
+          .forEach(e => e.removeAttribute('data-ae-ref'));
+""" + _ACCESSIBLE_NAME_JS + r"""
   const inViewport = (rect) => rect.bottom > 0 && rect.top < window.innerHeight
                              && rect.right > 0 && rect.left < window.innerWidth;
 
@@ -143,10 +181,8 @@ COLLECT_JS = r"""
     if (candidates.length >= CANDIDATE_CAP) { walkTruncated = true; break; }
 
     try {
-      const explicit = (el.getAttribute('role') || '').trim().toLowerCase();
-      if (explicit === 'presentation' || explicit === 'none') continue;
-      const role = explicit || implicitRole(el);
-      if (!role || role === 'generic') continue;
+      const role = roleOf(el);
+      if (!role) continue;
 
       const name = accName(el);
       if (!name) continue;
@@ -247,22 +283,33 @@ COLLECT_JS = r"""
 #: there — walking up to the nearest collected ancestor. This is the exact
 #: equivalent of AT-SPI's get_accessible_at_point, and it is what catches the
 #: cookie banner that opened over the button.
+#:
+#: `name`/`role` come from the exact same `accName()`/`roleOf()` used by
+#: `COLLECT_JS` — see `_ACCESSIBLE_NAME_JS`'s docstring for why this used to
+#: be a second, disagreeing reading and what that broke (`receives_events`,
+#: and therefore every click, for anything but a bare `<button>`). `roleOf()`
+#: can return `null` here in principle (the page mutated `role=` between the
+#: collect that stamped `owner`'s ref and this hit-test), so this falls back
+#: to the element's own tag name in that case — the same fallback the old,
+#: pre-fix code used unconditionally — rather than reporting no role at all.
 HIT_TEST_JS = r"""
-((pt) => {
-  const hit = document.elementFromPoint(pt[0], pt[1]);
-  if (!hit) return null;
-  const owner = hit.closest('[data-ae-ref]');
-  if (!owner) return null;
-  const rect = owner.getBoundingClientRect();
-  return {
-    ref: owner.getAttribute('data-ae-ref'),
-    name: (owner.getAttribute('aria-label') || owner.innerText || '')
-            .replace(/\s+/g, ' ').trim().slice(0, 120),
-    role: (owner.getAttribute('role') || owner.tagName).toLowerCase(),
-    left: rect.left, top: rect.top, width: rect.width, height: rect.height,
-    states: [], value: '',
+(() => {
+""" + _ACCESSIBLE_NAME_JS + r"""
+  return (pt) => {
+    const hit = document.elementFromPoint(pt[0], pt[1]);
+    if (!hit) return null;
+    const owner = hit.closest('[data-ae-ref]');
+    if (!owner) return null;
+    const rect = owner.getBoundingClientRect();
+    return {
+      ref: owner.getAttribute('data-ae-ref'),
+      name: accName(owner),
+      role: roleOf(owner) || (owner.tagName || '').toLowerCase(),
+      left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+      states: [], value: '',
+    };
   };
-})
+})()
 """
 
 

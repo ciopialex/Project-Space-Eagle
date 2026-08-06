@@ -156,6 +156,27 @@ def _shutdown_tool_executor(executor: "ThreadPoolExecutor") -> None:
     executor.shutdown(wait=False, cancel_futures=True)
 
 
+def _shutdown_web_browser() -> None:
+    """Close the eagle's own browser, if `web_agency` ever started one.
+
+    Nothing else in this process closes it: `EagleBrowser` runs its own
+    daemon thread and holds an un-`stop()`ped Playwright driver process for
+    as long as the process lives, and a daemon thread does not get a chance
+    to run its own cleanup on interpreter exit. Importing
+    `actions.grounding.web.browser` here rather than at module load time
+    keeps this file from paying for Playwright's import (and the module
+    it's nested under) on every startup, including the vast majority of
+    sessions that never touch the web tool at all — `default_browser()`
+    only ever constructs the real thing the first time `web_agency` needs
+    it, and if that never happened, closing it here is a safe no-op.
+    """
+    try:
+        from actions.grounding.web.browser import default_browser
+        default_browser().close()
+    except Exception as e:
+        print(f"[main.py] Non-fatal error closing the eagle's browser: {e}")
+
+
 class ConnectionBackoff:
     """Reconnect delay that grows under failure and forgets that growth once a
     session proves healthy.
@@ -1317,6 +1338,16 @@ class AethelarkLive:
                     self.ui.write_log("SYS: Shutting down...")
                     # Stop audio streams
                     self.set_speaking(False)
+                    # Close the eagle's own browser, if web_agency ever
+                    # started one — see _shutdown_web_browser's docstring
+                    # for why nothing else does this. Off the event loop
+                    # thread: EagleBrowser.close() blocks synchronously for
+                    # up to a few seconds waiting on its teardown jobs.
+                    try:
+                        await loop.run_in_executor(self._tool_executor,
+                                                   _shutdown_web_browser)
+                    except Exception as _e:
+                        print(f"[main.py] Non-fatal error at line 1071: {_e}")
                     # Close dashboard
                     if self._dashboard:
                         try:
@@ -2466,6 +2497,7 @@ def main():
                 asyncio.run(core.run())
             finally:
                 _shutdown_tool_executor(core._tool_executor)
+                _shutdown_web_browser()
 
         _run_core(ui, _start)
 

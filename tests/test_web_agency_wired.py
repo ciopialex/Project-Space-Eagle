@@ -61,3 +61,63 @@ def test_it_is_dispatched():
     import inspect
     source = inspect.getsource(main)
     assert 'elif name == "web_agency"' in source
+
+
+# ── Blocker 4: the declaration and the behaviour must agree ────────────────
+#
+# `web_agency` is non-exclusive specifically because it "touches neither the
+# user's screen nor their browser" (see the comment on its ToolSpec) — that
+# claim is only true if the eagle's browser is actually headless. Pinned
+# here rather than left to be re-broken by a future default flip nobody
+# thinks to check against the declaration it justifies.
+
+def test_the_non_exclusive_declaration_is_backed_by_a_headless_default(
+        monkeypatch):
+    from actions.grounding.web.browser import EagleBrowser
+    monkeypatch.delenv("AETHELARK_BROWSER_HEADLESS", raising=False)
+    spec = main.TOOL_SPECS["web_agency"]
+    assert spec.exclusive is False
+    assert EagleBrowser().headless is True, (
+        "web_agency is declared non-exclusive on the strength of never "
+        "showing the user a window, but the browser it drives defaults to "
+        "visible — the declaration and the behaviour disagree")
+
+
+# ── the "also fix": nothing closed the browser on shutdown ─────────────────
+#
+# `EagleBrowser` runs its own daemon thread and holds an un-`stop()`ped
+# Playwright driver process for as long as the process lives; a daemon
+# thread gets no chance to clean up on interpreter exit. `main()`'s graceful
+# shutdown used to end without ever calling `default_browser().close()`.
+
+def test_shutdown_closes_the_eagles_browser():
+    calls = []
+
+    class FakeDefault:
+        def close(self):
+            calls.append("closed")
+
+    fake = FakeDefault()
+    import actions.grounding.web.browser as browser_module
+    original = browser_module.default_browser
+    browser_module.default_browser = lambda: fake
+    try:
+        main._shutdown_web_browser()
+    finally:
+        browser_module.default_browser = original
+
+    assert calls == ["closed"]
+
+
+def test_shutdown_never_raises_even_if_closing_the_browser_fails():
+    import actions.grounding.web.browser as browser_module
+
+    def exploding_default_browser():
+        raise RuntimeError("browser thread already dead")
+
+    original = browser_module.default_browser
+    browser_module.default_browser = exploding_default_browser
+    try:
+        main._shutdown_web_browser()   # must not raise
+    finally:
+        browser_module.default_browser = original

@@ -110,17 +110,22 @@ def test_the_collector_loop_body_is_wrapped_in_try_catch_for_exception_safety():
     # than failing the whole snapshot.
     #
     # This is verified by checking that the first try block after the
-    # CANDIDATE_CAP check comes *before* the "const explicit" line — proving
-    # that the outer try wraps the loop body. Pre-fix, getComputedStyle's
+    # CANDIDATE_CAP check comes *before* the "const role = roleOf(el)" line —
+    # proving that the outer try wraps the loop body. Pre-fix, getComputedStyle's
     # inner try would be the first one found, appearing much later.
+    #
+    # `roleOf(el)` replaced the loop's own inline explicit-role check when
+    # that logic moved into the shared `_ACCESSIBLE_NAME_JS` fragment (task
+    # 13, blocker 1) — this marker was updated to match, same position in
+    # the loop body as the old "const explicit = " line it replaced.
     cap_pos = COLLECT_JS.find("if (candidates.length >= CANDIDATE_CAP)")
-    explicit_pos = COLLECT_JS.find("const explicit = ", cap_pos)
+    role_pos = COLLECT_JS.find("const role = roleOf(el)", cap_pos)
     try_pos = COLLECT_JS.find("try {", cap_pos)
 
     assert cap_pos > 0, "Should find the CANDIDATE_CAP check"
-    assert explicit_pos > cap_pos, "Should find explicit check after the cap check"
-    assert cap_pos < try_pos < explicit_pos, (
+    assert role_pos > cap_pos, "Should find the role check after the cap check"
+    assert cap_pos < try_pos < role_pos, (
         "Outer try must wrap the loop body: first try after the cap check "
-        "must come before 'const explicit'. This proves exception-safe "
-        "wrapping."
+        "must come before 'const role = roleOf(el)'. This proves "
+        "exception-safe wrapping."
     )

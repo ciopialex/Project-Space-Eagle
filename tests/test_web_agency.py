@@ -452,3 +452,64 @@ def test_a_stale_ref_is_retried_once_against_a_fresh_resolve():
     # The stale "e1" was attempted and failed; the click that actually
     # landed used the re-resolved "e1-fresh" ref, not the original one.
     assert b._page.clicked == ["e1-fresh"]
+
+
+# ── blocker 2: the retry path must re-gate, not just re-resolve ────────────
+#
+# Whole-branch review finding: `_act_with_reresolve`'s retry used to
+# re-resolve `description` and actuate the fresh ref WITHOUT re-running the
+# consent gate at all. A page that swaps in a different, irreversible
+# control between the first failed attempt and the retry — the ref-reuse
+# bug's shape, since every `collect()` renumbers `data-ae-ref` from scratch
+# — would get that new control clicked, ungated. This pins the retry itself
+# against a fake grounder that returns a DIFFERENT node on each call,
+# instantly and deterministically; the live version in
+# test_web_live_smoke.py proves the same thing end to end through the real
+# `web_agency()` entry point against a real browser.
+
+class _SequenceGrounder:
+    """The narrow slice of `WebGrounder` `_act_with_reresolve` needs:
+    `find_node()`, returning one prearranged node per call. No `best_match`
+    fuzzy text matching involved — this test is about the retry re-running
+    the gate, not about description matching, so the fake makes that
+    explicit rather than relying on real matching happening to behave."""
+
+    def __init__(self, nodes):
+        self._nodes = list(nodes)
+        self.calls = 0
+
+    def find_node(self, _description):
+        node = self._nodes[min(self.calls, len(self._nodes) - 1)]
+        self.calls += 1
+        return node
+
+
+def test_the_retry_path_re_gates_the_freshly_resolved_node():
+    from actions.grounding.web.consent import irreversible_reason
+    from actions.grounding.web.page import nodes_from_records
+    from actions.web_agency import _ConsentBlocked, _act_with_reresolve, ref_of
+
+    benign, irreversible = nodes_from_records([
+        record(ref="e1", name="Continue", role="button"),
+        record(ref="e9", name="Complete purchase", role="button"),
+    ])
+    grounder = _SequenceGrounder([benign, irreversible])
+    clicked: list[str] = []
+
+    def actuate(ref):
+        if ref == ref_of(benign):
+            raise TimeoutError("stale ref: element detached from the DOM")
+        clicked.append(ref)          # would only fire on a real bypass
+
+    def gate_check(node):
+        reason = irreversible_reason(node.name, node.role)
+        if reason:
+            raise _ConsentBlocked(f"Refused: {reason}", "ask the user")
+
+    with pytest.raises(_ConsentBlocked):
+        _act_with_reresolve(grounder, "the Continue button", gate_check,
+                            actuate)
+
+    assert clicked == [], (
+        "the retry actuated the freshly re-resolved irreversible control "
+        "without ever consulting the gate")

@@ -137,14 +137,28 @@ def test_a_browser_that_fails_to_launch_reports_rather_than_raises(tmp_path,
         browser.close()
 
 
-def test_headless_defaults_to_visible_so_a_human_can_finish_a_login(monkeypatch):
+# ── blocker 4: headless by default ──────────────────────────────────────
+#
+# `web_agency` is declared non-exclusive in main.py specifically because it
+# is meant to run while the user is doing something else — but that
+# guarantee only holds if the browser it drives never puts a window on
+# screen unasked, and headed-by-default contradicted it: the first call
+# would open a visible Chromium window over whatever the user was doing,
+# concurrently with another tool. Headless is now the default; a visible
+# window remains available (for local debugging, until a real handoff
+# mechanism exists — see web_agency.py's `_NO_HANDOFF_WINDOW`) by explicitly
+# opting out via the environment.
+
+def test_headless_defaults_to_true_so_a_non_exclusive_tool_cannot_steal_the_screen(
+        monkeypatch):
     monkeypatch.delenv("AETHELARK_BROWSER_HEADLESS", raising=False)
-    assert EagleBrowser().headless is False
-
-
-def test_headless_can_be_switched_on_by_environment(monkeypatch):
-    monkeypatch.setenv("AETHELARK_BROWSER_HEADLESS", "1")
     assert EagleBrowser().headless is True
+
+
+def test_headless_can_be_switched_off_by_environment_for_local_debugging(
+        monkeypatch):
+    monkeypatch.setenv("AETHELARK_BROWSER_HEADLESS", "0")
+    assert EagleBrowser().headless is False
 
 
 def test_close_is_idempotent(tmp_path, monkeypatch):
@@ -412,3 +426,87 @@ def test_close_still_tears_down_even_after_it_gives_up_waiting(tmp_path,
         time.sleep(0.02)
 
     assert page.context.closed_on == ["EagleBrowser"]
+
+
+# ── Blocker 3: unsynchronised browser start under concurrent tool calls ────
+#
+# main.py declares `web_agency` non-exclusive, and `default_browser()` is a
+# process-wide singleton shared by every call — so two `web_agency` calls in
+# one model turn can both reach `EagleBrowser.start()` concurrently. Without
+# a lock, both would see `self._thread` as None/dead at the same instant and
+# each spawn its own `EagleBrowser` thread, each calling the launcher — two
+# `launch_persistent_context()` calls racing on the SAME profile directory
+# (the reproduction measured this 5/5, and one run left two orphaned threads
+# sharing one `_jobs` queue that `close()` only ever posts one sentinel to).
+
+
+def test_concurrent_start_calls_launch_the_browser_only_once(tmp_path,
+                                                              monkeypatch):
+    monkeypatch.setenv("AETHELARK_DATA_DIR", str(tmp_path))
+    launches: list[str] = []
+    launch_started = threading.Event()
+    proceed = threading.Event()
+
+    def launcher(playwright, profile, headless):
+        launches.append(threading.current_thread().name)
+        launch_started.set()
+        # Held open deliberately: without the lock, every concurrent
+        # start() call would reach this point before any of them finishes,
+        # so holding it open widens the race window rather than closing it.
+        proceed.wait(5)
+        return FakePlaywrightPage()
+
+    browser = EagleBrowser(launcher=launcher, playwright_fn=lambda: object())
+
+    threads = [threading.Thread(target=browser.start) for _ in range(5)]
+    for t in threads:
+        t.start()
+    assert launch_started.wait(5), "no start() call ever reached the launcher"
+    proceed.set()
+    for t in threads:
+        t.join(5)
+
+    try:
+        assert len(launches) == 1, (
+            f"{len(launches)} concurrent start() calls each launched a "
+            "browser against the same profile directory — the lock did not "
+            "hold")
+        assert browser.running is True
+    finally:
+        browser.close()
+
+
+def test_default_browser_returns_one_instance_under_concurrent_first_calls(
+        monkeypatch):
+    from actions.grounding.web import browser as browser_module
+
+    # Widen the check-then-create race deliberately, the same way the test
+    # above widens start()'s: without this, CPython's GIL makes the
+    # unguarded version of default_browser() likely (but not guaranteed) to
+    # look safe anyway, which would make this test flaky in the direction
+    # that hides the bug rather than catches it.
+    original_init = browser_module.EagleBrowser.__init__
+
+    def slow_init(self, *a, **kw):
+        time.sleep(0.05)
+        original_init(self, *a, **kw)
+
+    monkeypatch.setattr(browser_module.EagleBrowser, "__init__", slow_init)
+    monkeypatch.setattr(browser_module, "_DEFAULT", None)
+
+    results: list[object] = []
+
+    def get():
+        results.append(browser_module.default_browser())
+
+    threads = [threading.Thread(target=get) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+
+    assert len(results) == 10
+    assert len({id(r) for r in results}) == 1, (
+        "concurrent first calls to default_browser() constructed more than "
+        "one EagleBrowser — callers would end up scattered across separate "
+        "browsers, profiles, and job queues")

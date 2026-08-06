@@ -26,7 +26,7 @@ from actions.grounding.web.grounder import WebGrounder        # noqa: E402
 from actions.grounding.web.handoff import wall_reason          # noqa: E402
 from actions.grounding.web.page import (MAX_NODES, collector_truncated,  # noqa: E402
                                         nodes_from_records, ref_of)
-from actions.web_agency import _act_with_reresolve             # noqa: E402
+from actions.web_agency import _act_with_reresolve, web_agency  # noqa: E402
 
 PAGE_URL = (Path(__file__).parent / "fixtures" / "web"
             / "sample_page.html").resolve().as_uri()
@@ -118,6 +118,52 @@ def test_clicking_a_real_checkbox_checks_it(browser):
     assert after is not None and after.has("CHECKED")
 
 
+# ── Blocker 1: HIT_TEST_JS and COLLECT_JS must never disagree ──────────────
+#
+# Before the fix, COLLECT_JS derived name/role via the full accName()/
+# implicitRole() chain and HIT_TEST_JS used a cut-down `aria-label ||
+# innerText` / `getAttribute('role') || tagName` reading of its own. The two
+# only agreed by coincidence (a bare `<button>text</button>`) — every
+# `<a href>`, every `<input>` named by `label[for]`, every checkbox named by
+# a wrapping label, every `<img alt>`, and every `role=`+`aria-label` div
+# came back from HIT_TEST_JS with a DIFFERENT (name, role) than COLLECT_JS
+# reported for the exact same element. `actionability._identity` compares
+# (name, role, bounds), so `receives_events` — and therefore every click —
+# could never pass for any of those; the model was told "it was covered by
+# something else on the page," which was false.
+#
+# This loops every node COLLECT_JS finds through HIT_TEST_JS at its own
+# centre and asserts the two agree, which is exactly the check
+# `receives_events` performs in production.
+def test_hit_test_agrees_with_collect_for_every_collected_node(browser):
+    nodes = nodes_from_records(browser.page().collect())
+    checked_roles = set()
+    for node in nodes:
+        if "SHOWING" not in node.states:
+            continue  # a hidden node has no rendered point to hit-test
+        cx = node.left + node.width / 2
+        cy = node.top + node.height / 2
+        hit = browser.page().hit_test(cx, cy)
+        assert hit is not None, (
+            f"hit_test at {node.name!r}'s own centre found nothing")
+        assert hit["name"] == node.name and hit["role"] == node.role, (
+            f"collect()=({node.name!r}, {node.role!r}) but "
+            f"hit_test()=({hit['name']!r}, {hit['role']!r}) — "
+            "receives_events can never pass for this node")
+        checked_roles.add(node.role)
+
+    # Confirm the sample page actually exercises the named failure classes,
+    # not just the bare-button case that happened to survive the old bug by
+    # coincidence.
+    assert "link" in checked_roles, "no <a href> in the fixture"
+    assert "button" in checked_roles, "no <button> in the fixture"
+    assert "textbox" in checked_roles, "no label[for]-named <input>"
+    assert "checkbox" in checked_roles, "no wrapping-label checkbox"
+    assert "img" in checked_roles, "no <img alt> in the fixture"
+    names = {n.name for n in nodes}
+    assert "Custom widget" in names, "no role=+aria-label div in the fixture"
+
+
 def test_a_screenshot_comes_back_from_a_headless_browser(browser):
     shot = browser.page().screenshot()
     assert shot[:4] == b"\x89PNG", "not a PNG — the compositor read failed"
@@ -174,7 +220,12 @@ def test_a_stale_ref_recovers_by_reresolving_the_description(browser):
 
     page = browser.page()
     start = time.monotonic()
-    _act_with_reresolve(g, "the Sign in button", node,
+    # `_act_with_reresolve` always re-resolves `description` fresh before
+    # acting now (blocker 2's fix — see its docstring in web_agency.py), so
+    # the stale `node` captured above no longer needs to be passed in at
+    # all; a no-op `gate_check` stands in for the real consent gate, since
+    # this test is about stale-ref recovery, not consent.
+    _act_with_reresolve(g, "the Sign in button", lambda n: None,
                         lambda ref: page.click(ref))
     elapsed = time.monotonic() - start
 
@@ -304,5 +355,107 @@ def test_truncation_prefers_controls_in_or_near_the_viewport(browser):
             "preferring the viewport")
         assert collector_truncated(records) is True
         assert len(nodes) == MAX_NODES
+    finally:
+        browser.goto(PAGE_URL)
+
+
+# ── Blocker 2: the consent gate must never be spent on the wrong control ───
+#
+# `data-ae-ref` values are positional (`const ref = 'e' + n` in page.py) and
+# every `collect()` renumbers all of them from scratch. `act_and_verify` ->
+# `wait_for` issues at least two collects before `web_agency()` ever acts
+# (it needs a `previous` read for the `stable` check). Before the fix, the
+# ref used to actuate was the one captured by the FIRST resolve — the same
+# one the consent gate checked — so if the page's control list changed in
+# between, that ref could silently be reassigned to a DIFFERENT element by
+# the time the click landed. Reproduced end to end through the public
+# `web_agency()` entry point (never `page.click(ref)` directly, which would
+# bypass `act_and_verify` and prove nothing — see this file's own
+# docstring): a benign "Continue" got gated, an irreversible "Complete
+# purchase" got clicked instead, and the tool reported "Clicked 'Continue'".
+#
+# This fixture puts "Continue" alone in the DOM, then inserts "Complete
+# purchase" — a control `irreversible_reason` refuses — as the FIRST
+# element in the body right after the very first `collect()` call. That
+# collect is exactly the one `_click`'s up-front resolve performs, before
+# the consent gate is even consulted: from the SECOND collect onward
+# (everything `act_and_verify`/`wait_for` does), "Complete purchase" holds
+# whatever ref "Continue" held originally, and "Continue" holds a new one.
+# The trigger is a real `collect()` call count, not a wall-clock guess, so
+# this is deterministic rather than timing-dependent. Nothing about
+# COLLECT_JS, act_and_verify, wait_for, the consent gate, or
+# `_act_with_reresolve` is faked — only the moment the page mutates is
+# driven by the test instead of by an in-page timer.
+
+_RACY_CLICK_HTML = """<!doctype html><html><body>
+  <button id="continue-btn">Continue</button>
+  <script>
+    window.__clicked = [];
+    document.getElementById('continue-btn')
+      .addEventListener('click', () => window.__clicked.push('continue'));
+  </script>
+</body></html>"""
+
+
+def test_a_control_that_changes_mid_click_never_hits_the_wrong_ref(browser):
+    browser.call(lambda p: p.set_content(_RACY_CLICK_HTML))
+    try:
+        collect_calls = {"n": 0}
+        real_page = browser.page()
+        real_collect = real_page.collect
+
+        def counting_collect():
+            collect_calls["n"] += 1
+            result = real_collect()
+            if collect_calls["n"] == 1:
+                # Runs once, right after the up-front resolve inside
+                # `_click` has already captured (and gated) "Continue" —
+                # every collect from here on reports a DIFFERENT arrangement:
+                # "Complete purchase" first (inheriting whatever ref
+                # "Continue" held a moment ago), "Continue" second.
+                browser.call(lambda p: p.evaluate(
+                    "(() => {"
+                    "  const b = document.createElement('button');"
+                    "  b.id = 'purchase-btn';"
+                    "  b.textContent = 'Complete purchase';"
+                    "  b.addEventListener('click', "
+                    "    () => window.__clicked.push('purchase'));"
+                    "  document.body.insertBefore(b, document.body.firstChild);"
+                    "})()"))
+            return result
+
+        original_page_method = browser.page
+
+        def patched_page():
+            p = original_page_method()
+            if p is not None:
+                p.collect = counting_collect
+            return p
+
+        # `browser.page` is a plain instance attribute once patched (not a
+        # bound method), so every consumer of it — `_click`'s own
+        # `page = browser.page()` AND `WebGrounder`'s internal
+        # `self._page_fn()` calls — sees the same counting hook.
+        browser.page = patched_page
+        try:
+            result = web_agency(
+                {"action": "click", "description": "the Continue button"},
+                browser=browser)
+        finally:
+            browser.page = original_page_method
+
+        clicked = browser.call(lambda p: p.evaluate("window.__clicked")) or []
+
+        assert "purchase" not in clicked, (
+            f"the gate approved 'Continue' but the browser actually clicked "
+            f"{clicked!r} — a reused ref silently hit the wrong control")
+        if result.ok:
+            assert clicked == ["continue"], (
+                "reported success but did not actually click the control "
+                "the gate approved")
+            assert "Continue" in result.message
+        else:
+            assert clicked == [], (
+                "reported failure but something was still clicked anyway")
     finally:
         browser.goto(PAGE_URL)

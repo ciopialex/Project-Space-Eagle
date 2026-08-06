@@ -23,8 +23,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from actions.grounding.web.browser import EagleBrowser      # noqa: E402
-from actions.grounding.web.page import (MAX_NODES, collector_truncated,  # noqa: E402
-                                        nodes_from_records)
+from actions.grounding.web.page import (_ACCESSIBLE_NAME_JS, MAX_NODES,  # noqa: E402
+                                        collector_truncated, nodes_from_records)
 
 # Everything a person could plausibly click or type into.
 _INTERACTIVE_JS = """
@@ -43,59 +43,18 @@ _INTERACTIVE_JS = """
 # role, or no accessible name. Anything left over has a role and a name but
 # still wasn't collected — the most likely explanation is that COLLECT_JS's
 # own MAX_NODES budget was spent on elements earlier in DOM order.
+#
+# Built from `_ACCESSIBLE_NAME_JS`, the same name/role fragment `COLLECT_JS`
+# and `HIT_TEST_JS` use, rather than its own copy — this diagnostic used to
+# hand-maintain a second `implicitRole`/`hasName` that had already drifted
+# from the real collector once (no `img`/heading/range/number/search roles,
+# and its own `hasName` needed a separate fix to add the textContent
+# fallback COLLECT_JS's `accName()` already had). Sharing the fragment means
+# a future collector change shows up here automatically instead of needing a
+# second, hand-applied patch that this measurement tool could silently miss.
 _MISSED_JS = r"""
 (() => {
-  const clean = (s) => (s || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-
-  const implicitRole = (el) => {
-    const tag = el.tagName;
-    if (tag === 'A') return el.hasAttribute('href') ? 'link' : null;
-    if (tag === 'BUTTON' || tag === 'SUMMARY') return 'button';
-    if (tag === 'SELECT') return 'combobox';
-    if (tag === 'TEXTAREA') return 'textbox';
-    if (tag === 'INPUT') {
-      const t = (el.type || 'text').toLowerCase();
-      if (t === 'hidden') return null;
-      if (t === 'checkbox') return 'checkbox';
-      if (t === 'radio') return 'radio';
-      if (t === 'submit' || t === 'button' || t === 'reset') return 'button';
-      return 'textbox';
-    }
-    if (el.isContentEditable) return 'textbox';
-    return null;
-  };
-
-  const hasName = (el) => {
-    if (clean(el.getAttribute('aria-label'))) return true;
-    const by = el.getAttribute('aria-labelledby');
-    if (by && by.split(/\s+/).some(id => {
-      const n = document.getElementById(id);
-      return n && clean(n.textContent);
-    })) return true;
-    if (el.id) {
-      try {
-        const lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
-        if (lab && clean(lab.textContent)) return true;
-      } catch (e) { /* malformed id */ }
-    }
-    const wrapping = el.closest && el.closest('label');
-    if (wrapping && wrapping !== el && clean(wrapping.textContent)) return true;
-    if (el.tagName === 'INPUT' && el.value
-        && /^(submit|button|reset)$/i.test(el.type || '') && clean(el.value)) {
-      return true;
-    }
-    // Mirrors accName()'s fallback chain in page.py exactly (innerText,
-    // *then* textContent — the fix for the closed-<details> gap) so this
-    // diagnostic reports the same "has a name" verdict the real collector
-    // would reach. Before this matched, a closed-<details> element that the
-    // real collector now names via textContent still read here as "no
-    // accessible name", which mislabeled a MAX_NODES-cutoff miss as if the
-    // fallback had never fired.
-    return !!(clean(el.innerText) || clean(el.textContent) || clean(el.getAttribute('alt'))
-      || clean(el.getAttribute('placeholder')) || clean(el.getAttribute('title'))
-      || clean(el.getAttribute('name')));
-  };
-
+""" + _ACCESSIBLE_NAME_JS + r"""
   const nodes = document.querySelectorAll(
     'a[href], button, input:not([type=hidden]), select, textarea, ' +
     '[role=button], [role=link], [role=textbox], [role=checkbox], ' +
@@ -105,19 +64,17 @@ _MISSED_JS = r"""
   for (const el of nodes) {
     if (el.hasAttribute('data-ae-ref')) continue;
     const explicit = (el.getAttribute('role') || '').trim().toLowerCase();
-    const role = explicit || implicitRole(el);
+    const role = roleOf(el);
     let reason;
     if (explicit === 'presentation' || explicit === 'none') {
       reason = 'role suppressed (presentation/none)';
-    } else if (!role || role === 'generic') {
+    } else if (!role) {
       reason = 'no usable role (missing or generic)';
-    } else if (!hasName(el)) {
-      // hasName() now shares accName()'s textContent fallback (task 12), so
-      // reaching this branch means textContent was ALSO empty — a closed
-      // <details> whose collapsed content has no name (an icon-only link
-      // with no aria-label inside a collapsed section, say), not the
-      // closed-<details>-hides-everything gap that used to dominate this
-      // bucket on MDN before the fallback existed.
+    } else if (!accName(el)) {
+      // accName() is the exact function COLLECT_JS uses, textContent
+      // fallback and all — reaching this branch means the real collector
+      // would find no name here either, not just this diagnostic's own
+      // (formerly separate, formerly out of sync) guess at one.
       reason = 'no accessible name';
     } else {
       reason = 'named + roled, but not collected (likely MAX_NODES cutoff)';

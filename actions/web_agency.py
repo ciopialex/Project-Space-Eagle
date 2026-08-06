@@ -35,6 +35,25 @@ outcome is unknown, go look."
 callers, never for the model. That is why every `ok=True` path below must
 carry its whole truth in `message` alone: a caveat that lives only in
 `.data` does not exist as far as the model is concerned.
+
+Consent, re-resolved at the last possible moment — this is the part that
+matters second most:
+
+`data-ae-ref` values are positional (`page.py`: `const ref = 'e' + n`) and
+every `collect()` renumbers every one of them from scratch. A `WebNode`
+resolved once, early (by `find_node`, for the up-front refusal check below),
+can have its ref silently reassigned to a *different* element by the time
+`act_and_verify` finishes its own polling — not merely go stale, which was
+already handled, but keep working while pointing at something else. Gating
+that early node and then acting on a ref resolved later is therefore not
+safe: the gate's approval and the browser's actuation can end up about two
+different controls. `_act_with_reresolve` is the fix — every actuation in
+this file re-resolves `description` and re-runs the consent gate
+(`_gate_click`/`_gate_type`, raising `_ConsentBlocked`) against exactly the
+node it is about to act on, including on its own internal retry. The checks
+in `_click`/`_type` above it are a fast-fail UX convenience only, never the
+safety boundary; see `_act_with_reresolve`'s docstring for the full account,
+including the reproduction this closes.
 """
 from __future__ import annotations
 
@@ -56,6 +75,20 @@ _NO_BROWSER_GUIDANCE = (
     "The eagle's browser could not start. Run "
     "`.venv/bin/python -m playwright install chromium` once, then try again."
 )
+
+# The eagle's browser defaults to headless (see EagleBrowser in browser.py —
+# a non-exclusive tool that could pop a visible window over the user's own
+# work is the bug this default closes), and nothing today can surface that
+# window for a human to use even when one is asked for: `await_human` in
+# handoff.py exists but nothing calls it, and there is no UI hook that shows
+# this specific, separate browser profile (never the user's own Chrome — see
+# user_paths.browser_profile_dir()) to anyone. Stating that plainly here,
+# every place a wall or a password field hands control back to "the user",
+# is the honest alternative to a guidance string that implies a handoff path
+# which does not exist yet.
+_NO_HANDOFF_WINDOW = (
+    "the eagle's browser runs invisibly and there is no way to hand this "
+    "specific window to them yet")
 
 # One sense per process, so the failure count that drives escalation survives
 # across tool calls the way a person's growing suspicion does.
@@ -159,7 +192,8 @@ def _look(browser, want_pixels: bool) -> ToolResult:
         if escalation_note:
             lines.append(f"({escalation_note})")
         if needs_human:
-            lines.append(f"This needs the user — {needs_human}.")
+            lines.append(f"This needs the user — {needs_human} "
+                        f"({_NO_HANDOFF_WINDOW}).")
         return ToolResult.failure(
             "\n".join(lines),
             guidance=("The page may be genuinely empty, still loading, or "
@@ -177,7 +211,8 @@ def _look(browser, want_pixels: bool) -> ToolResult:
     if escalation_note:
         lines.append(f"({escalation_note})")
     if needs_human:
-        lines.append(f"This needs the user — {needs_human}.")
+        lines.append(f"This needs the user — {needs_human} "
+                    f"({_NO_HANDOFF_WINDOW}).")
 
     return ToolResult.success(
         "\n".join(lines),
@@ -189,37 +224,93 @@ def _look(browser, want_pixels: bool) -> ToolResult:
     )
 
 
-def _act_with_reresolve(grounder: WebGrounder, description: str, node,
-                        actuate) -> Any:
-    """Actuate on `node`'s ref; if that fails, re-resolve `description` once
-    against the page's current state and retry with whatever ref it reports
-    now.
+class _ConsentBlocked(Exception):
+    """Raised by a `gate_check` passed to `_act_with_reresolve` when the
+    freshest resolve of `description` — the exact node about to be acted on,
+    not whatever was gated a few collects earlier — is something the
+    consent or handoff gate refuses.
 
-    A ref is only good until the next `collect()` — COLLECT_JS strips every
-    `data-ae-ref` at the start of each fresh snapshot (see page.py) — so a
-    ref captured before an async redirect or SPA route change can be stale
-    by the time this runs, even though `node` itself was resolved correctly.
-    `PagePort.click`/`fill` fail fast on a stale ref (`_REF_TIMEOUT_MS` in
-    browser.py, a few seconds rather than Playwright's 30s navigation
-    default) specifically so this can recover within the same tool call:
-    re-perceive the page once, the way a person would when it moves under
-    them, rather than either hanging or giving up on the first miss.
-
-    Lives here rather than in `PagePort` because the retry needs
-    `description` to re-resolve — `PagePort` only ever sees a ref, by design
-    (see its docstring), so it has nothing to re-resolve *with*. Lives here
-    rather than in `WebGrounder` because it is specifically about retrying an
-    *actuation*, not about finding a node — `WebGrounder` has no notion of
-    "try to act, and retry if that failed."
+    Carries a pre-built `message`/`guidance` pair so a block that fires here
+    reads exactly like one that fires at the fast, up-front check in
+    `_click`/`_type`: the same refusal, whichever seam catches it. See
+    `_act_with_reresolve` for why this seam has to exist at all, and
+    `_safe_act`/`_actuation_result` for how a "blocked" outcome turns into a
+    `ToolResult` without ever reaching the generic error path.
     """
-    try:
-        return actuate(ref_of(node))
-    except Exception:
+
+    def __init__(self, message: str, guidance: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.guidance = guidance
+
+
+def _act_with_reresolve(grounder: WebGrounder, description: str,
+                        gate_check, actuate) -> Any:
+    """Re-resolve `description` against the page's CURRENT state, gate the
+    node that resolve actually returns, and only then actuate its ref.
+    Retried once, from scratch, if the actuation itself still fails.
+
+    This is the fix for a real bug, not a defensive nicety. `data-ae-ref`
+    values are positional (`page.py`: `const ref = 'e' + n`) and every
+    `collect()` strips and renumbers every one of them from scratch —
+    `act_and_verify` -> `wait_for` alone issues at least two before this
+    function is ever called (it needs a `previous` read for the `stable`
+    check), and each one silently reassigns "e0", "e1", ... to whatever the
+    walk finds *now*. A ref captured once, early, and reused later — the
+    previous shape of this function — does not merely risk going stale (that
+    case was already handled: a stale ref fails fast via `_REF_TIMEOUT_MS`
+    and used to be the only case tested). It risks silently pointing at a
+    *different* element than the one the caller thinks it does: if the
+    page's control list changes between collects (a cookie banner
+    auto-dismissing, a row's position shifting), a live, currently-existing
+    element can inherit the exact ref string a completely different, no
+    longer accurate `WebNode` was holding. The consent gate — checked once,
+    up front, against the *first* resolve — would then have approved a
+    control that is not the one the browser goes on to click. Reproduced
+    end to end through `web_agency()`: a benign "Continue" got gated, an
+    irreversible "Complete purchase" got clicked, and the tool reported
+    "Clicked 'Continue'" — truthfully describing the STALE node's name, not
+    what actually happened.
+
+    The fix is to never trust a `WebNode` resolved anywhere but here.
+    Every actuation — click, fill, and the retry after either one fails —
+    goes through this one seam, which re-resolves `description` fresh, runs
+    `gate_check` against exactly that fresh node (raising `_ConsentBlocked`
+    to refuse), and only then reads *that* node's ref and acts. Whatever
+    gets clicked is, by construction, whatever was just gated — there is no
+    window where an old node's approval is spent on a new node's ref. The
+    retry (for the narrower, ordinary case of a ref going stale in the
+    instant between this resolve and the actual browser call) re-resolves
+    and re-gates from scratch too, rather than reusing anything from the
+    failed attempt — a retry can no longer skip the gate the way it used to.
+
+    `gate_check(node)` must raise `_ConsentBlocked` to refuse and return
+    normally to proceed. Lives here rather than in `WebGrounder` because it
+    is specifically about retrying an *actuation*, not about finding a node
+    — `WebGrounder` has no notion of "try to act, and retry if that failed,"
+    and no notion of a consent gate either.
+    """
+    last_exc: Exception | None = None
+    for _attempt in range(2):
         fresh = grounder.find_node(description)
-        fresh_ref = ref_of(fresh) if fresh is not None else ""
+        if fresh is None:
+            raise LookupError(f"'{description}' is no longer on the page.")
+        gate_check(fresh)          # raises _ConsentBlocked to refuse
+        fresh_ref = ref_of(fresh)
         if not fresh_ref:
-            raise
-        return actuate(fresh_ref)
+            raise LookupError(f"'{description}' has no actionable reference.")
+        try:
+            actuate(fresh_ref)
+            # `fresh` — not the possibly-stale `node` a caller resolved
+            # before this function ran — is what actually got acted on.
+            # Returned alongside the raw result so `_actuation_result` can
+            # report success against the real thing, not an earlier guess.
+            return fresh
+        except Exception as e:
+            last_exc = e
+            continue
+    assert last_exc is not None
+    raise last_exc
 
 
 def _safe_act(act):
@@ -236,6 +327,13 @@ def _safe_act(act):
 
     `kind` is one of:
       - "ok"      the actuation ran to completion.
+      - "blocked" `_act_with_reresolve`'s `gate_check` raised
+                  `_ConsentBlocked` against the node it actually resolved to
+                  act on — nothing was sent to the browser. Checked first,
+                  ahead of the generic exception cases below, because
+                  `_ConsentBlocked` is deliberately raised as a plain
+                  `Exception`, not a `RuntimeError`, so a refusal can never
+                  be misread as "the browser thread died."
       - "timeout" `EagleBrowser._submit` gave up waiting for the browser
                   thread; the call may still be in flight or may have landed.
       - "dead"    a `RuntimeError` surfaced. This is the shape
@@ -251,6 +349,8 @@ def _safe_act(act):
     def wrapped(element):
         try:
             return ("ok", act(element))
+        except _ConsentBlocked as e:
+            return ("blocked", (e.message, e.guidance))
         except TimeoutError as e:
             return ("timeout", str(e))
         except RuntimeError as e:
@@ -316,6 +416,18 @@ def _actuation_result(verb_ing: str, verb_past: str, node, outcome: dict,
 
     kind, detail = outcome["result"]
 
+    if kind == "blocked":
+        # `_act_with_reresolve`'s `gate_check` refused the node it actually
+        # resolved to act on — the node the up-front, fast pre-check gated
+        # (if any) is no longer relevant, because this is the one that would
+        # have been clicked or typed into. Not counted as a failure the way
+        # the other branches below are — refusing correctly is not the eagle
+        # doing something wrong, the same reasoning that keeps the fast
+        # up-front refusal in `_click`/`_type` from calling note_failure().
+        message, guidance = detail
+        return ToolResult.failure(message, guidance=guidance,
+                                  control=node.name)
+
     if kind == "timeout":
         # Not a confirmed failure — say so, and treat it with the same
         # suspicion a real failure gets, since "we don't know" is exactly
@@ -363,14 +475,63 @@ def _actuation_result(verb_ing: str, verb_past: str, node, outcome: dict,
     # hedging in the same breath ("...it may not have worked") — that
     # sentence next to `ok: true` is the exact lie `ToolResult` exists to
     # prevent, and it shipped here once already (see the fix-round report).
+    #
+    # `detail` here is the `WebNode` `_act_with_reresolve` actually gated and
+    # actuated — not `node`, the (possibly stale, possibly a DIFFERENT
+    # element by now) node this function was called with. Naming the
+    # ACTUALLY-clicked control, not an earlier guess at it, is the other
+    # half of the blocker-2 fix: the bug this closes reported "Clicked
+    # 'Continue'" while the browser had actually clicked something else.
+    acted_node = detail if detail is not None else node
     _SENSE.note_success()
     if outcome["changed"]:
-        message = f"{verb_past} '{node.name}' — the page changed."
+        message = f"{verb_past} '{acted_node.name}' — the page changed."
     else:
-        message = (f"{verb_past} '{node.name}'. Nothing on the page changed "
-                  "— call action='look' if you expected it to.")
+        message = (f"{verb_past} '{acted_node.name}'. Nothing on the page "
+                  "changed — call action='look' if you expected it to.")
     return ToolResult.success(message, changed=outcome["changed"],
-                              control=node.name)
+                              control=acted_node.name)
+
+
+def _gate_click(node) -> None:
+    """The consent check `_act_with_reresolve` re-runs against whatever node
+    it actually resolved, immediately before clicking it. Mirrors the
+    up-front check in `_click` exactly — same wording, same guidance — so a
+    refusal reads identically regardless of which of the two catches it.
+    """
+    reason = irreversible_reason(node.name, node.role)
+    if reason:
+        raise _ConsentBlocked(
+            f"Refused to click '{node.name}' because {reason}.",
+            "Tell the user exactly what this would do and ask them "
+            "to confirm it themselves. The eagle does not take "
+            "irreversible actions on their behalf.")
+
+
+def _gate_type(page):
+    """Builds the `gate_check` `_act_with_reresolve` re-runs before typing.
+
+    A closure rather than a bare function because `wall_reason` needs the
+    *whole page's* current controls, not just the one node being typed
+    into — `page` is what lets it re-collect that at gate time, mirroring
+    the up-front check in `_type` exactly.
+    """
+    def gate(node) -> None:
+        if node.role.lower() == "password":
+            raise _ConsentBlocked(
+                f"Refused to type into '{node.name}' because it is a "
+                "password field.",
+                f"This needs the user to sign in themselves — {_NO_HANDOFF_WINDOW}. "
+                "Tell them what the page is asking for; do not type a "
+                "password on their behalf.")
+        reason = wall_reason(_current_nodes(page), _current_url(page))
+        if reason:
+            raise _ConsentBlocked(
+                f"Refused to type into '{node.name}' — {reason}.",
+                f"This needs the user — {_NO_HANDOFF_WINDOW}. Tell them "
+                "what the page is asking for and let them handle it "
+                "themselves.")
+    return gate
 
 
 def _click(browser, grounder: WebGrounder, description: str) -> ToolResult:
@@ -394,21 +555,24 @@ def _click(browser, grounder: WebGrounder, description: str) -> ToolResult:
             guidance=("Call web_agency action='look' to see what is actually "
                       "on the page, then use one of those names."))
 
-    # Checked BEFORE anything is sent to the browser — a refusal that fires
-    # after the click is not a refusal.
-    reason = irreversible_reason(node.name, node.role)
-    if reason:
-        return ToolResult.failure(
-            f"Refused to click '{node.name}' because {reason}.",
-            guidance=("Tell the user exactly what this would do and ask them "
-                      "to confirm it themselves. The eagle does not take "
-                      "irreversible actions on their behalf."))
+    # Checked BEFORE anything is sent to the browser — fast-fail UX only.
+    # This is NOT the safety boundary: `node` here can be stale by the time
+    # `act_and_verify` finishes its own polling (see `_act_with_reresolve`'s
+    # docstring for the bug this used to cause), so `_gate_click` re-runs
+    # the identical check against whatever node actually gets clicked,
+    # immediately before it is clicked. This early check only saves the
+    # ~5s `act_and_verify` would otherwise spend polling for actionability
+    # on a control that was always going to be refused.
+    try:
+        _gate_click(node)
+    except _ConsentBlocked as e:
+        return ToolResult.failure(e.message, guidance=e.guidance)
 
     page = browser.page()
     outcome = act_and_verify(
         description,
         _safe_act(lambda _el: _act_with_reresolve(
-            grounder, description, node, lambda ref: page.click(ref))),
+            grounder, description, _gate_click, lambda ref: page.click(ref))),
         resolver=grounder,
         action="click",
         hit_test=grounder.hit_test,
@@ -434,28 +598,15 @@ def _type(browser, grounder: WebGrounder, description: str,
             guidance=("Call web_agency action='look' to see what is actually "
                       "on the page, then use one of those names."))
 
-    if node.role.lower() == "password":
-        # `look` already surfaces this page as needing the user; typing into
-        # the password field itself would be doing the sign-in on their
-        # behalf. Refused unconditionally, not merely reported.
-        return ToolResult.failure(
-            f"Refused to type into '{node.name}' because it is a password "
-            "field.",
-            guidance=("This needs the user to sign in themselves. Tell them "
-                      "what the page is asking for; do not type a password "
-                      "on their behalf."))
-
     page = browser.page()
-    # Re-check the page as a whole, not just the field being targeted — a
-    # page asking for a human-verification challenge or a code the eagle
-    # cannot have is not safe to type into just because the specific control
-    # requested isn't itself a password field.
-    reason = wall_reason(_current_nodes(page), _current_url(page))
-    if reason:
-        return ToolResult.failure(
-            f"Refused to type into '{node.name}' — {reason}.",
-            guidance=("This needs the user. Tell them what the page is "
-                      "asking for and let them handle it themselves."))
+    # Checked BEFORE anything is sent to the browser — fast-fail UX only,
+    # same caveat as `_click`'s up-front check: `_gate_type(page)` is what
+    # actually re-runs immediately before typing, against whatever node the
+    # actuation resolves to at that moment, not this one.
+    try:
+        _gate_type(page)(node)
+    except _ConsentBlocked as e:
+        return ToolResult.failure(e.message, guidance=e.guidance)
 
     if not is_editable(element_from(node)):
         # A structural check, not a string match against waiting.py's
@@ -472,7 +623,8 @@ def _type(browser, grounder: WebGrounder, description: str,
     outcome = act_and_verify(
         description,
         _safe_act(lambda _el: _act_with_reresolve(
-            grounder, description, node, lambda ref: page.fill(ref, text))),
+            grounder, description, _gate_type(page),
+            lambda ref: page.fill(ref, text))),
         resolver=grounder,
         action="fill",
         hit_test=grounder.hit_test,
