@@ -215,11 +215,19 @@ _SPACE_CATEGORY = "Zs"
 #: anything remains that is not an ASCII letter, digit, ordinary
 #: punctuation mark, or ASCII whitespace, the entire label is unreadable
 #: and tokenises to no words at all — never to junk words. This closes
-#: every homoglyph this guard doesn't recognise, every combining mark,
-#: every script mixture, and every invisible character, including ones no
-#: one has found yet, at the cost of such labels refusing outright rather
+#: every homoglyph this guard doesn't recognise, every combining mark, and
+#: every script mixture, at the cost of such labels refusing outright rather
 #: than being read. That cost is the point: refuse is the safe direction,
 #: and "I cannot read this" must never again produce a partial read.
+#:
+#: What it does NOT close, despite an earlier version of this comment
+#: claiming it closed "every invisible character, including ones no one has
+#: found yet": noise characters are *stripped* by `_strip_noise()` before
+#: this check ever runs, so an invisible character never reaches the
+#: allowlist at all. Review demonstrated the gap — a hair space inside
+#: "Pay now" survived both the join and the split reading. That is closed by
+#: `_mixed_readings()`, not here. The two mechanisms are separate and both
+#: are load-bearing; neither is a superset of the other.
 _ALLOWED_CHARS = frozenset(
     string.ascii_lowercase + string.digits + string.punctuation + " \t\n\r\v\f"
 )
@@ -367,9 +375,31 @@ _COMMITTING = {
 #: the label. Co-occurrence rather than adjacency, so "Close your account"
 #: and "Close all accounts" are caught the same as "Close account", while
 #: "Close menu" and "Cancel" alone are untouched.
+#: Objects that make an otherwise-dismissive English verb committing. Shared
+#: by every verb below that can mean either "get me out of this dialog" or
+#: "end my relationship with this company", so the two senses cannot drift
+#: apart per-verb the way they did when only `close` carried the account set.
+_ACCOUNT_OBJECTS = {"account", "accounts", "membership", "profile"}
+_SUBSCRIPTION_OBJECTS = {"subscription", "subscriptions", "plan", "membership"}
+
 _COMMITTING_PAIRS = {
-    "close": ({"account", "accounts"}, "it closes an account"),
-    "cancel": ({"subscription", "subscriptions"}, "it cancels a subscription"),
+    # `close`, `cancel`, `disable`, `end` and `terminate` are all plausible
+    # bare dismiss words ("Close", "Cancel", "End call"), so none is
+    # bare-committing — but every one of them ends an account or a
+    # subscription when it is pointed at one. Review found `Cancel account`,
+    # `Disable account` and `End subscription` all allowed while
+    # `Close account` refused, purely because only `close` had been given the
+    # account set. Common English copy, so the sets are shared, not per-verb.
+    "close": (_ACCOUNT_OBJECTS, "it closes an account"),
+    "cancel": (_ACCOUNT_OBJECTS | _SUBSCRIPTION_OBJECTS,
+               "it cancels an account or subscription"),
+    "disable": (_ACCOUNT_OBJECTS, "it disables an account"),
+    "end": (_ACCOUNT_OBJECTS | _SUBSCRIPTION_OBJECTS,
+            "it ends an account or subscription"),
+    # `terminate` is deliberately NOT here — it is already a bare committing
+    # verb, and left that way. "Terminate process" / "Terminate instance"
+    # would become benign if it were paired, and a word that strong is worth
+    # a question even when its object is something other than an account.
 
     # --- Romanian (Task 6c, extended Task 6d) ---------------------------
     # "Închide" (close) is a dismiss word on its own — plausibly a bare
@@ -631,6 +661,65 @@ def _words_split(text: str) -> list[str]:
     return _tokenise(text, replacement=" ")
 
 
+#: How many noise characters a label may contain before this guard stops
+#: trying to read it. Each one doubles the number of readings below, so the
+#: cost is bounded at 2**8 = 256 cheap tokenisations. A label carrying nine
+#: or more invisible or decorative characters is not ordinary button copy,
+#: and at that point the noise is itself the signal — see `_mixed_readings`.
+_MAX_NOISE_CHARS = 8
+
+
+def _mixed_readings(text: str):
+    """Every *mixed* join/split reading of `text`, or None if it is too noisy.
+
+    `_words()` and `_words_split()` between them cover only the two extremes:
+    every noise character joins, or every noise character splits. A label can
+    defeat both at once by needing *different* answers for different
+    characters. Review demonstrated it on the final code:
+
+        "P ay now"   renders as "Pay now"
+          join  -> ['paynow']        no committing word
+          split -> ['p','ay','now']  no committing word
+          -> ALLOWED
+
+    The reading a human actually gets is mixed: the first hair space joins
+    (`P` + `ay` = "pay"), the second splits ("pay" | "now"). That reading is
+    `['pay','now']`, which refuses. Since which characters join and which
+    split is exactly what the attacker chooses, the only honest answer is to
+    try every combination rather than guess.
+
+    Only the *raw* noise characters are enumerated — that is where an
+    interleaving attack lives, and it keeps the count bounded and stable.
+    Noise that normalisation introduces later is still handled by the two
+    extreme readings, which are checked separately and unchanged.
+
+    Returns an iterator of word lists, or None when the label carries more
+    than `_MAX_NOISE_CHARS` noise characters — the caller refuses in that
+    case rather than either enumerating 2**n readings or silently checking
+    only some of them.
+    """
+    raw = text or ""
+    positions = [i for i, ch in enumerate(raw) if _is_standalone_noise(ch)]
+    if len(positions) > _MAX_NOISE_CHARS:
+        return None
+    if len(positions) < 2:
+        # Nothing to mix: zero or one noise character is fully covered by the
+        # join and split readings the caller already checked.
+        return iter(())
+
+    def _readings():
+        # 0 is the all-join reading and the final mask is all-split; both are
+        # already checked by the caller, so only the genuinely mixed masks
+        # between them are generated here.
+        for mask in range(1, 2 ** len(positions) - 1):
+            chars = list(raw)
+            for bit, pos in enumerate(positions):
+                chars[pos] = " " if (mask >> bit) & 1 else ""
+            yield _tokenise("".join(chars), replacement="")
+
+    return _readings()
+
+
 def _reason_for_words(words: list[str]) -> str:
     """The committing-or-not decision for an already-tokenised label. Pulled
     out of `irreversible_reason()` so it can be run once per tokenisation
@@ -697,4 +786,18 @@ def irreversible_reason(name: str, role: str = "") -> str:
         return ("it has no readable label, so there is no way to tell what it "
                 "does")
 
-    return _reason_for_words(words_join) or _reason_for_words(words_split)
+    reason = _reason_for_words(words_join) or _reason_for_words(words_split)
+    if reason:
+        return reason
+
+    # Neither extreme reading matched. The label may still read as committing
+    # if some noise characters join and others split — see `_mixed_readings`.
+    mixed = _mixed_readings(name)
+    if mixed is None:
+        return ("it carries too many invisible or decorative characters to "
+                "read reliably")
+    for words in mixed:
+        reason = _reason_for_words(words)
+        if reason:
+            return reason
+    return ""

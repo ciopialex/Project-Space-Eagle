@@ -765,7 +765,14 @@ _ENGLISH_COMMITTING_KEYS = frozenset({
     "post", "book", "apply", "deactivate", "terminate", "erase", "wipe",
     "withdraw", "authorize", "authorise", "donate", "bid",
 })
-_ENGLISH_PAIR_VERBS = frozenset({"close", "cancel"})
+#: English pair verbs are *expected* to be ordinary English words — that is
+#: the whole reason they are paired rather than bare. "Close", "Cancel",
+#: "Disable", "End" and "Terminate" are all plausible standalone buttons, so
+#: each fires only alongside an account or subscription object. The
+#: dictionary-collision test below is about *non-English* vocabulary
+#: accidentally matching an English word, which is a different risk.
+_ENGLISH_PAIR_VERBS = frozenset({"close", "cancel", "disable", "end",
+                                 "terminate"})
 
 _NON_ENGLISH_COMMITTING = sorted(set(_COMMITTING) - _ENGLISH_COMMITTING_KEYS)
 _NON_ENGLISH_PAIR_VERBS = sorted(set(_COMMITTING_PAIRS) - _ENGLISH_PAIR_VERBS)
@@ -979,3 +986,84 @@ def test_split_reading_does_not_fragment_a_combining_mark_mid_word():
     # must agree on "informatie".
     assert _words("Informație publică") == ["informatie", "publica"]
     assert _words_split("Informație publică") == ["informatie", "publica"]
+
+
+# --- Mixed join/split readings (controller fix, post-final-review) --------
+#
+# The two extreme readings above cover "every noise character joins" and
+# "every noise character splits". A label can need *different* answers for
+# different characters, and which ones is exactly what an attacker chooses.
+
+@pytest.mark.parametrize("label, expected_substring", [
+    ("P ay now", "pays"),            # hair spaces: join, then split
+    ("P ay now", "pays"),                 # one mixed, one real space
+    ("De lete account", "deletes"),
+    ("Or der now", "places an order"),
+    ("Con firm and pay", "pays"),
+    ("Ș terge contul", "deletes"),   # Romanian, mixed noise
+    ("Pa gar ahora", "pays"),        # Spanish, mixed noise
+])
+def test_a_mixed_join_split_reading_is_still_caught(label, expected_substring):
+    """Neither extreme reading matches these; the reading a human actually
+    sees does. Reproduced by review on the final code: "P<hair>ay<hair>now"
+    renders as "Pay now", joins to ['paynow'], splits to ['p','ay','now'],
+    and was ALLOWED."""
+    assert expected_substring in irreversible_reason(label)
+
+
+def test_mixed_readings_do_not_manufacture_a_refusal_from_benign_copy():
+    """The mixed readings can only add refusals, so the risk they carry is
+    false positives on ordinary decorated copy. These must all still pass."""
+    for label in ["🛒 Add to cart", "← Back", "Next →", "★ Favourite",
+                  "Café menu", "Sign in with Google", "Order history",
+                  "Payment history", "Close menu", "Search"]:
+        assert irreversible_reason(label) == "", label
+
+
+def test_a_label_drowned_in_noise_is_refused_rather_than_half_read():
+    """Past the bound, the guard stops trying. Enumerating 2**n readings is
+    unbounded, and checking only some of them is the silent partial read this
+    file exists to prevent — so too much noise becomes the signal itself."""
+    hair = "\u200a"
+    # No real spaces in the source: the join reading collapses to one
+    # unreadable token and the split reading to single letters, so neither
+    # extreme matches and the bound is what decides. (A label that merely
+    # *contains* hair spaces between real words is recovered fine by the join
+    # reading — that is not this case.)
+    drowned = hair.join("Paynowthisisfine")         # 15 hair spaces, > the bound
+    reason = irreversible_reason(drowned)
+    assert reason and "too many invisible" in reason
+
+
+def test_the_bound_is_not_so_tight_that_decorated_copy_trips_it():
+    """Eight is chosen to sit above realistic decoration. A label with a
+    handful of emoji and arrows must still be read, not refused wholesale."""
+    assert irreversible_reason("🛒 ← Add ★ to → cart ✓") == ""
+
+
+# --- Account-ending verbs share one object set ----------------------------
+
+@pytest.mark.parametrize("label", [
+    "Cancel account", "Cancel my account", "Disable account",
+    "Disable my account", "End subscription", "End my subscription",
+    "Terminate account", "Close account", "Cancel membership",
+    "Cancel subscription", "Cancel my plan",
+])
+def test_every_account_ending_verb_refuses_with_its_object(label):
+    """Review found `Cancel account`, `Disable account` and `End
+    subscription` all allowed while `Close account` refused — only `close`
+    had been given the account object set. All of these are common English
+    copy for ending a relationship with a company."""
+    assert irreversible_reason(label) != ""
+
+
+@pytest.mark.parametrize("label", [
+    "Cancel", "Close", "Close menu", "Close dialog", "End call",
+    "End chat", "Disable notifications", "Disable dark mode",
+    "Cancel upload", "Cancel download",
+])
+def test_those_same_verbs_stay_benign_without_an_account_object(label):
+    """Which is why they are paired and not bare: every one of these is a
+    plausible standalone button, and refusing them would be the
+    "trains everyone to switch the guard off" failure."""
+    assert irreversible_reason(label) == "", label
