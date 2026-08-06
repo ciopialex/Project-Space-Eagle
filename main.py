@@ -273,9 +273,12 @@ TOOL_DECLARATIONS = [
     {
         "name": "open_app",
         "description": (
-            "Opens any application on the computer. "
-            "Use this whenever the user asks to open, launch, or start any app, "
-            "website, or program. Always call this tool — never just say you opened it."
+            "Opens an application installed on the computer. "
+            "Use this whenever the user asks to open, launch, or start an app or "
+            "program. Always call this tool — never just say you opened it. "
+            "For a WEBSITE this only opens it and stops: if the user wants anything "
+            "DONE on that site — find something, read their account, click through a "
+            "flow — use web_agency instead."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -333,7 +336,12 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "send_message",
-        "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
+        "description": (
+            "Sends a text message via WhatsApp or Telegram. These are the only platforms it "
+            "supports. For Instagram, Facebook, LinkedIn or any other site's messaging, there "
+            "is no API — use web_agency to do it through the website like a person would, and "
+            "never tell the user it is impossible without trying that."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -429,8 +437,11 @@ TOOL_DECLARATIONS = [
     {
         "name": "browser_control",
         "description": (
-            "Controls any web browser. Use for: opening websites, searching the web, "
-            "clicking elements, filling forms, scrolling, screenshots, navigation, any web-based task. "
+            "Opens a website in the USER'S OWN browser, with their own logins and tabs — "
+            "for when they want to look at something themselves. "
+            "Do NOT use it to do work inside a page: for reading a page's controls, clicking, "
+            "typing, filling forms, or any multi-step task on a site, use web_agency, which "
+            "perceives the page properly and refuses irreversible actions. "
             "Simple open/search requests launch the user's own browser normally (their real profile "
             "and logged-in accounts); interactive actions (click, type, fill_form...) attach an "
             "automation browser. "
@@ -634,7 +645,10 @@ TOOL_DECLARATIONS = [
     {
         "name": "game_updater",
         "description": (
-            "THE ONLY tool for ANY Steam or Epic Games request. "
+            "Installs, downloads, updates and lists Steam and Epic games, checks "
+            "download status, and schedules updates — it drives the local game "
+            "clients. It does NOT browse the storefronts: for a wishlist, a store "
+            "page, prices, reviews or purchase history, use web_agency. "
             "Use for: installing, downloading, updating games, listing installed games, "
             "checking download status, scheduling updates. "
             "ALWAYS call directly for any Steam/Epic/game request. "
