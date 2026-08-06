@@ -699,7 +699,18 @@ def _mixed_readings(text: str):
     only some of them.
     """
     raw = text or ""
-    positions = [i for i, ch in enumerate(raw) if _is_standalone_noise(ch)]
+    # Only noise *between two alphanumeric characters* can change the reading.
+    # A noise character at either end of the label, or next to a space or
+    # another noise character, is either a separator or a no-op in every
+    # reading — it can never fuse two word fragments into a word that was not
+    # already there. Enumerating those would be pure cost, and it is what made
+    # ordinary decorated copy hit the bound: "⭐⭐⭐⭐⭐⭐⭐⭐⭐ Reviews" has nine
+    # noise characters and not one of them is interior, so it needs no
+    # enumeration at all and must not be refused for being "too noisy".
+    positions = [i for i, ch in enumerate(raw)
+                 if _is_standalone_noise(ch)
+                 and 0 < i < len(raw) - 1
+                 and raw[i - 1].isalnum() and raw[i + 1].isalnum()]
     if len(positions) > _MAX_NOISE_CHARS:
         return None
     if len(positions) < 2:

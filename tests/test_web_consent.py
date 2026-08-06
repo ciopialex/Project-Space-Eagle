@@ -1067,3 +1067,25 @@ def test_those_same_verbs_stay_benign_without_an_account_object(label):
     plausible standalone button, and refusing them would be the
     "trains everyone to switch the guard off" failure."""
     assert irreversible_reason(label) == "", label
+
+
+def test_decoration_that_is_not_between_two_letters_does_not_trip_the_bound():
+    """Only noise *between two alphanumerics* can fuse word fragments, so
+    only that is enumerated. Nine stars in a row are nine noise characters
+    and none is interior — review found this refusing with "too many
+    invisible or decorative characters", which is a question the user should
+    never have been asked."""
+    for label in ["\u2b50" * 9 + " Reviews", "\u2605\u2605\u2605\u2605\u2605 Rated",
+                  "\U0001f6d2 \u2190 Add \u2605 to \u2192 cart \u2713"]:
+        assert irreversible_reason(label) == "", label
+
+
+def test_interior_noise_is_still_enumerated_after_that_narrowing():
+    """The narrowing must not cost any attack coverage: these are the same
+    mixed readings as above, and every one still refuses."""
+    hair = "\u200a"
+    assert "pays" in irreversible_reason(f"Pay{hair}now")
+    assert "pays" in irreversible_reason(f"P{hair}ay{hair}now")
+    assert "deletes" in irreversible_reason(f"De{hair}lete{hair}account")
+    assert "places an order" in irreversible_reason(f"Or{hair}der{hair}now")
+
