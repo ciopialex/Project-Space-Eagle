@@ -245,7 +245,7 @@ class _ConsentBlocked(Exception):
 
 
 def _act_with_reresolve(grounder: WebGrounder, description: str,
-                        gate_check, actuate) -> Any:
+                        gate_check, actuate, prefer=None) -> Any:
     """Re-resolve `description` against the page's CURRENT state, gate the
     node that resolve actually returns, and only then actuate its ref.
     Retried once, from scratch, if the actuation itself still fails.
@@ -297,7 +297,7 @@ def _act_with_reresolve(grounder: WebGrounder, description: str,
         # and leave `fresh_ref` below pointing at the previous snapshot —
         # which is precisely how the type gate's own `wall_reason` check used
         # to send a fill to a different field than the one it had approved.
-        fresh, nodes = grounder.resolve(description)
+        fresh, nodes = grounder.resolve(description, prefer=prefer)
         if fresh is None:
             raise LookupError(f"'{description}' is no longer on the page.")
         gate_check(fresh, nodes)   # raises _ConsentBlocked to refuse
@@ -602,7 +602,13 @@ def _type(browser, grounder: WebGrounder, description: str,
             guidance=("Call action='look' to see the page's current state, "
                       "or action='open' again if the page seems gone."))
 
-    node = grounder.find_node(description)
+    # Same editable preference the actuation uses, or this fast-fail check
+    # rejects on a control the actuation would never have chosen: DuckDuckGo's
+    # search input ties at 0.80 with sixteen buttons and links, so without the
+    # preference this reported "'Search Duck.ai' is not editable" and never
+    # reached the field the user meant.
+    node, _nodes = grounder.resolve(
+        description, prefer=lambda n: "EDITABLE" in n.states)
     if node is None:
         _SENSE.note_failure()
         return ToolResult.failure(
@@ -636,7 +642,12 @@ def _type(browser, grounder: WebGrounder, description: str,
         description,
         _safe_act(lambda _el: _act_with_reresolve(
             grounder, description, _gate_type(page),
-            lambda ref: page.fill(ref, text))),
+            lambda ref: page.fill(ref, text),
+            # Typing into something uneditable is never what was meant, and
+            # on a real page the text score alone cannot tell the field from
+            # the sixteen buttons and links that share its wording. See
+            # `WebGrounder.resolve`.
+            prefer=lambda node: "EDITABLE" in node.states)),
         resolver=grounder,
         action="fill",
         hit_test=grounder.hit_test,

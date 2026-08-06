@@ -484,7 +484,7 @@ class _SequenceGrounder:
         self._nodes = list(nodes)
         self.calls = 0
 
-    def resolve(self, _description):
+    def resolve(self, _description, *, prefer=None):
         node = self._nodes[min(self.calls, len(self._nodes) - 1)]
         self.calls += 1
         return node, (node,)
