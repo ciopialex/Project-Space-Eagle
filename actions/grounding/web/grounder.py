@@ -13,21 +13,27 @@ from actions.grounding.base import Element
 from actions.grounding.roles import WEB, best_match
 from actions.grounding.web.page import (PageLike, WebNode, element_from,
                                         nodes_from_records)
-from actions.grounding.web.sense import PageSense
 
 
 class WebGrounder:
-    """Structural grounding inside a browser page."""
+    """Structural grounding inside a browser page.
+
+    Deliberately holds no escalation state. An earlier version took a
+    `PageSense` and stored it as `self.sense`, which nothing ever read —
+    `actions/web_agency.py` keeps the one process-wide counter, because the
+    signal it carries ("acting has failed twice, look harder") belongs to the
+    operator across tool calls rather than to any one short-lived grounder.
+    The parameter is gone rather than left dangling: a constructor argument
+    that implies shared state which does not exist is worse than none.
+    """
 
     name = "web"
     cost = "fast"      # in-process CDP call, milliseconds — no network model
 
     def __init__(self,
                  page_fn: Callable[[], PageLike | None],
-                 sense: PageSense | None = None,
                  threshold: float = 0.5) -> None:
         self._page_fn = page_fn
-        self.sense = sense or PageSense()
         self._threshold = threshold
 
     def _page(self) -> PageLike | None:
