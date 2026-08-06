@@ -70,7 +70,8 @@ from actions.grounding.web.page import element_from, nodes_from_records, ref_of
 from actions.grounding.web.sense import PageSense
 from core.tool_result import ToolResult
 
-_ACTIONS = ("open", "look", "click", "type", "sign_in", "close")
+_ACTIONS = ("open", "look", "click", "type", "sign_in",
+            "import_login", "close")
 
 _NO_BROWSER_GUIDANCE = (
     "The eagle's browser could not start. Run "
@@ -140,6 +141,36 @@ def _current_url(page) -> str:
         return page.url()
     except Exception:
         return ""
+
+
+def _import_login(browser, domains: list) -> ToolResult:
+    """Bring the named sites' logins across from the user's own Chrome.
+
+    The alternative to signing into each site inside the eagle's browser. Only
+    the sites named are imported — every other cookie is deleted from the copy
+    before the eagle's browser is ever pointed at it — so this is a property
+    the user can verify rather than a promise to behave. Importing the lot
+    would hand over their bank and their email to fetch a playlist.
+    """
+    from actions.grounding.web.profile_import import import_logins
+    from core import user_paths
+
+    # The browser must be down: it is about to have its profile replaced
+    # underneath it, and a running Chrome holds locks on the cookie store.
+    try:
+        browser.close()
+    except Exception:
+        pass
+
+    result = import_logins(list(domains or []),
+                           into=user_paths.browser_profile_dir())
+    if not result.ok:
+        return ToolResult.failure(result.detail, guidance=result.guidance)
+    return ToolResult.success(
+        result.detail + " The eagle is now signed in to those sites and will "
+        "stay signed in.",
+        imported=result.imported, dropped=result.dropped,
+        note=result.guidance)
 
 
 def _sign_in(browser, url: str, timeout: float) -> ToolResult:
@@ -856,6 +887,12 @@ def _web_agency(params: dict, player: Any, browser: Any) -> ToolResult:
         if "://" not in url:
             url = "https://" + url
         return _sign_in(browser, url, float(params.get("timeout") or 300.0))
+
+    if action == "import_login":
+        raw = params.get("domains") or params.get("url") or ""
+        domains = raw if isinstance(raw, list) else [
+            d for d in str(raw).replace(",", " ").split() if d]
+        return _import_login(browser, domains)
 
     if action == "look":
         return _look(browser, want_pixels=bool(params.get("want_pixels")))

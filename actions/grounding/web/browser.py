@@ -77,15 +77,46 @@ def _default_playwright():
     return sync_playwright().start()
 
 
+#: A profile records which browser wrote it, and is opened with that browser
+#: forever after. On Linux the cookie store is encrypted with a key held in
+#: the system keyring under an entry named for the browser — "Chrome Safe
+#: Storage" vs "Chromium Safe Storage". Open a Chrome-written profile with
+#: Chromium and every cookie decrypts to garbage: no error, no warning, just a
+#: browser that appears signed out of everything. So the choice is made once,
+#: when the profile is created, and never revisited.
+_CHANNEL_MARKER = ".aethelark-browser-channel"
+
+
+def profile_channel(profile: Path) -> str | None:
+    """Which browser owns this profile, or None for a fresh directory."""
+    try:
+        marker = (Path(profile) / _CHANNEL_MARKER).read_text().strip()
+        return marker or None
+    except Exception:
+        return None
+
+
+def _remember_channel(profile: Path, channel: str | None) -> None:
+    try:
+        Path(profile).mkdir(parents=True, exist_ok=True)
+        (Path(profile) / _CHANNEL_MARKER).write_text(channel or "chromium")
+    except Exception:
+        pass          # best-effort; a missing marker just means "chromium"
+
+
 def _default_launcher(playwright, profile: Path, headless: bool):
     """A persistent context, so logins survive between sessions."""
+    channel = profile_channel(profile)
+    launch_kwargs = {"channel": channel} if channel and channel != "chromium" else {}
     context = playwright.chromium.launch_persistent_context(
         str(profile),
         headless=headless,
+        **launch_kwargs,
         viewport={"width": 1440, "height": 900},
         args=["--disable-blink-features=AutomationControlled"],
     )
     context.set_default_timeout(_NAV_TIMEOUT_MS)
+    _remember_channel(profile, channel)
     pages = context.pages
     # A persistent context already opens a tab. Adopt it rather than adding a
     # second, empty one.

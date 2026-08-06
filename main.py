@@ -489,6 +489,11 @@ TOOL_DECLARATIONS = [
             "there does not sign the eagle in. NEVER tell the user to open their own "
             "browser and look for themselves, and never claim you lack access to their "
             "account — call sign_in. "
+            "As a faster alternative to signing in site by site, action='import_login' "
+            "copies the user's EXISTING logins across from their own Chrome — but ONLY "
+            "for the sites they name, never all of them. Chrome must be closed first. "
+            "For Google sites (YouTube, Gmail, Drive) import google.com alongside them, "
+            "because that is where the sign-in actually lives. "
             "STOPS and ASKS for a verification code or a 'not a robot' check, which "
             "only the user can answer. "
             "Use browser_control instead when the user just wants a page opened in "
@@ -497,13 +502,15 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "open | look | click | type | sign_in | close"},
+                "action":      {"type": "STRING", "description": "open | look | click | type | sign_in | import_login (copy named sites' logins across from the user's Chrome) | close"},
                 "url":         {"type": "STRING", "description": "URL for the open action"},
                 "description": {"type": "STRING", "description": "Which control, in plain words: 'the Sign in button', 'the Email field'. Use a name from the last look."},
                 "text":        {"type": "STRING", "description": "Text to type, for the type action"},
                 "timeout":     {"type": "NUMBER", "description": "Seconds to wait for the user during sign_in (default 300)"},
+                "domains":     {"type": "STRING", "description": "For import_login: the sites to bring across, e.g. 'youtube.com google.com'. ONLY these are imported."},
                 "want_pixels": {"type": "BOOLEAN", "description": "Force a screenshot on look, when the structural read is not enough"},
                 "timeout":     {"type": "NUMBER", "description": "Seconds to wait for the user during sign_in (default 300)"},
+                "domains":     {"type": "STRING", "description": "For import_login: the sites to bring across, e.g. 'youtube.com google.com'. ONLY these are imported."},
             },
             "required": ["action"]
         }
