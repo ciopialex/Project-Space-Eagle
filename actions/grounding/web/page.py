@@ -165,6 +165,29 @@ COLLECT_JS = r"""
   // against an element that has since moved or been replaced.
   document.querySelectorAll('[data-ae-ref]')
           .forEach(e => e.removeAttribute('data-ae-ref'));
+
+  // Ref strings are never reused, across this collect or any later one.
+  //
+  // They used to be positional — "e0", "e1", ... restarting from zero on
+  // every collect — and that is a wrong-element bug, not merely a stale-ref
+  // one. Any collect between resolving a control and acting on it silently
+  // reassigns every ref string to whatever the walk finds *now*, so a live
+  // element inherits the exact string an older, different node was holding.
+  // The consent gate then approves one control and the browser actuates
+  // another, with nothing raising, because the selector still matches
+  // something. Review reproduced it twice on supposedly-fixed code: a gate
+  // approving "Search" while the browser typed into "Message to seller",
+  // and a gate approving "Continue" while the browser clicked "Complete
+  // purchase".
+  //
+  // A monotonic counter on `window` makes that impossible by construction
+  // rather than by discipline. A ref that has been re-stamped no longer
+  // matches any element, so `[data-ae-ref="e7"]` finds nothing and the
+  // actuation fails fast and retries against a fresh resolve — the same
+  // path a genuinely stale ref already took. Every race in this class turns
+  // from "acted on the wrong element" into "did not act", which is the only
+  // safe direction for a gate to fail in.
+  if (typeof window.__aeRefSeq !== 'number') window.__aeRefSeq = 0;
 """ + _ACCESSIBLE_NAME_JS + r"""
   const inViewport = (rect) => rect.bottom > 0 && rect.top < window.innerHeight
                              && rect.right > 0 && rect.left < window.innerWidth;
@@ -259,7 +282,9 @@ COLLECT_JS = r"""
   const out = [];
   let n = 0;
   for (const c of selected) {
-    const ref = 'e' + n;
+    // Monotonic and never reset — see the note at the top of this script for
+    // why reusing "e0", "e1", ... across collects is a wrong-element bug.
+    const ref = 'e' + (window.__aeRefSeq++);
     try { c.el.setAttribute('data-ae-ref', ref); } catch (e) { continue; }
     out.push({
       ref: ref, name: c.name, role: c.role,

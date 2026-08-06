@@ -459,3 +459,68 @@ def test_a_control_that_changes_mid_click_never_hits_the_wrong_ref(browser):
                 "reported failure but something was still clicked anyway")
     finally:
         browser.goto(PAGE_URL)
+
+
+def test_refs_are_never_reused_across_collects(browser):
+    """The structural close of the wrong-element bug class.
+
+    Refs used to be positional — "e0", "e1", ... restarting at zero on every
+    collect — so any collect between resolving a control and acting on it
+    silently handed a live element the ref string a different, older node was
+    holding. Review reproduced the consequence twice on code that was
+    supposed to be fixed: a gate approving "Search" while the browser typed
+    into "Message to seller", and a gate approving "Continue" while the
+    browser clicked "Complete purchase".
+
+    A monotonic counter makes it impossible rather than merely unlikely: a
+    re-stamped ref matches nothing, so the actuation fails fast and retries
+    against a fresh resolve instead of hitting the wrong element.
+    """
+    page = browser.page()
+    browser.call(lambda pg: pg.set_content(
+        '<div id="banner"><button>Continue</button></div>'
+        '<button id="buy">Complete purchase</button>'))
+
+    first = nodes_from_records(page.collect())
+    continue_ref = next(n.ref for n in first if n.name == "Continue")
+
+    # The banner goes away, exactly as a cookie notice does mid-interaction.
+    browser.call(lambda pg: pg.evaluate(
+        "() => document.getElementById('banner').remove()"))
+    second = nodes_from_records(page.collect())
+
+    assert [n.name for n in second] == ["Complete purchase"]
+    # The decisive assertion: the old ref must not now name a live element.
+    assert continue_ref not in {n.ref for n in second}
+    matching = browser.call(lambda pg: pg.evaluate(
+        "(ref) => document.querySelectorAll('[data-ae-ref=\"' + ref + '\"]').length",
+        continue_ref))
+    assert matching == 0, "a stale ref still matches an element — it can be actuated"
+
+
+def test_a_collect_between_resolve_and_actuation_cannot_redirect_the_click(browser):
+    """The end-to-end shape of the bug, driven through the real actuation path.
+
+    Whatever else changes on the page, a ref captured before an intervening
+    collect must never land on a *different* control. Failing is acceptable
+    here; hitting the wrong element is not.
+    """
+    browser.call(lambda pg: pg.set_content(
+        '<button id="a" onclick="document.title=\'A\'">Continue</button>'
+        '<button id="b" onclick="document.title=\'B\'">Complete purchase</button>'))
+    page = browser.page()
+
+    nodes = nodes_from_records(page.collect())
+    stale = next(n.ref for n in nodes if n.name == "Continue")
+
+    # Something re-collects (the type gate's own wall check does exactly this).
+    browser.call(lambda pg: pg.evaluate("() => document.getElementById('a').remove()"))
+    page.collect()
+
+    try:
+        page.click(stale)
+    except Exception:
+        pass                     # failing fast is the correct outcome
+
+    title = browser.call(lambda pg: pg.title())
+    assert title != "B", "the stale ref actuated the irreversible control"
