@@ -52,6 +52,7 @@ from actions.screen_processor  import _capture_camera, _capture_screen
 from actions.youtube_video     import youtube_video
 from actions.desktop           import desktop_control
 from actions.browser_control   import browser_control
+from actions.web_agency        import web_agency
 from actions.file_controller   import file_controller
 from actions.code_helper       import code_helper
 from actions.dev_agent         import dev_agent
@@ -155,6 +156,27 @@ def _shutdown_tool_executor(executor: "ThreadPoolExecutor") -> None:
     executor.shutdown(wait=False, cancel_futures=True)
 
 
+def _shutdown_web_browser() -> None:
+    """Close the eagle's own browser, if `web_agency` ever started one.
+
+    Nothing else in this process closes it: `EagleBrowser` runs its own
+    daemon thread and holds an un-`stop()`ped Playwright driver process for
+    as long as the process lives, and a daemon thread does not get a chance
+    to run its own cleanup on interpreter exit. Importing
+    `actions.grounding.web.browser` here rather than at module load time
+    keeps this file from paying for Playwright's import (and the module
+    it's nested under) on every startup, including the vast majority of
+    sessions that never touch the web tool at all — `default_browser()`
+    only ever constructs the real thing the first time `web_agency` needs
+    it, and if that never happened, closing it here is a safe no-op.
+    """
+    try:
+        from actions.grounding.web.browser import default_browser
+        default_browser().close()
+    except Exception as e:
+        print(f"[main.py] Non-fatal error closing the eagle's browser: {e}")
+
+
 class ConnectionBackoff:
     """Reconnect delay that grows under failure and forgets that growth once a
     session proves healthy.
@@ -251,9 +273,12 @@ TOOL_DECLARATIONS = [
     {
         "name": "open_app",
         "description": (
-            "Opens any application on the computer. "
-            "Use this whenever the user asks to open, launch, or start any app, "
-            "website, or program. Always call this tool — never just say you opened it."
+            "Opens an application installed on the computer. "
+            "Use this whenever the user asks to open, launch, or start an app or "
+            "program. Always call this tool — never just say you opened it. "
+            "For a WEBSITE this only opens it and stops: if the user wants anything "
+            "DONE on that site — find something, read their account, click through a "
+            "flow — use web_agency instead."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -311,7 +336,12 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "send_message",
-        "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
+        "description": (
+            "Sends a text message via WhatsApp or Telegram. These are the only platforms it "
+            "supports. For Instagram, Facebook, LinkedIn or any other site's messaging, there "
+            "is no API — use web_agency to do it through the website like a person would, and "
+            "never tell the user it is impossible without trying that."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -338,8 +368,13 @@ TOOL_DECLARATIONS = [
     {
         "name": "youtube_video",
         "description": (
-            "Controls YouTube. Use for: playing videos, summarizing a video's content, "
-            "getting video info, or showing trending videos."
+            "Plays a YouTube video by name, summarizes a video's content, gets video "
+            "info, or shows trending videos. It works by searching YouTube publicly — "
+            "it is NOT signed in as the user and cannot see anything account-specific. "
+            "For the user's own liked videos, watch history, subscriptions, playlists, "
+            "comments, or anything else behind their login, use web_agency instead: it "
+            "drives a real browser and can be signed in. Never tell the user something "
+            "is private or impossible without trying web_agency first."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -402,8 +437,11 @@ TOOL_DECLARATIONS = [
     {
         "name": "browser_control",
         "description": (
-            "Controls any web browser. Use for: opening websites, searching the web, "
-            "clicking elements, filling forms, scrolling, screenshots, navigation, any web-based task. "
+            "Opens a website in the USER'S OWN browser, with their own logins and tabs — "
+            "for when they want to look at something themselves. "
+            "Do NOT use it to do work inside a page: for reading a page's controls, clicking, "
+            "typing, filling forms, or any multi-step task on a site, use web_agency, which "
+            "perceives the page properly and refuses irreversible actions. "
             "Simple open/search requests launch the user's own browser normally (their real profile "
             "and logged-in accounts); interactive actions (click, type, fill_form...) attach an "
             "automation browser. "
@@ -427,6 +465,52 @@ TOOL_DECLARATIONS = [
                 "path":        {"type": "STRING", "description": "Save path for screenshot"},
                 "incognito":   {"type": "BOOLEAN", "description": "Open in private/incognito mode"},
                 "clear_first": {"type": "BOOLEAN", "description": "Clear field before typing (default: true)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "web_agency",
+        "description": (
+            "Uses a website the way a person would, in the eagle's OWN browser — "
+            "reads what controls the page actually has, then clicks and types by "
+            "name. Use this for working INSIDE a site: pressing buttons, filling "
+            "fields, navigating an interface the eagle has never seen. Runs in the "
+            "background, so it does not take over the user's screen. "
+            "Works on pages in English, Romanian and Spanish; on other languages it "
+            "errs toward asking the user before acting. "
+            "REFUSES irreversible actions (paying, ordering, deleting an account, signing) "
+            "and reports why, so the model must relay that to the user and let them decide. "
+            "Clears cookie/consent walls itself by DECLINING tracking, never accepting. "
+            "When a site requires the user to be signed in, call action='sign_in' with "
+            "that url: it puts the eagle's browser on screen so they can log in once, "
+            "then hides it again and the session persists for good. The eagle's browser "
+            "is separate from the user's Chrome ON PURPOSE, so their being logged in "
+            "there does not sign the eagle in. NEVER tell the user to open their own "
+            "browser and look for themselves, and never claim you lack access to their "
+            "account — call sign_in. "
+            "As a faster alternative to signing in site by site, action='import_login' "
+            "copies the user's EXISTING logins across from their own Chrome — but ONLY "
+            "for the sites they name, never all of them. Chrome must be closed first. "
+            "For Google sites (YouTube, Gmail, Drive) import google.com alongside them, "
+            "because that is where the sign-in actually lives. "
+            "STOPS and ASKS for a verification code or a 'not a robot' check, which "
+            "only the user can answer. "
+            "Use browser_control instead when the user just wants a page opened in "
+            "THEIR browser with their own logins."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":      {"type": "STRING", "description": "open | look | click | type | sign_in | import_login (copy named sites' logins across from the user's Chrome) | close"},
+                "url":         {"type": "STRING", "description": "URL for the open action"},
+                "description": {"type": "STRING", "description": "Which control, in plain words: 'the Sign in button', 'the Email field'. Use a name from the last look."},
+                "text":        {"type": "STRING", "description": "Text to type, for the type action"},
+                "timeout":     {"type": "NUMBER", "description": "Seconds to wait for the user during sign_in (default 300)"},
+                "domains":     {"type": "STRING", "description": "For import_login: the sites to bring across, e.g. 'youtube.com google.com'. ONLY these are imported."},
+                "want_pixels": {"type": "BOOLEAN", "description": "Force a screenshot on look, when the structural read is not enough"},
+                "timeout":     {"type": "NUMBER", "description": "Seconds to wait for the user during sign_in (default 300)"},
+                "domains":     {"type": "STRING", "description": "For import_login: the sites to bring across, e.g. 'youtube.com google.com'. ONLY these are imported."},
             },
             "required": ["action"]
         }
@@ -578,7 +662,10 @@ TOOL_DECLARATIONS = [
     {
         "name": "game_updater",
         "description": (
-            "THE ONLY tool for ANY Steam or Epic Games request. "
+            "Installs, downloads, updates and lists Steam and Epic games, checks "
+            "download status, and schedules updates — it drives the local game "
+            "clients. It does NOT browse the storefronts: for a wishlist, a store "
+            "page, prices, reviews or purchase history, use web_agency. "
             "Use for: installing, downloading, updating games, listing installed games, "
             "checking download status, scheduling updates. "
             "ALWAYS call directly for any Steam/Epic/game request. "
@@ -793,6 +880,10 @@ TOOL_SPECS = {
     "open_app": ToolSpec(writes=["desktop"], priority=1),
     "weather_report": ToolSpec(reads=["web"], priority=1),
     "browser_control": ToolSpec(writes=["desktop"], priority=1),
+    # Reads the web in its own browser; touches neither the user's screen nor
+    # their browser. Non-exclusive on purpose — this is the tool that can run
+    # while the user is doing something else.
+    "web_agency": ToolSpec(reads=["web"], priority=1, timeout_s=90.0),
     "file_controller": ToolSpec(writes=["file"], priority=1),
     "send_message": ToolSpec(writes=["desktop"], exclusive=True, priority=1, timeout_s=130.0),
     "reminder": ToolSpec(writes=["system"], priority=1),
@@ -1126,6 +1217,10 @@ class AethelarkLive:
                 r = await loop.run_in_executor(self._tool_executor, lambda: browser_control(parameters=args, player=self.ui))
                 result = r or "Done."
 
+            elif name == "web_agency":
+                r = await loop.run_in_executor(self._tool_executor, lambda: web_agency(parameters=args, player=self.ui))
+                result = r or "Done."
+
             elif name == "file_controller":
                 r = await loop.run_in_executor(self._tool_executor, lambda: file_controller(parameters=args, player=self.ui))
                 result = r or "Done."
@@ -1279,6 +1374,16 @@ class AethelarkLive:
                     self.ui.write_log("SYS: Shutting down...")
                     # Stop audio streams
                     self.set_speaking(False)
+                    # Close the eagle's own browser, if web_agency ever
+                    # started one — see _shutdown_web_browser's docstring
+                    # for why nothing else does this. Off the event loop
+                    # thread: EagleBrowser.close() blocks synchronously for
+                    # up to a few seconds waiting on its teardown jobs.
+                    try:
+                        await loop.run_in_executor(self._tool_executor,
+                                                   _shutdown_web_browser)
+                    except Exception as _e:
+                        print(f"[main.py] Non-fatal error at line 1071: {_e}")
                     # Close dashboard
                     if self._dashboard:
                         try:
@@ -2428,6 +2533,7 @@ def main():
                 asyncio.run(core.run())
             finally:
                 _shutdown_tool_executor(core._tool_executor)
+                _shutdown_web_browser()
 
         _run_core(ui, _start)
 

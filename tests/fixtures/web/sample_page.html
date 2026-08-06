@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sample</title></head>
+<body>
+  <nav><a href="/home">Home</a> <a href="/help">Help</a></nav>
+  <h1>Sample page</h1>
+
+  <form>
+    <label for="email">Email address</label>
+    <input id="email" type="email" placeholder="you@example.com">
+
+    <label for="pw">Password</label>
+    <input id="pw" type="password">
+
+    <label><input type="checkbox" id="remember"> Remember me</label>
+
+    <button type="submit">Sign in</button>
+    <button type="button" disabled>Disabled button</button>
+  </form>
+
+  <div role="button" tabindex="0" aria-label="Custom widget">not a button tag</div>
+  <div role="presentation">should never be collected</div>
+  <span>bare text, no role</span>
+  <button style="display:none">Hidden button</button>
+  <img src="logo.png" alt="Company logo" width="40" height="40">
+</body>
+</html>

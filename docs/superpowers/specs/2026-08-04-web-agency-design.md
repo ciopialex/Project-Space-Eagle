@@ -1,7 +1,37 @@
 # Web Agency — Design
 
 **Created:** 2026-08-04
-**Status:** approved, not yet implemented
+**Status:** v1 implemented 2026-08-05 — see `docs/superpowers/plans/2026-08-04-web-agency.md`
+
+**Measured structural coverage at v1:** 71.8% average across 5 sites, measured
+2026-08-05 (`tools/web_coverage.py`): en.wikipedia.org 60.7% (hit the
+`MAX_NODES=600` ceiling — the true number is lower than this floor),
+news.ycombinator.com 86.6%, developer.mozilla.org/.../CSS 21.0% (1,150 of
+1,151 misses traced to one cause: content inside a closed `<details>` reads
+as unnamed because Chromium's `innerText` is empty there even though
+`textContent` is not), www.python.org 99.6%, ro.wikipedia.org 91.2%.
+
+**Re-measured 2026-08-05 after task 12** (`tools/web_coverage.py`, same 5
+sites, same method), which fixed the closed-`<details>` gap above
+(`accName()` now falls back to `textContent` when `innerText` is empty,
+gated so a control stays collected-but-not-`SHOWING` rather than falsely
+claiming to be clickable) and made the `MAX_NODES=600` ceiling honest (a
+`truncated` flag the collector now reports instead of silently under-
+counting, and a viewport-preference cut so a page over the cap keeps
+controls near the user's current view instead of whatever happens to come
+first in document order): **76.7% average.** en.wikipedia.org 60.7%
+(unchanged — still hits the ceiling, still a floor; its near-viewport
+content already fell within the first 600 elements in document order, so
+viewport-preference changed nothing measurable on this particular page),
+news.ycombinator.com 86.6% (unchanged), developer.mozilla.org/.../CSS 40.8%
+(up from 21.0% — the closed-`<details>` gap is fixed, but that now
+surfaces a genuine ceiling instead of a naming bug: the page has 1,694
+named candidates and only 600 can be shown, so this is *also* now a floor,
+correctly flagged, not the true number), www.python.org 99.6% (unchanged),
+ro.wikipedia.org 95.9% (up from 91.2%). Two of five sites' numbers are
+floors, not scores, and the collector now says so in its own output rather
+than the coverage script having to infer it.
+Automatisms and the submission gate remain unbuilt.
 
 ## Why
 

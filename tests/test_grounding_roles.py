@@ -112,3 +112,50 @@ def test_best_match_survives_a_malformed_node():
             raise RuntimeError("no bounds")
 
     assert best_match([Broken()], "the Save button", platform=WINDOWS) is None
+
+
+# --- Diacritics must not shatter words (found by benching emag.ro) --------
+
+def test_accented_words_stay_whole_instead_of_splitting():
+    """`_tokens` splits on [^a-z0-9]+, which made every accented character a
+    word *separator*: Romanian "căutare" became "c" + "utare". The emag.ro
+    search box is perceived correctly as "Începe o nouă căutare" and was
+    still unreachable, because the matcher could not see the word."""
+    from actions.grounding.base import _tokens
+    assert _tokens("Începe o nouă căutare") == ["incepe", "o", "noua",
+                                                "cautare"]
+    assert _tokens("câmpul de căutare") == ["campul", "de", "cautare"]
+    assert _tokens("Plătește") == ["plateste"]
+    # Sites spell the same word both ways; both must tokenise identically.
+    assert _tokens("Plateste") == _tokens("Plătește")
+
+
+def test_a_romanian_description_matches_a_romanian_label():
+    from actions.grounding.base import match_score
+    # Was 0.27 against a 0.5 threshold — below the bar, so unreachable.
+    assert match_score("câmpul de căutare",
+                       "Începe o nouă căutare", "text") >= 0.5
+
+
+def test_romanian_and_spanish_filler_words_are_stripped():
+    """Filler is language-specific. With an English-only list, "campul" and
+    "de" counted as meaningful words and dragged every Romanian score down."""
+    from actions.grounding.base import match_score
+    assert match_score("butonul de salvare", "Salvare", "push button") >= 0.5
+    assert match_score("el campo de nombre", "Nombre", "text") >= 0.5
+
+
+def test_english_matching_is_unchanged_by_the_folding():
+    from actions.grounding.base import match_score
+    assert match_score("the Sign in button", "Sign in", "push button") == 1.0
+    assert match_score("the Save button", "Save", "push button") == 1.0
+    assert match_score("the parachute", "Sign in", "push button") == 0.0
+
+
+def test_a_combobox_counts_as_a_field():
+    """Modern search inputs use the autocomplete pattern — the box you type
+    into is role=combobox, not textbox. Without this, DuckDuckGo's search
+    input tied at 0.80 with sixteen buttons, links and images."""
+    from actions.grounding.base import match_score
+    assert match_score("the search field",
+                       "Search with DuckDuckGo", "combo box") == 1.0

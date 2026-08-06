@@ -80,6 +80,17 @@ def google_token_path() -> Path:
     return config_dir() / "google_token.json"
 
 
+def browser_profile_dir() -> Path:
+    """The eagle's own browser profile.
+
+    Deliberately not the user's Chrome profile. Attaching to that would give
+    the eagle every session the user has open — silently, without a moment
+    where they chose to grant it — and would tie it to a window it has to
+    fight them for. One login per site, granted on purpose, is the trade.
+    """
+    return ensure_private_dir(user_data_dir() / "browser")
+
+
 def _migrate_legacy_credentials() -> None:
     """Move credentials out of the source tree, once.
 
