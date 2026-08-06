@@ -64,13 +64,13 @@ from actions.grounding.actionability import is_editable
 from actions.grounding.verify import act_and_verify
 from actions.grounding.web.consent import irreversible_reason
 from actions.grounding.web.grounder import WebGrounder
-from actions.grounding.web.handoff import (cookie_wall_choice,
+from actions.grounding.web.handoff import (await_human, cookie_wall_choice,
                                            signed_out_reason, wall_reason)
 from actions.grounding.web.page import element_from, nodes_from_records, ref_of
 from actions.grounding.web.sense import PageSense
 from core.tool_result import ToolResult
 
-_ACTIONS = ("open", "look", "click", "type", "close")
+_ACTIONS = ("open", "look", "click", "type", "sign_in", "close")
 
 _NO_BROWSER_GUIDANCE = (
     "The eagle's browser could not start. Run "
@@ -140,6 +140,63 @@ def _current_url(page) -> str:
         return page.url()
     except Exception:
         return ""
+
+
+def _sign_in(browser, url: str, timeout: float) -> ToolResult:
+    """Put the eagle's browser on screen so the user can sign in, once.
+
+    The eagle keeps its own browser profile, deliberately: attaching to the
+    user's Chrome would inherit every session they have open, silently, and
+    fight them for their own window. The cost of that choice is one login per
+    site — and until now there was no way to pay it, because the browser runs
+    headless and nothing could show it. So a signed-in page was simply
+    unreachable, and the eagle kept inventing reasons why.
+
+    This is the whole of the handoff: show the window, get out of the way,
+    wait, put it back. While the user is at the keyboard the eagle does not
+    perceive the page — no collecting, no screenshots — it only re-checks
+    whether the wall has cleared. Their password is not something to watch.
+
+    The session persists in the profile afterwards, so this is a one-time cost
+    per site rather than a step in every task.
+    """
+    if not browser.surface(True):
+        return ToolResult.failure(
+            "Could not put the browser on screen for the user to sign in.",
+            guidance=("Tell the user the sign-in window would not open. They "
+                      "can retry, or sign in later."))
+    try:
+        try:
+            browser.goto(url)
+        except Exception as e:
+            browser.surface(False)
+            return ToolResult.failure(
+                f"Could not open {url} to sign in: {e}",
+                guidance="Check the address and try again.")
+
+        def _still_blocked() -> str:
+            # Deliberately the ONLY thing read while the user is typing: a
+            # wall check, not a page read.
+            page = browser.page()
+            if page is None:
+                return "browser gone"
+            nodes = _current_nodes(page)
+            return (wall_reason(nodes, _current_url(page))
+                    or signed_out_reason(nodes))
+
+        cleared = await_human(_still_blocked, timeout=timeout, poll=2.0)
+    finally:
+        browser.surface(False)
+
+    if cleared:
+        return ToolResult.success(
+            f"The user signed in at {url}. The eagle's browser stays signed "
+            "in from now on, so this is not needed again for this site.",
+            signed_in=True, url=url)
+    return ToolResult.failure(
+        f"The sign-in window at {url} closed without the sign-in completing.",
+        guidance=("Ask the user whether they want to try again — the window "
+                  "is open only while this runs, and it timed out."))
 
 
 def _clear_consent_walls(browser, grounder: WebGrounder) -> list[str]:
@@ -789,6 +846,16 @@ def _web_agency(params: dict, player: Any, browser: Any) -> ToolResult:
                                         **{**result.data,
                                            "consent_cleared": cleared})
         return result
+
+    if action == "sign_in":
+        url = str(params.get("url") or "").strip()
+        if not url:
+            return ToolResult.failure(
+                "No URL to sign in at.",
+                guidance="Pass url='https://…' with action='sign_in'.")
+        if "://" not in url:
+            url = "https://" + url
+        return _sign_in(browser, url, float(params.get("timeout") or 300.0))
 
     if action == "look":
         return _look(browser, want_pixels=bool(params.get("want_pixels")))

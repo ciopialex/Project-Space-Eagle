@@ -481,19 +481,29 @@ TOOL_DECLARATIONS = [
             "errs toward asking the user before acting. "
             "REFUSES irreversible actions (paying, ordering, deleting an account, signing) "
             "and reports why, so the model must relay that to the user and let them decide. "
-            "STOPS and ASKS when a site wants a human — a login, a verification code, "
-            "a 'not a robot' check. "
+            "Clears cookie/consent walls itself by DECLINING tracking, never accepting. "
+            "When a site requires the user to be signed in, call action='sign_in' with "
+            "that url: it puts the eagle's browser on screen so they can log in once, "
+            "then hides it again and the session persists for good. The eagle's browser "
+            "is separate from the user's Chrome ON PURPOSE, so their being logged in "
+            "there does not sign the eagle in. NEVER tell the user to open their own "
+            "browser and look for themselves, and never claim you lack access to their "
+            "account — call sign_in. "
+            "STOPS and ASKS for a verification code or a 'not a robot' check, which "
+            "only the user can answer. "
             "Use browser_control instead when the user just wants a page opened in "
             "THEIR browser with their own logins."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "open | look | click | type | close"},
+                "action":      {"type": "STRING", "description": "open | look | click | type | sign_in | close"},
                 "url":         {"type": "STRING", "description": "URL for the open action"},
                 "description": {"type": "STRING", "description": "Which control, in plain words: 'the Sign in button', 'the Email field'. Use a name from the last look."},
                 "text":        {"type": "STRING", "description": "Text to type, for the type action"},
+                "timeout":     {"type": "NUMBER", "description": "Seconds to wait for the user during sign_in (default 300)"},
                 "want_pixels": {"type": "BOOLEAN", "description": "Force a screenshot on look, when the structural read is not enough"},
+                "timeout":     {"type": "NUMBER", "description": "Seconds to wait for the user during sign_in (default 300)"},
             },
             "required": ["action"]
         }

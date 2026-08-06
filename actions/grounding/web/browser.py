@@ -347,6 +347,26 @@ class EagleBrowser:
         return PagePort(self._page,
                         call=lambda fn: self._submit(fn, _CALL_TIMEOUT))
 
+    def surface(self, visible: bool) -> bool:
+        """Show or hide the eagle's browser, keeping its profile and logins.
+
+        Playwright fixes headless-vs-visible at launch, so there is no way to
+        toggle a running context — the browser has to come down and go back up.
+        That is fine here precisely because the profile lives on disk: cookies,
+        and therefore every session the user has granted, survive the restart.
+        It is the one moment the eagle's browser is allowed on screen, and it
+        exists so a human can do the thing only a human can — sign in.
+
+        Returns True if the browser is now in the requested state.
+        """
+        with self._lifecycle_lock:
+            if self.running and self.headless == bool(visible):
+                return True
+            self.close()
+            self.headless = not bool(visible)
+            self.start()
+            return self.running and self.headless == (not bool(visible))
+
     def goto(self, url: str) -> str:
         """Navigate, let the page render, and return the URL landed on."""
         def _go(page):
