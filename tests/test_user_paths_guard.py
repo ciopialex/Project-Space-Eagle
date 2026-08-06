@@ -28,9 +28,22 @@ ALLOWED = {
 
 
 def _sources():
+    """Every .py file that is part of THIS checkout, and nothing else.
+
+    Dot-directories are skipped wholesale rather than named one at a time.
+    A git worktree lives at `.claude/worktrees/<branch>/` and contains a
+    complete second copy of the repository — so an rglob from the root walked
+    into it and flagged `.claude/worktrees/x/core/user_paths.py`, which the
+    allowlist could not match because it is keyed on `core/user_paths.py`.
+    The guard was reporting a checkout it does not govern. The same trap is
+    set by `.venv`, `.git`, and any future tooling scratch directory, so the
+    rule is the category, not the instance.
+    """
     for path in ROOT.rglob("*.py"):
         rel = path.relative_to(ROOT).as_posix()
-        if rel.startswith((".venv/", "tests/", "docs/", "scratch/")):
+        if any(part.startswith(".") for part in rel.split("/")[:-1]):
+            continue
+        if rel.startswith(("tests/", "docs/", "scratch/")):
             continue
         if "__pycache__" in rel or rel in ALLOWED:
             continue
@@ -58,6 +71,43 @@ def test_no_module_computes_a_user_data_path_by_hand():
     assert offenders == [], (
         "these compute a user-data path by hand instead of via user_paths:\n"
         + "\n".join(offenders))
+
+
+def test_a_nested_checkout_is_not_scanned(tmp_path, monkeypatch):
+    """A git worktree puts a whole second copy of the repo under `.claude/`.
+
+    Scanning it made this guard fail against code it does not govern, and the
+    allowlist could not rescue it: the exemptions are keyed on `core/x.py`,
+    never `.claude/worktrees/b/core/x.py`. Guarded here because the failure
+    only appears when a worktree happens to exist, so it is invisible on a
+    clean clone and lands on whoever is mid-branch.
+    """
+    import test_user_paths_guard as guard
+
+    nested = tmp_path / ".claude" / "worktrees" / "b" / "core"
+    nested.mkdir(parents=True)
+    (nested / "user_paths.py").write_text('P = config_dir() / "api_keys.json"\n')
+    (tmp_path / "real.py").write_text("from core import user_paths\n")
+
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    scanned = dict(guard._sources())
+
+    assert "real.py" in scanned, "the real tree must still be scanned"
+    assert not [r for r in scanned if r.startswith(".")], (
+        f"scanned a nested checkout: {sorted(scanned)}")
+
+
+def test_the_guard_still_catches_a_real_offender(tmp_path, monkeypatch):
+    """A skip rule that quietly empties the scan would make this file pass by
+    checking nothing. Prove the detector still fires."""
+    import test_user_paths_guard as guard
+
+    (tmp_path / "sloppy.py").write_text(
+        'KEY_FILE = Path.home() / ".aethelark" / "api_keys.json"\n')
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match="sloppy.py"):
+        guard.test_no_module_computes_a_user_data_path_by_hand()
 
 
 def test_user_paths_is_actually_imported_by_the_app():
