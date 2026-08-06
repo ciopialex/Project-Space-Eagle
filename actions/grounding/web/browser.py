@@ -418,23 +418,82 @@ class EagleBrowser:
 #: the whole timeout on every navigation.
 _SETTLE_MS = 1200
 
+#: How long to keep waiting for a DOM that is still growing. Slightly above the
+#: old fixed wait: a page that genuinely needs the time now gets a little more
+#: of it, and one that does not stops paying for it entirely.
+_SETTLE_MAX_MS = 1500
+
+#: Gap between size readings. Each is one `evaluate` round trip — measured at
+#: ~1-3ms, so the polling costs far less than the waiting it replaces.
+_SETTLE_POLL_MS = 100
+
+#: Consecutive identical readings required before calling a page settled. Two,
+#: not one: a single match happens constantly between mutations.
+_SETTLE_STABLE_POLLS = 2
+
+_SETTLE_SIZE_JS = "document.getElementsByTagName('*').length"
+
 
 def _settle(page) -> None:
-    """Give a single-page app a moment to actually render.
+    """Wait until the page stops changing, not for a fixed length of time.
 
-    Best-effort by design: a page that never settles is still worth reading,
-    so every wait here is capped and every failure is ignored. The `body`
-    wait catches the common case cheaply, and the short fixed pause covers
-    frameworks that mount their real content a tick later.
+    The fixed wait this replaces cost 1200ms on every navigation. Measured on
+    a local fixture, a page that was complete the instant it parsed still took
+    1239ms to be declared ready, while snapshotting it took 7ms — so the wait
+    was ~99% of the cost of looking at a page, and most pages needed none of it.
+
+    Waiting is still the right thing to do for the pages it was written for:
+    youtube.com once read as **6 controls** because the collector ran while
+    React was mounting, and a fast wrong answer about what is on a page is the
+    worst outcome available here. So this watches the DOM's element count and
+    leaves only once it has held still, which ends early on a finished page
+    and waits longer than the old constant on a slow one.
+
+    Best-effort throughout. `evaluate` runs script in a page the eagle does not
+    control; a page that throws, or a port with no `evaluate` at all, falls
+    back to the old fixed wait rather than skipping the settle entirely.
     """
     try:
-        page.wait_for_selector("body", timeout=_SETTLE_MS)
+        page.wait_for_selector("body", timeout=_SETTLE_MAX_MS)
     except Exception:
         pass
-    try:
-        page.wait_for_timeout(_SETTLE_MS)
-    except Exception:
-        pass
+
+    evaluate = getattr(page, "evaluate", None)
+    if evaluate is None:
+        try:
+            page.wait_for_timeout(_SETTLE_MAX_MS)
+        except Exception:
+            pass
+        return
+
+    waited = 0
+    last_size = -1
+    stable = 0
+    while waited < _SETTLE_MAX_MS:
+        try:
+            size = evaluate(_SETTLE_SIZE_JS)
+        except Exception:
+            # Cannot measure this page. Fall back to waiting out the rest of
+            # the budget — an unreadable page is not a settled one.
+            try:
+                page.wait_for_timeout(_SETTLE_MAX_MS - waited)
+            except Exception:
+                pass
+            return
+
+        if size == last_size:
+            stable += 1
+            if stable >= _SETTLE_STABLE_POLLS:
+                return
+        else:
+            stable = 0
+            last_size = size
+
+        try:
+            page.wait_for_timeout(_SETTLE_POLL_MS)
+        except Exception:
+            return
+        waited += _SETTLE_POLL_MS
 
 
 
