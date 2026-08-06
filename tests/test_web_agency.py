@@ -469,19 +469,28 @@ def test_a_stale_ref_is_retried_once_against_a_fresh_resolve():
 
 class _SequenceGrounder:
     """The narrow slice of `WebGrounder` `_act_with_reresolve` needs:
-    `find_node()`, returning one prearranged node per call. No `best_match`
-    fuzzy text matching involved — this test is about the retry re-running
-    the gate, not about description matching, so the fake makes that
-    explicit rather than relying on real matching happening to behave."""
+    `resolve()`, returning one prearranged node per call plus the node list
+    it came from. No `best_match` fuzzy text matching involved — this test is
+    about the retry re-running the gate, not about description matching, so
+    the fake makes that explicit rather than relying on real matching
+    happening to behave.
+
+    `resolve` returns both halves from one call on purpose: that single-read
+    contract is what stops a gate's own collect re-stamping the ref the
+    caller is about to act on.
+    """
 
     def __init__(self, nodes):
         self._nodes = list(nodes)
         self.calls = 0
 
-    def find_node(self, _description):
+    def resolve(self, _description):
         node = self._nodes[min(self.calls, len(self._nodes) - 1)]
         self.calls += 1
-        return node
+        return node, (node,)
+
+    def find_node(self, description):
+        return self.resolve(description)[0]
 
 
 def test_the_retry_path_re_gates_the_freshly_resolved_node():
@@ -501,7 +510,7 @@ def test_the_retry_path_re_gates_the_freshly_resolved_node():
             raise TimeoutError("stale ref: element detached from the DOM")
         clicked.append(ref)          # would only fire on a real bypass
 
-    def gate_check(node):
+    def gate_check(node, nodes=()):
         reason = irreversible_reason(node.name, node.role)
         if reason:
             raise _ConsentBlocked(f"Refused: {reason}", "ask the user")

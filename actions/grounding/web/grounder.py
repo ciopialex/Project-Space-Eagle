@@ -45,21 +45,39 @@ class WebGrounder:
     def available(self) -> bool:
         return self._page() is not None
 
-    def find_node(self, description: str) -> WebNode | None:
-        """The matching node, ref intact. Actuation needs the ref; `find` does
-        not expose it because `Element` has nowhere to put one."""
+    def resolve(self, description: str) -> tuple[WebNode | None, tuple]:
+        """One structural read, returning both the match and everything it
+        was matched against: `(node, nodes)`.
+
+        Callers that need the whole node list *and* a match must have both
+        from the same read. Collecting twice re-stamps every `data-ae-ref`
+        (see `page.py`), so a match resolved by one collect and a node list
+        gathered by another describe two different snapshots — and the ref
+        the caller is about to act on belongs to the older one. That is
+        exactly how the consent gate came to approve one control while the
+        browser actuated another: the gate's own `wall_reason` check
+        re-collected between the resolve and the fill.
+        """
         page = self._page()
         if page is None:
-            return None
+            return None, ()
         try:
             nodes = nodes_from_records(page.collect())
         except Exception:
-            return None
+            return None, ()
         try:
             return best_match(nodes, description,
-                              threshold=self._threshold, platform=WEB)
+                              threshold=self._threshold, platform=WEB), nodes
         except Exception:
-            return None
+            return None, nodes
+
+    def find_node(self, description: str) -> WebNode | None:
+        """The matching node, ref intact. Actuation needs the ref; `find` does
+        not expose it because `Element` has nowhere to put one.
+
+        Use `resolve()` instead when the whole node list is needed too.
+        """
+        return self.resolve(description)[0]
 
     def find(self, description: str) -> Element | None:
         node = self.find_node(description)

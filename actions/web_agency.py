@@ -292,10 +292,15 @@ def _act_with_reresolve(grounder: WebGrounder, description: str,
     """
     last_exc: Exception | None = None
     for _attempt in range(2):
-        fresh = grounder.find_node(description)
+        # ONE structural read feeds both the match and the gate. Collecting
+        # again inside `gate_check` would re-stamp every ref (see `page.py`)
+        # and leave `fresh_ref` below pointing at the previous snapshot —
+        # which is precisely how the type gate's own `wall_reason` check used
+        # to send a fill to a different field than the one it had approved.
+        fresh, nodes = grounder.resolve(description)
         if fresh is None:
             raise LookupError(f"'{description}' is no longer on the page.")
-        gate_check(fresh)          # raises _ConsentBlocked to refuse
+        gate_check(fresh, nodes)   # raises _ConsentBlocked to refuse
         fresh_ref = ref_of(fresh)
         if not fresh_ref:
             raise LookupError(f"'{description}' has no actionable reference.")
@@ -493,11 +498,15 @@ def _actuation_result(verb_ing: str, verb_past: str, node, outcome: dict,
                               control=acted_node.name)
 
 
-def _gate_click(node) -> None:
+def _gate_click(node, nodes=()) -> None:
     """The consent check `_act_with_reresolve` re-runs against whatever node
     it actually resolved, immediately before clicking it. Mirrors the
     up-front check in `_click` exactly — same wording, same guidance — so a
     refusal reads identically regardless of which of the two catches it.
+
+    Takes the node list for signature parity with `_gate_type`'s gate, so
+    `_act_with_reresolve` can hand every gate the single collect it made
+    (see there). Clicking's own check needs only the node itself.
     """
     reason = irreversible_reason(node.name, node.role)
     if reason:
@@ -516,7 +525,7 @@ def _gate_type(page):
     into — `page` is what lets it re-collect that at gate time, mirroring
     the up-front check in `_type` exactly.
     """
-    def gate(node) -> None:
+    def gate(node, nodes=()) -> None:
         if node.role.lower() == "password":
             raise _ConsentBlocked(
                 f"Refused to type into '{node.name}' because it is a "
@@ -524,7 +533,10 @@ def _gate_type(page):
                 f"This needs the user to sign in themselves — {_NO_HANDOFF_WINDOW}. "
                 "Tell them what the page is asking for; do not type a "
                 "password on their behalf.")
-        reason = wall_reason(_current_nodes(page), _current_url(page))
+        # `nodes` comes from the same collect that produced `node` — see
+        # `_act_with_reresolve`. Re-collecting here is what used to
+        # invalidate the ref about to be filled.
+        reason = wall_reason(nodes, _current_url(page))
         if reason:
             raise _ConsentBlocked(
                 f"Refused to type into '{node.name}' — {reason}.",

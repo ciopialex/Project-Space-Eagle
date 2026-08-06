@@ -225,7 +225,7 @@ def test_a_stale_ref_recovers_by_reresolving_the_description(browser):
     # the stale `node` captured above no longer needs to be passed in at
     # all; a no-op `gate_check` stands in for the real consent gate, since
     # this test is about stale-ref recovery, not consent.
-    _act_with_reresolve(g, "the Sign in button", lambda n: None,
+    _act_with_reresolve(g, "the Sign in button", lambda n, nodes=(): None,
                         lambda ref: page.click(ref))
     elapsed = time.monotonic() - start
 
