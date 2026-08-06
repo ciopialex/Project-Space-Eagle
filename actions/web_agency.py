@@ -64,7 +64,8 @@ from actions.grounding.actionability import is_editable
 from actions.grounding.verify import act_and_verify
 from actions.grounding.web.consent import irreversible_reason
 from actions.grounding.web.grounder import WebGrounder
-from actions.grounding.web.handoff import (await_human, cookie_wall_choice,
+from actions.grounding.web.handoff import (auth_domains_for, await_human,
+                                           cookie_wall_choice, login_remedy,
                                            signed_out_reason, wall_reason)
 from actions.grounding.web.page import element_from, nodes_from_records, ref_of
 from actions.grounding.web.sense import PageSense
@@ -285,6 +286,17 @@ def _clear_consent_walls(browser, grounder: WebGrounder) -> list[str]:
     return cleared
 
 
+#: A sign-in wall is resolvable by the eagle (import a session, or hand over
+#: the window once). A verification code or a human check is not — only the
+#: user can answer those, so they get the honest "I need you" and no remedy.
+def _is_login_wall(reason: str) -> bool:
+    lowered = (reason or "").lower()
+    if any(w in lowered for w in ("verification code", "human check")):
+        return False
+    return any(w in lowered for w in ("sign in", "signed in", "signed-out"))
+
+
+
 def _look(browser, want_pixels: bool) -> ToolResult:
     page = browser.page()
     if page is None:
@@ -363,8 +375,16 @@ def _look(browser, want_pixels: bool) -> ToolResult:
     if escalation_note:
         lines.append(f"({escalation_note})")
     if needs_human:
-        lines.append(f"This needs the user — {needs_human} "
-                    f"({_NO_HANDOFF_WINDOW}).")
+        # A sign-in wall is the one kind the eagle can actually resolve, so it
+        # carries the remedy rather than just the diagnosis. Reporting "this
+        # needs you" and stopping is what made the user do the eagle's job:
+        # work out that a command existed, and which domains to name.
+        if _is_login_wall(needs_human):
+            lines.append(f"This page wants the user signed in. "
+                         f"{login_remedy(current_url)}")
+        else:
+            lines.append(f"This needs the user — {needs_human} "
+                        f"({_NO_HANDOFF_WINDOW}).")
 
     if cookie_choice:
         lines.append(
@@ -383,6 +403,7 @@ def _look(browser, want_pixels: bool) -> ToolResult:
         controls=[n.name for n in sense.nodes],
         needs_human=needs_human,
         cookie_wall=cookie_choice,
+        auth_domains=auth_domains_for(current_url) if needs_human else [],
         has_screenshot=sense.screenshot is not None,
         truncated=sense.truncated,
     )

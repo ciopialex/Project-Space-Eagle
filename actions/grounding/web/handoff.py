@@ -305,3 +305,84 @@ def signed_out_reason(nodes: Iterable[object]) -> str:
                for phrase in _SIGNED_OUT_PHRASES):
             return _SIGNED_OUT_REASON
     return ""
+
+
+# --- Turning a detected wall into an actionable remedy --------------------
+#
+# Detecting that a page wants a sign-in is only half the job. Live testing
+# showed the other half is what actually costs the user: the eagle correctly
+# reported "this site wants you signed in" and then stopped, leaving them to
+# work out which command to run and which domains to name. A wall the eagle
+# can describe but not resolve is barely better than one it invents.
+#
+# So the remedy is derived here — including the part a user would not guess.
+
+#: Sites whose sign-in state lives on a *different* domain than the one being
+#: browsed. Importing youtube.com alone brings across nothing useful, because
+#: the session cookies that make YouTube signed-in belong to google.com. This
+#: is the single most likely reason an import "works" and the page is still
+#: signed out, so it is encoded rather than left as a docstring note.
+_AUTH_COMPANIONS = {
+    "youtube.com": ("google.com", "accounts.google.com"),
+    "gmail.com": ("google.com", "accounts.google.com"),
+    "google.com": ("accounts.google.com",),
+    "drive.google.com": ("google.com", "accounts.google.com"),
+    "docs.google.com": ("google.com", "accounts.google.com"),
+    "outlook.com": ("login.microsoftonline.com", "live.com"),
+    "office.com": ("login.microsoftonline.com", "live.com"),
+    "instagram.com": ("facebook.com",),
+    "linkedin.com": ("www.linkedin.com",),
+}
+
+
+def _registrable(host: str) -> str:
+    """`www.youtube.com` -> `youtube.com`. Good enough for common TLDs."""
+    host = (host or "").lower().strip().strip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    parts = host.split(".")
+    # Two-part public suffixes we actually meet: co.uk, com.br, com.au, ...
+    if len(parts) > 2 and parts[-2] in {"co", "com", "org", "net", "gov", "ac"}:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:]) if len(parts) > 2 else host
+
+
+def auth_domains_for(url: str) -> list[str]:
+    """Every domain whose cookies are needed to be signed in at `url`.
+
+    The site itself, plus wherever its sign-in actually lives.
+    """
+    host = (url or "").split("://")[-1].split("/")[0].split("?")[0]
+    site = _registrable(host)
+    if not site or "." not in site:
+        return []
+    domains = [site]
+    for companion in _AUTH_COMPANIONS.get(site, ()):  # keyed on registrable
+        if companion not in domains:
+            domains.append(companion)
+    return domains
+
+
+def login_remedy(url: str) -> str:
+    """The exact next step for a page that wants the user signed in.
+
+    Written as an instruction to the model rather than prose for the user,
+    because the failure this replaces was the eagle describing the problem and
+    handing the task back. It should be able to act on this without the user
+    having to know a command exists.
+    """
+    domains = auth_domains_for(url)
+    if not domains:
+        return ("Call web_agency action='sign_in' with this page's url so the "
+                "user can log in once.")
+    named = " ".join(domains)
+    extra = ""
+    if len(domains) > 1:
+        extra = (f" ({domains[1]} is included because that is where "
+                 f"{domains[0]}'s sign-in actually lives.)")
+    return (
+        f"Offer to fix this: call web_agency action='import_login' with "
+        f"domains='{named}' to copy the user's existing login across from "
+        f"their Chrome — tell them Chrome has to be closed for a moment "
+        f"first.{extra} If they would rather not, call action='sign_in' with "
+        f"this page's url instead and they can log in directly.")

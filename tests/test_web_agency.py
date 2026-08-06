@@ -201,7 +201,12 @@ def test_an_auth_wall_is_reported_rather_than_worked_around():
     ])
     result = _call("look", b)
     assert result.data.get("needs_human")
-    assert "sign in" in result.message.lower()
+    # Detecting the wall is half the job. Live testing showed the other half
+    # is what costs the user: the eagle reported "this needs you" and stopped,
+    # leaving them to work out that a command existed and which domains to
+    # name. A resolvable wall must arrive with its remedy.
+    assert "import_login" in result.message
+    assert result.data.get("auth_domains"), "no domains derived to import"
 
 
 def test_a_browser_that_will_not_start_fails_with_a_usable_next_step():
@@ -400,7 +405,12 @@ def test_look_on_a_password_page_surfaces_the_handoff_reason():
     result = _call("look", b)
     assert result.ok is True
     assert result.data.get("needs_human")
-    assert "sign in" in result.message.lower()
+    # Detecting the wall is half the job. Live testing showed the other half
+    # is what costs the user: the eagle reported "this needs you" and stopped,
+    # leaving them to work out that a command existed and which domains to
+    # name. A resolvable wall must arrive with its remedy.
+    assert "import_login" in result.message
+    assert result.data.get("auth_domains"), "no domains derived to import"
 
 
 # ── the stale-ref bug: a ref that goes bad between resolve and act ─────────

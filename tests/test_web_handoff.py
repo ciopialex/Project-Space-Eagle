@@ -282,3 +282,54 @@ def test_an_ordinary_page_is_not_mistaken_for_a_consent_wall():
     assert cookie_wall_choice(
         _buttons("Search", "Sign in", "Home", "Reject"),
         "https://news.ycombinator.com") == ""
+
+
+# --- A detected wall must arrive with its remedy --------------------------
+#
+# Found live: the eagle correctly reported "this site wants you signed in"
+# and stopped, leaving the user to work out that a command existed and which
+# domains to name. A wall it can describe but not resolve is barely better
+# than one it invents.
+
+def test_a_google_property_pulls_in_where_its_sign_in_actually_lives():
+    """The gotcha a user would never guess: importing youtube.com alone
+    brings across nothing useful, because the cookies that make YouTube
+    signed-in belong to google.com."""
+    from actions.grounding.web.handoff import auth_domains_for
+    domains = auth_domains_for("https://www.youtube.com/feed/liked")
+    assert domains[0] == "youtube.com"
+    assert "google.com" in domains
+
+
+def test_an_ordinary_site_needs_only_itself():
+    from actions.grounding.web.handoff import auth_domains_for
+    assert auth_domains_for("https://github.com/owner/repo") == ["github.com"]
+
+
+def test_two_part_suffixes_are_not_truncated_to_nonsense():
+    """`bbc.co.uk` must not become `co.uk` — that would import every cookie
+    on the public suffix."""
+    from actions.grounding.web.handoff import auth_domains_for
+    assert auth_domains_for("https://www.bbc.co.uk/news") == ["bbc.co.uk"]
+    assert auth_domains_for("https://www.emag.ro/x") == ["emag.ro"]
+
+
+def test_the_remedy_names_the_command_and_the_domains():
+    from actions.grounding.web.handoff import login_remedy
+    remedy = login_remedy("https://www.youtube.com/feed/liked")
+    assert "import_login" in remedy
+    assert "youtube.com" in remedy and "google.com" in remedy
+    # Chrome being closed is a precondition the user must be told about.
+    assert "closed" in remedy.lower()
+    # And there must be a way out for someone who declines the import.
+    assert "sign_in" in remedy
+
+
+def test_a_wall_only_the_user_can_answer_gets_no_false_remedy():
+    """The eagle can resolve a sign-in. It cannot resolve a 2FA code or a
+    'not a robot' check — offering to import a session for those would be
+    telling the user something untrue about what is about to happen."""
+    from actions.web_agency import _is_login_wall
+    assert _is_login_wall("this site needs the user to sign in once") is True
+    assert _is_login_wall("this page is asking for a verification code") is False
+    assert _is_login_wall("this page is asking for a human check") is False
