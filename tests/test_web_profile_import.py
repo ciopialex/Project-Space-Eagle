@@ -284,3 +284,82 @@ def test_an_accumulated_import_still_excludes_everything_unnamed(tmp_path, monke
     hosts = {h for (h,) in con.execute("SELECT DISTINCT host_key FROM cookies")}
     con.close()
     assert ".bank.example" not in hosts
+
+
+# ── Imports must not destroy a session the user made by hand ───────────────
+# The user signed into YouTube through the eagle's own window — the ONLY path
+# that works for Google, since Google refuses a session lifted from another
+# profile. Then the eagle auto-imported youtube.com from Chrome, `into` was
+# replaced wholesale, and the working session was deleted and replaced with
+# cookies Google rejects. The eagle destroyed the one thing that worked, and
+# reported success doing it.
+
+def _chrome_with(tmp_path, hosts):
+    prof = tmp_path / "chrome"
+    (prof / "Default").mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(prof / "Default" / "Cookies"))
+    con.execute("CREATE TABLE IF NOT EXISTS cookies (host_key TEXT, name TEXT, value TEXT)")
+    for h in hosts:
+        con.execute("INSERT INTO cookies VALUES (?,?,?)", (h, "from_chrome", "v"))
+    con.commit(); con.close()
+    (prof / "Local State").write_text("{}")
+    return prof
+
+
+def _eagle_with(tmp_path, rows):
+    prof = tmp_path / "eagle"
+    (prof / "Default").mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(prof / "Default" / "Cookies"))
+    con.execute("CREATE TABLE IF NOT EXISTS cookies (host_key TEXT, name TEXT, value TEXT)")
+    for h, n in rows:
+        con.execute("INSERT INTO cookies VALUES (?,?,?)", (h, n, "v"))
+    con.commit(); con.close()
+    return prof
+
+
+def test_a_hand_made_session_survives_a_later_import(tmp_path, monkeypatch):
+    import actions.grounding.web.profile_import as P
+    src = _chrome_with(tmp_path, [".youtube.com", ".github.com"])
+    dest = _eagle_with(tmp_path, [(".youtube.com", "signed_in_by_hand")])
+    monkeypatch.setattr(P, "chrome_profile_dir", lambda: src)
+
+    P.import_logins(["github.com"], into=dest)
+
+    con = sqlite3.connect(str(P._cookie_store(dest)))
+    names = {n for (n,) in con.execute(
+        "SELECT name FROM cookies WHERE host_key = '.youtube.com'")}
+    con.close()
+    assert "signed_in_by_hand" in names, "the eagle deleted the user's own login"
+
+
+def test_the_eagles_own_session_is_not_overwritten_by_an_import(tmp_path, monkeypatch):
+    """Even when the import names that very domain. The eagle's own session
+    is the one that works — Google rejects a copied one — so a copy must
+    never replace it."""
+    import actions.grounding.web.profile_import as P
+    src = _chrome_with(tmp_path, [".youtube.com"])
+    dest = _eagle_with(tmp_path, [(".youtube.com", "signed_in_by_hand")])
+    monkeypatch.setattr(P, "chrome_profile_dir", lambda: src)
+
+    P.import_logins(["youtube.com"], into=dest)
+
+    con = sqlite3.connect(str(P._cookie_store(dest)))
+    names = {n for (n,) in con.execute(
+        "SELECT name FROM cookies WHERE host_key = '.youtube.com'")}
+    con.close()
+    assert "signed_in_by_hand" in names, "clobbered a working session with a copy"
+
+
+def test_a_fresh_profile_still_imports_normally(tmp_path, monkeypatch):
+    import actions.grounding.web.profile_import as P
+    src = _chrome_with(tmp_path, [".youtube.com", ".bank.example"])
+    monkeypatch.setattr(P, "chrome_profile_dir", lambda: src)
+    dest = tmp_path / "brand-new"
+
+    result = P.import_logins(["youtube.com"], into=dest)
+    assert result.ok
+
+    con = sqlite3.connect(str(P._cookie_store(dest)))
+    hosts = {h for (h,) in con.execute("SELECT DISTINCT host_key FROM cookies")}
+    con.close()
+    assert hosts == {".youtube.com"}

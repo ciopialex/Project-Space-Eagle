@@ -160,3 +160,34 @@ def test_an_expired_or_unscoped_token_asks_for_a_reconnect(monkeypatch):
     assert r.ok is False
     assert "sign in to google again" in (r.message + " " + r.guidance).lower()
     assert "401" not in r.message, "leaked the HTTP status into speech"
+
+
+def test_a_disabled_api_is_not_blamed_on_the_users_sign_in(monkeypatch):
+    """The user reconnected Google, granted YouTube, and was still told to
+    "sign in to Google again". The real 403 was accessNotConfigured — the
+    YouTube Data API is switched off on the Cloud project — which no amount of
+    signing in fixes. Sending someone to redo work they already did is the
+    same sin as claiming their data is private."""
+    monkeypatch.setattr(Y, "_token", lambda: "good-token")
+
+    def not_configured(url, params=None, token=None):
+        raise Y.ApiNotEnabled("project 145572196912")
+    monkeypatch.setattr(Y, "_get", not_configured)
+
+    r = Y.youtube_api({"action": "liked"})
+    assert r.ok is False
+    assert "sign in" not in r.message.lower(), "blamed the user's account again"
+    assert "console" in (r.message + r.guidance).lower(), "no link to the fix"
+
+
+def test_a_genuinely_unscoped_token_still_says_reconnect(monkeypatch):
+    """The other 403. These two look identical over the wire until you read
+    the reason, and they have completely different remedies."""
+    monkeypatch.setattr(Y, "_token", lambda: "stale")
+
+    def unscoped(url, params=None, token=None):
+        raise Y.NeedsReconnect("403")
+    monkeypatch.setattr(Y, "_get", unscoped)
+
+    r = Y.youtube_api({"action": "liked"})
+    assert "sign in to google again" in (r.message + r.guidance).lower()

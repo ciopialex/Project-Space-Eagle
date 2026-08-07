@@ -45,6 +45,17 @@ _LIKED_PLAYLIST = "LL"
 _ACTIONS = ("liked", "subscriptions", "playlists", "history")
 
 
+class ApiNotEnabled(Exception):
+    """The YouTube Data API is switched off on the Google Cloud project.
+
+    Its own type because it is indistinguishable from a scope problem over the
+    wire - both are 403 - and the remedies have nothing in common. The user
+    reconnected Google, granted YouTube, and was still told to "sign in to
+    Google again", which is the same sin as claiming their data is private:
+    sending somebody to redo work they have already done.
+    """
+
+
 class NeedsReconnect(Exception):
     """The token is missing, expired, or predates the YouTube scope.
 
@@ -65,6 +76,17 @@ def _get(url: str, params: dict, token: str) -> dict:
     response = requests.get(url, params=params, timeout=15,
                             headers={"Authorization": f"Bearer {token}"})
     if response.status_code in (401, 403):
+        # Read the REASON. accessNotConfigured means the API is disabled on
+        # the Cloud project and no amount of signing in will help.
+        try:
+            error = response.json().get("error", {})
+            reasons = {d.get("reason") for d in error.get("errors", [])}
+            if "accessNotConfigured" in reasons:
+                raise ApiNotEnabled(error.get("message", ""))
+        except ApiNotEnabled:
+            raise
+        except Exception:
+            pass
         raise NeedsReconnect(str(response.status_code))
     response.raise_for_status()
     return response.json()
@@ -150,6 +172,22 @@ def _youtube_api(params: dict) -> ToolResult:
                      "maxResults": min(limit, 50)}, token)
         return _speak(_titles(data), "playlists", limit)
 
+    except ApiNotEnabled as e:
+        project = ""
+        import re as _re
+        m = _re.search(r"project (\d+)", str(e))
+        if m:
+            project = ("https://console.developers.google.com/apis/api/"
+                       f"youtube.googleapis.com/overview?project={m.group(1)}")
+        return ToolResult.failure(
+            "The YouTube Data API is switched off on this Google Cloud "
+            "project. The user's account and sign-in are fine - this is one "
+            "toggle in the Cloud console.",
+            guidance=("Tell them to enable YouTube Data API v3 here, then try "
+                      "again in a minute: " + (project or
+                      "https://console.cloud.google.com/apis/library/youtube.googleapis.com")
+                      + ". Do NOT ask them to sign in again - they already "
+                      "have, and it will not help."))
     except NeedsReconnect:
         return reconnect
     except Exception as e:

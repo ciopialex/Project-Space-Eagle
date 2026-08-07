@@ -141,6 +141,52 @@ def _remembered(profile: Path) -> set[str]:
     return {d for d in (line.strip() for line in raw.splitlines()) if d}
 
 
+def _remember(profile: Path, domains) -> None:
+    try:
+        marker = profile / _IMPORTED_MARKER
+        have = set(marker.read_text().split()) if marker.exists() else set()
+        marker.write_text("\n".join(sorted(have | set(domains))))
+    except Exception:
+        pass
+
+
+def _merge_into(target: Path, incoming: Path) -> tuple[dict, set]:
+    """Add the incoming cookies to the eagle's existing store, without
+    overwriting a domain it already has its own session for.
+
+    The eagle's own cookies win, always. They were obtained by a human signing
+    in through the eagle's own browser, which is the only route Google honours
+    - a copied session is detected and revoked. Replacing them with a copy
+    trades the working thing for the broken one.
+    """
+    kept_own: set = set()
+    source = sqlite3.connect(str(incoming))
+    dest = sqlite3.connect(str(target))
+    try:
+        mine = {h for (h,) in dest.execute("SELECT DISTINCT host_key FROM cookies")}
+        columns = [r[1] for r in source.execute("PRAGMA table_info(cookies)")]
+        rows = source.execute(
+            f"SELECT {','.join(columns)} FROM cookies").fetchall()
+
+        added: dict[str, int] = {}
+        host_at = columns.index("host_key")
+        for row in rows:
+            host = row[host_at]
+            if host in mine:
+                kept_own.add(str(host).lstrip("."))
+                continue
+            dest.execute(
+                f"INSERT INTO cookies ({','.join(columns)}) "
+                f"VALUES ({','.join('?' * len(columns))})", row)
+            key = str(host).lstrip(".")
+            added[key] = added.get(key, 0) + 1
+        dest.commit()
+        return added, kept_own
+    finally:
+        source.close()
+        dest.close()
+
+
 def _snapshot(store: Path, destination: Path) -> None:
     """Copy a live SQLite database consistently, writer or no writer.
 
@@ -250,6 +296,26 @@ def import_logins(domains: list[str], *,
 
         # Only now, with every other site's cookies already deleted from the
         # copy, does anything land where the eagle's browser will read it.
+        #
+        # MERGE first, if the eagle already has a profile. Replacing it
+        # wholesale destroyed sessions the user made BY HAND through the
+        # sign-in window - which for Google is the only kind that works, since
+        # it refuses a session lifted from another profile. The user signed
+        # into YouTube, the eagle auto-imported youtube.com a minute later,
+        # and deleted the one thing that worked while reporting success.
+        existing = _cookie_store(into)
+        if existing is not None:
+            merged, kept_own = _merge_into(existing, staging / relative)
+            shutil.rmtree(staging, ignore_errors=True)
+            _remember(into, wanted)
+            detail = ("Brought across " + ", ".join(
+                f"{d} ({n} cookies)" for d, n in merged.items() if n)
+                if any(merged.values()) else "Nothing new to bring across.")
+            if kept_own:
+                detail += (". Left the eagle's own sign-in for "
+                           + ", ".join(sorted(kept_own)) + " untouched.")
+            return ImportResult(True, detail, merged, 0, "")
+
         if into.exists():
             shutil.rmtree(into)
         into.parent.mkdir(parents=True, exist_ok=True)
