@@ -153,7 +153,13 @@ def test_end_of_turn_silence_is_tuned_and_configurable():
 
 
 def test_default_silence_window_is_in_a_conversational_range():
+    # Matches the ASSIGNMENT, not the first textual mention. The positional
+    # version read the next 80 characters after the first occurrence of the
+    # config key — which broke the moment a comment above the line explained
+    # what the key was for, and would have failed while the value was fine.
+    import re
     src = Path(main.__file__).read_text(encoding="utf-8")
-    i = src.find("end_of_turn_silence_ms")
-    default = int(src[i:i + 80].split("or")[1].split(")")[0].strip())
+    m = re.search(r'_cfg\.get\("end_of_turn_silence_ms"\)\s*or\s*(\d+)', src)
+    assert m, "the end-of-turn default is no longer read from config"
+    default = int(m.group(1))
     assert 300 <= default <= 900, f"{default}ms will feel laggy or cut people off"

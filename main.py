@@ -1215,8 +1215,28 @@ class AethelarkLive:
         # pause mid-thought (exactly what happens while describing something,
         # a design idea). Tuned here for a conversational middle and
         # exposed in config so it can be dialled per-person.
-        _silence_ms = int(_cfg.get("end_of_turn_silence_ms") or 550)
-        _prefix_ms = int(_cfg.get("speech_prefix_padding_ms") or 200)
+        # ── TURN LATENCY BUDGET ──────────────────────────────────────────
+        # The only latency knobs the eagle actually controls. Everything else
+        # in a turn - network, model, how long the user talked - is not ours
+        # to set. Both had shipped untuned since the beginning.
+        #
+        # `silence_duration_ms` is the big one, and it is pure waiting: the
+        # server sits in SILENCE this long after the user stops before it will
+        # admit the turn ended. Nothing is in flight, the model is not
+        # thinking. It is paid on every turn, including "yes" - and at 550ms
+        # it was most of a one-second target spent doing nothing.
+        #
+        # 350ms is chosen against the failure on the other side, which is
+        # worse than waiting: below roughly 250ms an ordinary pause mid
+        # sentence - drawing breath, hunting for a word - reads as the end of
+        # the turn and the eagle talks over the user. Being cut off is far
+        # more annoying than a beat of delay, so this stays clear of that
+        # edge rather than chasing the smallest number that works in a quiet
+        # room. Set `end_of_turn_silence_ms` in config to tune per machine.
+        _silence_ms = int(_cfg.get("end_of_turn_silence_ms") or 350)
+        # Audio kept from BEFORE speech onset, so a first syllable is not
+        # clipped. Useful; pure latency beyond what it takes to do that job.
+        _prefix_ms = int(_cfg.get("speech_prefix_padding_ms") or 150)
 
         # ── Latency + voice consistency: thinking ────────────────────────────
         # LIVE_MODEL is a *thinking* native-audio model and thinking defaults
