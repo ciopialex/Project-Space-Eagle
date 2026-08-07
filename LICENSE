@@ -1,0 +1,41 @@
+Copyright (c) 2025-2026 Alexandru-Mihai Cioponea (shennyonthebeat)
+and the Project Space Eagle contributors. All rights reserved.
+
+This source code is made publicly readable. It is NOT open source, and no
+licence is granted.
+
+You may:
+  - read this source code
+  - fork it on the hosting platform for the purpose of submitting a
+    contribution back to this project
+
+You may NOT, without prior written permission from the copyright holder:
+  - use this software or any part of it, for any purpose
+  - copy, modify, merge, publish, distribute, sublicense or sell it
+  - use it to train a machine-learning model
+  - deploy it, run it as a service, or incorporate it into another product
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+A NOTE ON CONTRIBUTORS
+
+This file states the copyright holder's terms. It does not, by itself, assign
+anyone else's copyright. Contributions from other authors remain those
+authors' copyright unless they have agreed otherwise in writing.
+
+As of 2026-08-08, `git blame` attributes roughly a quarter of the surviving
+source to a second contributor. For these terms to be unambiguous across the
+whole work, each contributor needs to agree to them - a short written
+confirmation is enough, and it is worth getting before this project is
+distributed, sold, or licensed to anyone.
+
+Third-party dependencies keep their own licences. This notice covers only the
+source in this repository.
