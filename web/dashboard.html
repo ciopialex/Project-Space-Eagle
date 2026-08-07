@@ -970,6 +970,17 @@ draw();
     +     '<div class="d">Link via QR to send messages by voice.</div></div>'
     +     '<button class="set-mini" id="set-wa-btn">Link</button></div></div>'
 
+    // The eagle's browser is separate from the user's Chrome ON PURPOSE, and
+    // that was invisible everywhere: "how do I log in?" had no answer in the
+    // interface, only a voice command you had to know to say. This row shows
+    // which sites it can already use and opens a real window to add one.
+    + '<div class="set-sec"><div class="lbl">Sites the eagle can use</div>'
+    +   '<div class="set-row"><div class="ic">\u25C9</div><div class="tt">'
+    +     '<div class="t">Signed in <span class="set-badge off" id="set-br-badge">NONE</span></div>'
+    +     '<div class="d" id="set-br-d">The eagle browses in its own window, so being '
+    +       'logged in on Chrome does not sign it in.</div></div>'
+    +     '<button class="set-mini" id="set-br-btn">Sign in\u2026</button></div></div>'
+
     + '<div class="set-sec"><div class="lbl">Startup</div>'
     +   '<div class="set-row"><div class="ic">\u23fb</div><div class="tt">'
     +     '<div class="t">Start on boot</div>'
@@ -1042,7 +1053,14 @@ draw();
     var gb = document.getElementById('set-g-badge'),
         gd = document.getElementById('set-g-d'),
         gbtn = document.getElementById('set-g-btn');
-    if (g.connected) {
+    if (g.connected && g.needs_reconnect) {
+      // Connected, and missing the scope the user is about to need. A green
+      // LINKED badge here is true and misleading — they would only find out
+      // by asking for a YouTube thing and being told to reconnect.
+      gb.textContent = 'PARTIAL'; gb.className = 'set-badge off';
+      gd.textContent = (g.email || 'Account connected') + ' \u2014 YouTube not granted yet';
+      gbtn.textContent = 'Reconnect'; gbtn.className = 'set-mini solid'; gbtn.dataset.act = 'conn';
+    } else if (g.connected) {
       gb.textContent = 'LINKED'; gb.className = 'set-badge';
       gd.textContent = g.email || g.name || 'Account connected';
       gbtn.textContent = 'Disconnect'; gbtn.className = 'set-mini danger'; gbtn.dataset.act = 'disc';
@@ -1055,6 +1073,21 @@ draw();
       gb.textContent = 'NOT LINKED'; gb.className = 'set-badge off';
       gd.textContent = 'Inbox briefings & calendar need your account.';
       gbtn.textContent = 'Connect'; gbtn.className = 'set-mini'; gbtn.dataset.act = 'conn';
+    }
+
+    var sites = ((s.accounts || {}).browser || {}).sites || [];
+    var brb = document.getElementById('set-br-badge'),
+        brd = document.getElementById('set-br-d');
+    if (brb) {
+      if (sites.length) {
+        brb.textContent = String(sites.length); brb.className = 'set-badge';
+        // Named, not counted: "3 sites" tells the user nothing they can act on.
+        brd.textContent = sites.join(' \u00B7 ');
+      } else {
+        brb.textContent = 'NONE'; brb.className = 'set-badge off';
+        brd.textContent = 'The eagle browses in its own window, so being logged '
+                        + 'in on Chrome does not sign it in.';
+      }
     }
 
     var startup = s.startup || {};
@@ -1113,6 +1146,15 @@ draw();
   function wire() {
     document.getElementById('set-close').onclick = close;
     scrim.addEventListener('click', function (e) { if (e.target === scrim) close(); });
+
+    var brBtn = document.getElementById('set-br-btn');
+    if (brBtn) brBtn.onclick = function () {
+      var site = window.prompt(
+        'Which site should the eagle sign in to?\n\n'
+        + 'A window opens, you log in once, and it stays signed in.',
+        'youtube.com');
+      if (site && pb() && pb().browser_sign_in) pb().browser_sign_in(site.trim());
+    };
 
     document.getElementById('set-g-btn').onclick = function () {
       if (!pb()) return;

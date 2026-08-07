@@ -48,6 +48,62 @@ def _write(cfg: dict) -> bool:
         return False
 
 
+
+def _granted_scopes() -> list[str]:
+    """Scopes the stored Google token actually carries. Empty if not connected."""
+    try:
+        import json
+        from core import user_paths
+        rec = json.loads((user_paths.config_dir() / "google_token.json")
+                         .read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    raw = rec.get("scopes") or rec.get("scope") or []
+    return raw.split() if isinstance(raw, str) else list(raw)
+
+
+def google_capabilities() -> dict:
+    """What the Google link can actually DO — not just whether it exists.
+
+    A token issued before the YouTube scope shipped is genuinely connected and
+    genuinely cannot read YouTube. The panel showed a green LINKED badge for
+    exactly that account: true, and misleading. The user only discovered the
+    gap by asking for something and being told to reconnect.
+
+    `needs_reconnect` is deliberately False when nothing is connected at all.
+    Never-connected and connected-but-stale are different problems with
+    different buttons, and conflating them offers "Reconnect" to somebody who
+    has never connected.
+    """
+    scopes = _granted_scopes()
+    connected = bool(scopes)
+    youtube = any("youtube" in scope for scope in scopes)
+    return {
+        "connected": connected,
+        "youtube": youtube,
+        "needs_reconnect": connected and not youtube,
+    }
+
+
+def _browser_profile():
+    from core import user_paths
+    return user_paths.browser_profile_dir()
+
+
+def browser_sessions() -> list[str]:
+    """Sites the eagle's OWN browser is signed into.
+
+    Separate from the user's Chrome on purpose, and until now invisible
+    everywhere — there was no way to learn which sites the eagle could already
+    use except by asking it to use one and seeing what happened.
+    """
+    try:
+        raw = (_browser_profile() / ".aethelark-imported").read_text()
+    except Exception:
+        return []
+    return sorted({d.strip() for d in raw.splitlines() if d.strip()})
+
+
 def snapshot() -> dict:
     """Everything the Settings panel needs — no secrets, just presence flags."""
     cfg = _read()
@@ -103,7 +159,12 @@ def snapshot() -> dict:
                 "configured": google_configured,
                 "email": (google or {}).get("email", ""),
                 "name": (google or {}).get("name", ""),
+                # What the link can DO, not merely that it exists.
+                **{k: v for k, v in google_capabilities().items()
+                   if k in ("youtube", "needs_reconnect")},
             },
+            # The eagle's own browser sign-ins, which are NOT the user's Chrome.
+            "browser": {"sites": browser_sessions()},
             # WhatsApp Web login lives in the browser profile, not a token we own,
             # so we can only offer the linking action, not a reliable status.
             "whatsapp": {"connected": None},

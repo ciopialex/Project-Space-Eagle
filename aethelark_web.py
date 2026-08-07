@@ -110,6 +110,8 @@ class WebBridge(QObject):
     def disconnect_google(self): self._ui.disconnect_google()
     @pyqtSlot()
     def link_whatsapp(self): self._ui.link_whatsapp()
+    @pyqtSlot(str)
+    def browser_sign_in(self, site): self._ui.browser_sign_in(site)
     @pyqtSlot()
     def rerun_onboarding(self): self._ui.rerun_onboarding()
 
@@ -521,6 +523,44 @@ class WebShellUI(QObject):
             except Exception as _e:
                 print(f"[aethelark_web.py] Non-fatal error at line 488: {_e}")
         threading.Thread(target=_flow, daemon=True).start()
+
+    def browser_sign_in(self, site: str):
+        """Open the eagle's own browser so the user can sign in to `site`.
+
+        This is the answer to "how do I log in?", which until now existed only
+        as a voice command you had to know to say. The eagle's browser is
+        separate from the user's Chrome on purpose, and nothing in the
+        interface said so or offered a way to act on it.
+
+        Off the UI thread: making the browser visible restarts it, which takes
+        a moment, and the panel must not freeze while it does.
+        """
+        import threading
+
+        def _run():
+            try:
+                from actions.web_agency import web_agency
+                from actions.app_settings import snapshot
+                domain = (site or "").strip()
+                for prefix in ("https://", "http://"):
+                    if domain.startswith(prefix):
+                        domain = domain[len(prefix):]
+                domain = domain.strip("/").strip()
+                if not domain:
+                    return
+                if "." not in domain:
+                    domain += ".com"
+                result = web_agency({"url": "https://" + domain,
+                                     "action": "sign_in"})
+                # ok=False is the NORMAL outcome here: the window is open and
+                # the sign-in has not happened yet. Relayed as-is rather than
+                # dressed up as an error.
+                self.write_log("SYS: " + (result.message or "Sign-in window opened."))
+                self._push("setSettings", snapshot())
+            except Exception as e:
+                self.write_log(f"SYS: Could not open the sign-in window: {e}")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def disconnect_google(self):
         try:
