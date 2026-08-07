@@ -46,12 +46,24 @@ class ToolResult:
         return cls(ok=False, message=message, guidance=guidance, data=dict(data))
 
     def to_response(self) -> dict[str, Any]:
-        """The dict handed to Gemini as the function response. `result` stays the
-        primary human-readable field (models are trained on it); `ok`/`guidance`
-        augment it with an unambiguous signal."""
-        resp: dict[str, Any] = {"result": self.message, "ok": self.ok}
-        if not self.ok and self.guidance:
-            resp["guidance"] = self.guidance
+        """The dict handed to Gemini as the function response.
+
+        `result` stays the primary human-readable field (models are trained on
+        it); `ok`/`guidance` augment it with an unambiguous signal.
+
+        A tool that has NOT migrated to this contract gets no `ok` at all.
+        Emitting ok=True for it was a lie with teeth: 183 legacy returns across
+        this codebase describe a failure - "could not", "not found", "requires
+        wmctrl" - and every one of them arrived as ok=True, while the system
+        prompt instructs the model to trust `ok` over any prose. Absence sends
+        the model back to reading the message, which is what these tools always
+        relied on, instead of handing it a confident wrong answer.
+        """
+        resp: dict[str, Any] = {"result": self.message}
+        if not self.data.get("_legacy_string"):
+            resp["ok"] = self.ok
+            if not self.ok and self.guidance:
+                resp["guidance"] = self.guidance
         return resp
 
 
