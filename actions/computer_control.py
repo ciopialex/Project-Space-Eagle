@@ -178,6 +178,104 @@ def _user_profile() -> dict:
         print(f"[computer_control.py] Non-fatal error at line 174: {_e}")
     return {}
 
+
+# ── Waiting for an effect, not for a duration ──────────────────────────────
+# These replace `time.sleep(0.3)` after an action that either worked or did
+# not. A fixed pause is wrong in both directions: too short on a loaded
+# machine and the next keystroke lands in the wrong window, too long on an
+# idle one and it is pure delay. Worse, a sleep proves nothing - the code
+# below used to report "Focused window: X" whether or not focus ever moved.
+
+#: How long to keep checking before giving up on a window manager.
+_FOCUS_TIMEOUT_S = 1.5
+#: Grace period when the desktop cannot be read at all (no xdotool, Wayland).
+#: Short, because it is a blind wait - the thing this module is moving away
+#: from - but not zero, because typing instantly into an unfocused window is
+#: the failure it is standing in for.
+_BLIND_GRACE_S = 0.3
+
+
+def _active_window_title() -> str | None:
+    """The focused window's title, or None if this desktop will not say.
+
+    Wayland deliberately refuses; X11 answers via xdotool. None is a real
+    answer here and must not be confused with "no window focused" - one means
+    we cannot verify, the other means we failed.
+    """
+    try:
+        out = subprocess.run(["xdotool", "getactivewindow", "getwindowname"],
+                             capture_output=True, text=True, timeout=2)
+        if out.returncode == 0:
+            return out.stdout.strip() or ""
+    except Exception:
+        pass
+    return None
+
+
+def _await_focus(title: str, timeout: float = _FOCUS_TIMEOUT_S,
+                 poll: float = 0.05):
+    """True once `title` holds focus, False on timeout, None if unverifiable.
+
+    Matched as a substring, case-insensitively: real titles carry suffixes
+    nobody asked for ("report.txt — gedit"), and an exact match would fail on
+    every window a person actually has open.
+    """
+    wanted = (title or "").strip().lower()
+    if not wanted:
+        return None
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current = _active_window_title()
+        if current is None:
+            time.sleep(_BLIND_GRACE_S)      # cannot check; do not type blind
+            return None
+        if wanted in current.lower():
+            return True
+        time.sleep(poll)
+    return False
+
+
+def _clipboard_text() -> str | None:
+    try:
+        return pyperclip.paste()
+    except Exception:
+        return None
+
+
+def _await_clipboard(text: str, timeout: float = 1.0, poll: float = 0.02) -> bool:
+    """True once the clipboard actually holds `text`.
+
+    Pasting before the copy lands puts the PREVIOUS clipboard contents into
+    somebody's document - silently, and usually into something that matters.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _clipboard_text() == text:
+            return True
+        time.sleep(poll)
+    return False
+
+
+def _focus_result(title: str) -> str:
+    """What to report after asking a window manager to focus something.
+
+    Every platform branch used to `time.sleep(0.3)` and then return
+    "Focused window: X" unconditionally. If focus never moved - a wrong title,
+    a minimised window, a window manager that ignored the request - the eagle
+    said it had worked and every keystroke after it went somewhere else, with
+    nothing in the transcript to explain the damage.
+    """
+    focused = _await_focus(title)
+    if focused is True:
+        return f"Focused window: {title}"
+    if focused is None:
+        return (f"Asked the desktop to focus '{title}'. This system will not "
+                "report which window is focused, so this is unverified — "
+                "check before typing anything important into it.")
+    return (f"Could not focus a window matching '{title}' — it may be closed, "
+            "minimised, or named differently. Nothing was typed.")
+
+
 def _type(text: str, interval: float = 0.03) -> str:
     _require_pyautogui()
     time.sleep(0.3)
@@ -193,7 +291,11 @@ def _smart_type(text: str, clear_first: bool = True) -> str:
 
     if len(text) > 20 and _PYPERCLIP:
         pyperclip.copy(text)
-        time.sleep(0.1)
+        if not _await_clipboard(text):
+            # Fall back to typing rather than pasting whatever was there
+            # before. A wrong paste is silent and lands in the user's document.
+            pyautogui.typewrite(text, interval=0.01)
+            return f"Typed (clipboard did not take): {text[:60]}{'…' if len(text) > 60 else ''}"
         paste_key = "command" if _get_os() == "mac" else "ctrl"
         pyautogui.hotkey(paste_key, "v")
         return f"Smart-typed (clipboard): {text[:60]}{'…' if len(text) > 60 else ''}"
@@ -288,8 +390,7 @@ def _focus_window(title: str) -> str:
                 ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                 capture_output=True, timeout=5, **_WIN_HIDE,
             )
-            time.sleep(0.3)
-            return f"Focused window: {title}"
+            return _focus_result(title)
         except Exception as e:
             return f"focus_window (Windows) failed: {e}"
 
@@ -303,8 +404,7 @@ def _focus_window(title: str) -> str:
                 ["osascript", "-e", script],
                 capture_output=True, timeout=5,
             )
-            time.sleep(0.3)
-            return f"Focused window: {title}"
+            return _focus_result(title)
         except Exception as e:
             return f"focus_window (macOS) failed: {e}"
 
@@ -315,8 +415,7 @@ def _focus_window(title: str) -> str:
                 capture_output=True, timeout=5,
             )
             if result.returncode == 0:
-                time.sleep(0.3)
-                return f"Focused window: {title}"
+                return _focus_result(title)
         except FileNotFoundError:
             pass
         try:
@@ -324,8 +423,7 @@ def _focus_window(title: str) -> str:
                 ["xdotool", "search", "--name", title, "windowactivate"],
                 capture_output=True, timeout=5,
             )
-            time.sleep(0.3)
-            return f"Focused window: {title}"
+            return _focus_result(title)
         except FileNotFoundError:
             return "focus_window (Linux) requires wmctrl or xdotool"
         except Exception as e:
