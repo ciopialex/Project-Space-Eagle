@@ -602,3 +602,60 @@ def test_a_reassert_failure_does_not_lose_the_turn(monkeypatch):
             raise RuntimeError("network died")
 
     W._reassert_target(Broken(), "https://x.test/", ["Respinge tot"])  # must not raise
+
+
+# ── Auto-recovery from a sign-in wall ───────────────────────────────────────
+# The user's instruction, verbatim: "if I give it a command that implies working
+# on that site and it needs my login, it should automatically import it without
+# me saying it." Naming the task names the site, so this stays inside the
+# earlier ruling that only named sites are ever imported — the ask-first turn
+# was the part that bought nothing.
+
+def test_a_sign_in_wall_repairs_itself_without_asking(monkeypatch):
+    import actions.web_agency as W
+    calls = {"imported": None, "visits": []}
+
+    class B:
+        def goto(self, url):
+            calls["visits"].append(url)
+            return url
+
+    monkeypatch.setattr(W, "_auto_import", lambda dom: calls.__setitem__("imported", dom) or True)
+    repaired = W._recover_signed_out(B(), "https://www.youtube.com/playlist?list=LL")
+
+    assert repaired is True
+    assert "youtube.com" in calls["imported"]
+    assert "google.com" in calls["imported"], (
+        "youtube's sign-in lives on google.com — importing only youtube.com "
+        "copies cookies that prove nothing")
+    assert calls["visits"] == ["https://www.youtube.com/playlist?list=LL"], (
+        "the page must be re-read after the import, or the eagle reports the "
+        "signed-out page it already had")
+
+
+def test_recovery_is_attempted_once_per_url(monkeypatch):
+    """If the import does not clear the wall — an expired session, the wrong
+    Chrome profile — retrying forever would spend the user's turn in a loop."""
+    import actions.web_agency as W
+    seen = []
+    monkeypatch.setattr(W, "_auto_import", lambda dom: seen.append(dom) or True)
+
+    class B:
+        def goto(self, url):
+            return url
+
+    url = "https://www.youtube.com/feed/history"
+    assert W._recover_signed_out(B(), url) is True
+    assert W._recover_signed_out(B(), url) is False, "retried the same wall"
+    assert len(seen) == 1
+
+
+def test_a_failed_import_does_not_claim_repair(monkeypatch):
+    import actions.web_agency as W
+    monkeypatch.setattr(W, "_auto_import", lambda dom: False)
+
+    class B:
+        def goto(self, url):
+            raise AssertionError("must not re-navigate after a failed import")
+
+    assert W._recover_signed_out(B(), "https://github.com/settings") is False

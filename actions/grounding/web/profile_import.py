@@ -16,8 +16,11 @@ Three hard rules, enforced below rather than documented and hoped for:
 
 1. The user's Chrome profile is opened read-only and never written to. Every
    mutation happens on a copy.
-2. Chrome must not be running. A live Chrome holds locks on its cookie store
-   and rewrites it constantly; copying underneath that yields a torn database.
+2. Chrome may stay open. Its cookie store is snapshotted through SQLite's
+   backup API, which is consistent across a live writer - so the user is never
+   asked to quit their browser to let their assistant work. An earlier version
+   demanded that, because it copied the file byte-for-byte and a torn database
+   fails later at decryption with no obvious cause.
 3. Cookie *values* are never read, logged, or returned. The import counts rows
    and reports domains; it has no reason to see a session token and does not.
 
@@ -124,6 +127,48 @@ def _cookie_store(profile: Path) -> Path | None:
     return None
 
 
+#: Records which domains this profile was built from, so a later import can
+#: re-import them alongside the new one rather than replacing them.
+_IMPORTED_MARKER = ".aethelark-imported"
+
+
+def _remembered(profile: Path) -> set[str]:
+    """Domains already imported into `profile`. Empty if it is new or unreadable."""
+    try:
+        raw = (profile / _IMPORTED_MARKER).read_text()
+    except Exception:
+        return set()
+    return {d for d in (line.strip() for line in raw.splitlines()) if d}
+
+
+def _snapshot(store: Path, destination: Path) -> None:
+    """Copy a live SQLite database consistently, writer or no writer.
+
+    This is the whole reason the user no longer has to quit Chrome. The old
+    path used `shutil.copy2`, which reads a file that another process may be
+    rewriting - and a torn cookie database is worse than none, because it
+    fails at decryption time with no obvious cause. So the import refused
+    while Chrome was up: the right instinct with the wrong tool.
+
+    SQLite's backup API exists for exactly this. It takes a consistent
+    snapshot across a live writer, restarting itself if the source changes
+    mid-copy, and an uncommitted transaction on the other side simply is not
+    in the result. Verified against the real profile with Chrome running.
+
+    Opened read-only, so the user's own Chrome is never written to - the
+    invariant this module is built on, and one the change must not weaken.
+    """
+    source_db = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
+    try:
+        copy = sqlite3.connect(str(destination))
+        try:
+            source_db.backup(copy)
+        finally:
+            copy.close()
+    finally:
+        source_db.close()
+
+
 def filter_cookie_store(db_path: Path, domains: list[str]) -> tuple[dict, int]:
     """Delete every cookie not belonging to `domains`. Returns (kept, dropped).
 
@@ -164,7 +209,12 @@ def import_logins(domains: list[str], *,
     read. Anything the eagle had signed into before is re-imported or
     re-signed-in after.
     """
-    wanted = sorted({_normalise(d) for d in (domains or []) if _normalise(d)})
+    wanted = {_normalise(d) for d in (domains or []) if _normalise(d)}
+    # Cumulative, because `into` is replaced wholesale below. A second import
+    # would otherwise silently discard the first site's session - and nobody
+    # would report that as a bug. They would simply find themselves logged out
+    # of YouTube after asking about GitHub and conclude the eagle is flaky.
+    wanted = sorted(wanted | _remembered(into))
     if not wanted:
         return ImportResult(False, "No sites named to import.",
                             guidance=("Name the sites to bring across, e.g. "
@@ -176,14 +226,6 @@ def import_logins(domains: list[str], *,
             False, f"No Chrome profile found at {source}.",
             guidance=("If the user's logins live in a different browser, this "
                       "cannot import them — use action='sign_in' per site."))
-
-    if source == chrome_profile_dir() and chrome_is_running():
-        return ImportResult(
-            False, "Chrome is running, so its cookie store cannot be copied "
-                   "safely.",
-            guidance=("Ask the user to quit Chrome completely, then run this "
-                      "again. It takes a few seconds and only has to happen "
-                      "once."))
 
     store = _cookie_store(source)
     if store is None:
@@ -197,7 +239,7 @@ def import_logins(domains: list[str], *,
         # decodes sessions. The user's own profile is never opened for writing.
         relative = store.relative_to(source)
         (staging / relative).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(store, staging / relative)
+        _snapshot(store, staging / relative)
         for rel in _SUPPORTING_FILES:
             src = source / rel
             if src.exists():
@@ -220,6 +262,7 @@ def import_logins(domains: list[str], *,
         # encrypted (different keyring entry), and the failure is silent — a
         # browser that looks signed out rather than one that errors.
         (into / ".aethelark-browser-channel").write_text("chrome")
+        (into / _IMPORTED_MARKER).write_text("\n".join(wanted))
     except Exception as e:
         shutil.rmtree(staging, ignore_errors=True)
         return ImportResult(False, f"The import failed: {e}",

@@ -64,7 +64,7 @@ from actions.grounding.actionability import is_editable
 from actions.grounding.verify import act_and_verify
 from actions.grounding.web.consent import irreversible_reason
 from actions.grounding.web.grounder import WebGrounder
-from actions.grounding.web.handoff import (auth_domains_for, await_human,
+from actions.grounding.web.handoff import (auth_domains_for,auth_domains_for, await_human,
                                            cookie_wall_choice, login_remedy,
                                            signed_out_reason, wall_reason)
 from actions.grounding.web.page import element_from, nodes_from_records, ref_of
@@ -336,6 +336,55 @@ def _clear_consent_walls(browser, grounder: WebGrounder) -> list[str]:
 #: A sign-in wall is resolvable by the eagle (import a session, or hand over
 #: the window once). A verification code or a human check is not — only the
 #: user can answer those, so they get the honest "I need you" and no remedy.
+#: URLs already repaired once this session. A wall the import did not clear -
+#: an expired Chrome session, a different Chrome profile, a site that wants a
+#: fresh password - will not clear on a second identical attempt either, and
+#: retrying spends the user's turn in a loop.
+_REPAIRED: set = set()
+
+
+def _auto_import(domains: list) -> bool:
+    """Copy the named sites' sessions across from Chrome. True if any arrived."""
+    from actions.grounding.web.profile_import import import_logins
+    from core import user_paths
+    try:
+        return bool(import_logins(list(domains),
+                                  into=user_paths.browser_profile_dir()).ok)
+    except Exception:
+        return False
+
+
+def _recover_signed_out(browser, url: str) -> bool:
+    """Fix a sign-in wall in place, without spending a turn asking.
+
+    The user's instruction, verbatim: "if I give it a command that implies
+    working on that site and it needs my login, it should automatically import
+    it without me saying it." Naming the task names the site, so this stays
+    inside the earlier ruling that only named sites are imported - the
+    ask-first turn bought nothing and cost the interaction its flow.
+
+    Still narrow: only the auth domains for THIS url, never the whole profile.
+    youtube.com pulls google.com and accounts.google.com because that is where
+    its sign-in actually lives, and importing youtube.com alone copies cookies
+    that prove nothing.
+
+    The page is re-read afterwards. Without that the eagle would go on to
+    report the signed-out page it already had, having fixed the problem and
+    not looked again.
+    """
+    if not url or url in _REPAIRED:
+        return False
+    _REPAIRED.add(url)
+
+    if not _auto_import(auth_domains_for(url)):
+        return False
+    try:
+        browser.goto(url)
+    except Exception:
+        return False
+    return True
+
+
 def _reassert_target(browser, url: str, cleared: list) -> None:
     """After a consent wall, go back to the page the user actually asked for.
 
@@ -970,6 +1019,12 @@ def _web_agency(params: dict, player: Any, browser: Any) -> ToolResult:
         cleared = _clear_consent_walls(browser, WebGrounder(browser.page))
         _reassert_target(browser, url, cleared)
         result = _look(browser, want_pixels=False)
+        # A sign-in wall is not a question to put to the user. Bring their
+        # existing session across and look again, so the turn ends with the
+        # page they asked for instead of an errand for them to run.
+        if _is_login_wall(str(result.data.get("needs_human") or "")) and \
+                _recover_signed_out(browser, url):
+            result = _look(browser, want_pixels=False)
         if cleared:
             note = ("Declined tracking on the consent wall ("
                     + ", ".join(repr(c) for c in cleared) + ") and carried on.")
