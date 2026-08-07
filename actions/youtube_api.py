@@ -87,32 +87,48 @@ def _clean_title(text: str) -> str:
     return _DURATION_TAIL.sub("", (text or "").strip()).strip(" -–—·")
 
 
-def _liked_from_page(limit: int) -> list[str]:
+def _browser():
+    from actions.grounding.web.browser import default_browser
+    return default_browser()
+
+
+def _settle(browser, url: str) -> None:
+    from actions import web_agency as W
+    W._open_and_settle(browser, url)
+
+
+def _page_blocked(page) -> str:
+    from actions import web_agency as W
+    return W._wall_or_signed_out(page)
+
+
+def _liked_from_page(limit: int):
     """Read the liked-videos page in the eagle's own browser.
 
-    The way a person would do it, and the reason this exists: the API can be
-    switched off at the Cloud project, or unscoped, or quota'd - none of which
-    is the user's problem, and none of which stops a browser that is already
-    signed in. When the fast path cannot answer, the eagle should go and look
-    rather than apologise.
+    Reads FIRST, then judges. The obvious order - check for a sign-in wall,
+    then read - does not work on YouTube: its sidebar carries "sign in to like
+    videos" on every page while signed out, including pages whose content is
+    fully readable. Gating on that made the eagle refuse to read a list it
+    could already see. Titles on the page are better evidence that the page
+    was readable than the absence of a banner somewhere else on it.
 
-    Returns [] when the browser is signed out, which the caller turns into a
-    sign-in prompt rather than "no videos".
+    Returns SIGNED_OUT when there is nothing to read AND the page says why,
+    [] when the account genuinely has no liked videos.
     """
-    from actions.grounding.web.browser import default_browser
-    from actions import web_agency as W
-
-    browser = default_browser()
+    browser = _browser()
     browser.start()
     if not browser.running:
         return SIGNED_OUT
-    W._open_and_settle(browser, _LIKED_URL)
+    _settle(browser, _LIKED_URL)
     page = browser.page()
-    if page is None or W._wall_or_signed_out(page):
+    if page is None:
         return SIGNED_OUT
+
     raw = browser.call(lambda pg: pg.evaluate(_TITLES_JS), timeout=30.0) or []
-    titles = [_clean_title(t) for t in raw]
-    return [t for t in titles if t][:limit]
+    titles = [t for t in (_clean_title(x) for x in raw) if t][:limit]
+    if titles:
+        return titles
+    return SIGNED_OUT if _page_blocked(page) else []
 
 
 _ACTIONS = ("liked", "subscriptions", "playlists", "history")

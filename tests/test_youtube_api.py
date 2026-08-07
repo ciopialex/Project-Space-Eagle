@@ -292,3 +292,53 @@ def test_a_signed_out_browser_is_not_reported_as_an_empty_account(monkeypatch):
     monkeypatch.setattr(Y, "_liked_from_page", lambda limit: [])
     r = Y.youtube_api({"action": "liked"})
     assert r.ok is True and "no liked videos" in r.message.lower()
+
+
+def test_titles_win_over_a_sign_in_banner_elsewhere_on_the_page(monkeypatch):
+    """YouTube shows "Conectează-te pentru a aprecia videoclipuri" in its
+    SIDEBAR on every page when signed out — including pages whose content is
+    fully readable. Gating the read on "is there a sign-in prompt anywhere"
+    made the eagle refuse to read a list it could see. Evidence beats gate:
+    if titles came back, the page was readable."""
+    import types
+    fake_page = object()
+
+    class B:
+        running = True
+        def start(self): pass
+        def page(self): return fake_page
+        def call(self, fn, timeout=None): return ["A Video 3 minute", "B Video"]
+
+    monkeypatch.setattr(Y, "_browser", lambda: B())
+    monkeypatch.setattr(Y, "_settle", lambda br, url: None)
+    monkeypatch.setattr(Y, "_page_blocked", lambda pg: "a sign-in wall")
+
+    titles = Y._liked_from_page(5)
+    assert titles is not Y.SIGNED_OUT, "refused a page it had already read"
+    assert titles == ["A Video", "B Video"]
+
+
+def test_no_titles_and_a_wall_is_genuinely_signed_out(monkeypatch):
+    class B:
+        running = True
+        def start(self): pass
+        def page(self): return object()
+        def call(self, fn, timeout=None): return []
+
+    monkeypatch.setattr(Y, "_browser", lambda: B())
+    monkeypatch.setattr(Y, "_settle", lambda br, url: None)
+    monkeypatch.setattr(Y, "_page_blocked", lambda pg: "a sign-in wall")
+    assert Y._liked_from_page(5) is Y.SIGNED_OUT
+
+
+def test_no_titles_and_no_wall_is_an_empty_playlist(monkeypatch):
+    class B:
+        running = True
+        def start(self): pass
+        def page(self): return object()
+        def call(self, fn, timeout=None): return []
+
+    monkeypatch.setattr(Y, "_browser", lambda: B())
+    monkeypatch.setattr(Y, "_settle", lambda br, url: None)
+    monkeypatch.setattr(Y, "_page_blocked", lambda pg: "")
+    assert Y._liked_from_page(5) == []
