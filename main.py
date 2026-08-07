@@ -527,7 +527,6 @@ TOOL_DECLARATIONS = [
                 "text":        {"type": "STRING", "description": "Text to type, for the type action"},
                 "want_pixels": {"type": "BOOLEAN", "description": "Force a screenshot on look, when the structural read is not enough"},
                 "timeout":     {"type": "NUMBER", "description": "Seconds to wait for the user during sign_in (default 300)"},
-                "domains":     {"type": "STRING", "description": "For import_login: the sites to bring across, e.g. 'youtube.com google.com'. ONLY these are imported."},
             },
             "required": ["action"]
         }

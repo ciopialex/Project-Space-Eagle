@@ -347,3 +347,21 @@ def test_giving_up_also_leaves_nothing_running(monkeypatch):
     monkeypatch.setattr(W, "_wall_or_signed_out", lambda _p: "blocked")
     W._watch_until_signed_in(b, "https://x.test", timeout=0.05, poll=0.01)
     assert closed, "abandoned handoff left a browser running"
+
+
+def test_the_watcher_does_not_close_a_browser_someone_else_is_using():
+    """The watcher lives for up to ten minutes on a background thread and
+    closes the SHARED browser when it finishes. If the user asks for anything
+    web-shaped in that window, the watcher pulls the browser out from under
+    the in-flight action — a ten-minute race against normal use."""
+    import actions.web_agency as W
+    b = FakeBrowser(walls=[])
+    W._BROWSER_BUSY.add("something-else")
+    try:
+        W._stand_down(b)
+        assert not b.closed, "closed a browser another action was using"
+    finally:
+        W._BROWSER_BUSY.discard("something-else")
+
+    W._stand_down(b)
+    assert b.closed, "failed to stand the browser down when nothing needed it"

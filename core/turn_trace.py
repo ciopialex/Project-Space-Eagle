@@ -94,14 +94,13 @@ def _enabled_by_default() -> bool:
 class TurnTrace:
     """Timestamps for one voice turn. Cheap, thread-safe, and inert when off."""
 
-    __slots__ = ("_marks", "_lock", "enabled", "turn", "_t0")
+    __slots__ = ("_marks", "_lock", "enabled", "turn")
 
     def __init__(self, turn: int = 0, enabled: bool | None = None) -> None:
         self.enabled = _enabled_by_default() if enabled is None else enabled
         self.turn = turn
         self._marks: dict[str, float] = {}
         self._lock = threading.Lock()
-        self._t0 = time.monotonic()
 
     def mark(self, name: str) -> None:
         """Record `name` at now. First write wins.

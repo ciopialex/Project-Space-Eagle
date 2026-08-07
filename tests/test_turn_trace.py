@@ -45,8 +45,9 @@ def test_a_segment_that_never_happened_is_absent_not_zero():
 
 
 def test_deltas_measure_the_gap_the_user_feels(monkeypatch):
-    # The constructor takes one reading of its own before any mark.
-    clock = iter([99.0, 100.0, 100.55, 101.30])    # init -> end -> vad -> audio
+    # The constructor takes no clock reading of its own — it used to store a
+    # _t0 that nothing ever read.
+    clock = iter([100.0, 100.55, 101.30])          # end -> vad -> audio
     monkeypatch.setattr("core.turn_trace.time.monotonic", lambda: next(clock))
     t = TurnTrace(enabled=True)
     t.mark("speech_end")

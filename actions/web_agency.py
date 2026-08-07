@@ -350,6 +350,13 @@ def _clear_consent_walls(browser, grounder: WebGrounder) -> list[str]:
 _SIGN_IN_WATCH_S = 600.0
 
 
+#: Actions currently holding the shared browser. The sign-in watcher lives for
+#: up to ten minutes on a background thread and closes the browser when it
+#: finishes - so without this it could pull the browser out from under any web
+#: work the user started in that window. A ten-minute race against normal use.
+_BROWSER_BUSY: set = set()
+
+
 def _stand_down(browser) -> None:
     """Put the browser away properly - stopped, not merely hidden.
 
@@ -362,6 +369,14 @@ def _stand_down(browser) -> None:
     the next web action pays a ~350ms cold start - a price worth paying once,
     against a browser idling behind every conversation.
     """
+    if _BROWSER_BUSY:
+        # Someone is mid-action. Get the window off the screen, leave the
+        # browser up for them, and let normal shutdown reclaim it.
+        try:
+            browser.surface(False)
+        except Exception:
+            pass
+        return
     try:
         browser.close()
     except Exception:
@@ -1059,6 +1074,14 @@ def _web_agency(params: dict, player: Any, browser: Any) -> ToolResult:
     if not_ready is not None:
         return not_ready
 
+    _BROWSER_BUSY.add(action)
+    try:
+        return _dispatch(params, browser, action)
+    finally:
+        _BROWSER_BUSY.discard(action)
+
+
+def _dispatch(params, browser, action):
     if action == "open":
         url = str(params.get("url") or "").strip()
         if not url:

@@ -233,7 +233,8 @@ def test_a_signed_out_browser_reports_the_sign_in_not_a_shrug(monkeypatch):
     monkeypatch.setattr(Y, "_token", lambda: "tok")
     monkeypatch.setattr(Y, "_get",
                         lambda *a, **k: (_ for _ in ()).throw(Y.ApiNotEnabled("project 1")))
-    monkeypatch.setattr(Y, "_liked_from_page", lambda limit: [])
+    # SIGNED_OUT, not [] — [] now means "signed in, nothing liked".
+    monkeypatch.setattr(Y, "_liked_from_page", lambda limit: Y.SIGNED_OUT)
 
     r = Y.youtube_api({"action": "liked", "limit": 1})
     assert r.ok is False
@@ -256,3 +257,38 @@ def test_durations_are_not_part_of_a_video_title():
     assert Y._clean_title("Another Track 16 minute") == "Another Track"
     assert Y._clean_title("Talk 1 hour 3 minutes") == "Talk"
     assert Y._clean_title("Normal Title") == "Normal Title"
+
+
+# ── Audit findings ─────────────────────────────────────────────────────────
+
+def test_every_action_gets_the_disabled_api_message(monkeypatch):
+    """`except (ApiNotEnabled, NeedsReconnect)` was followed by a second
+    `except ApiNotEnabled` that could never be reached, and the first one
+    re-raised for any action but 'liked'. So subscriptions and playlists
+    surfaced "The YouTube tool hit an unexpected error: project 145572196912"
+    — an internal string, no remedy, straight to the user."""
+    monkeypatch.setattr(Y, "_token", lambda: "tok")
+    monkeypatch.setattr(Y, "_get", lambda *a, **k: (_ for _ in ()).throw(
+        Y.ApiNotEnabled("project 145572196912")))
+    for action in ("subscriptions", "playlists"):
+        r = Y.youtube_api({"action": action})
+        assert "unexpected error" not in r.message.lower(), action
+        assert "switched off" in r.message.lower(), action
+        assert "145572196912" in (r.message + r.guidance), (
+            f"{action}: dropped the project id, so the user cannot find the toggle")
+
+
+def test_a_signed_out_browser_is_not_reported_as_an_empty_account(monkeypatch):
+    """`_liked_from_page` returned [] for BOTH "signed out" and "you have no
+    liked videos". Someone with an empty account would be told to sign in;
+    someone signed out would be told their account is empty. Neither is true."""
+    monkeypatch.setattr(Y, "_token", lambda: "tok")
+    monkeypatch.setattr(Y, "_get", lambda *a, **k: (_ for _ in ()).throw(
+        Y.ApiNotEnabled("project 1")))
+    monkeypatch.setattr(Y, "_liked_from_page", lambda limit: Y.SIGNED_OUT)
+    r = Y.youtube_api({"action": "liked"})
+    assert r.ok is False and "sign_in" in r.guidance
+
+    monkeypatch.setattr(Y, "_liked_from_page", lambda limit: [])
+    r = Y.youtube_api({"action": "liked"})
+    assert r.ok is True and "no liked videos" in r.message.lower()

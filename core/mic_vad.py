@@ -40,12 +40,20 @@ _FLOOR_RISE = 0.02
 _FLOOR_FALL = 0.25
 
 
+#: Resolved once. `_rms` runs on every outgoing mic frame, and an import
+#: statement there is a sys.modules lookup ~16 times a second on the audio path.
+try:
+    import numpy as _np
+except Exception:                       # numpy absent: the VAD simply no-ops
+    _np = None
+
+
 def _rms(frame: bytes) -> float | None:
     """Root-mean-square of little-endian int16 PCM, or None if unusable."""
-    if not frame or len(frame) < 2:
+    if not frame or len(frame) < 2 or _np is None:
         return None
     try:
-        import numpy as np
+        np = _np
         samples = np.frombuffer(frame[:len(frame) - (len(frame) % 2)],
                                 dtype="<i2")
         if samples.size == 0:

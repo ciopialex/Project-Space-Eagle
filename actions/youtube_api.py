@@ -44,6 +44,12 @@ MAX_ITEMS = 10
 _LIKED_PLAYLIST = "LL"
 
 
+#: Returned by `_liked_from_page` when the browser is not signed in. Distinct
+#: from [], which means "signed in, and this account has no liked videos".
+#: Collapsing the two told an empty account to sign in, and told a signed-out
+#: browser that the account was empty.
+SIGNED_OUT = object()
+
 #: The liked-videos playlist, as a page rather than an API call.
 _LIKED_URL = "https://www.youtube.com/playlist?list=LL"
 
@@ -99,11 +105,11 @@ def _liked_from_page(limit: int) -> list[str]:
     browser = default_browser()
     browser.start()
     if not browser.running:
-        return []
+        return SIGNED_OUT
     W._open_and_settle(browser, _LIKED_URL)
     page = browser.page()
     if page is None or W._wall_or_signed_out(page):
-        return []
+        return SIGNED_OUT
     raw = browser.call(lambda pg: pg.evaluate(_TITLES_JS), timeout=30.0) or []
     titles = [_clean_title(t) for t in raw]
     return [t for t in titles if t][:limit]
@@ -179,6 +185,22 @@ def _speak(items: list[str], noun: str, limit: int) -> ToolResult:
     return ToolResult.success("\n".join(shown), count=len(items))
 
 
+def _api_disabled(detail: str) -> ToolResult:
+    """The API is off at the Cloud project. Their account and sign-in are fine."""
+    m = re.search(r"project (\d+)", detail or "")
+    where = (f"https://console.developers.google.com/apis/api/"
+             f"youtube.googleapis.com/overview?project={m.group(1)}" if m else
+             "https://console.cloud.google.com/apis/library/youtube.googleapis.com")
+    return ToolResult.failure(
+        "The YouTube Data API is switched off on this Google Cloud project - "
+        "the user's account and sign-in are fine.",
+        guidance=(f"Either enable YouTube Data API v3 at {where} and retry in a "
+                  f"minute, or call web_agency action='sign_in' with {_LIKED_URL} "
+                  "so the eagle reads the page instead. Do NOT ask them to sign "
+                  "in to Google again - they already have, and it will not help. "
+                  "Never say their videos are private."))
+
+
 def _youtube_api(params: dict) -> ToolResult:
     action = str((params or {}).get("action") or "liked").strip().lower()
     if action not in _ACTIONS:
@@ -240,42 +262,22 @@ def _youtube_api(params: dict) -> ToolResult:
         return _speak(_titles(data), "playlists", limit)
 
     except (ApiNotEnabled, NeedsReconnect) as first_choice_failed:
+        # The page fallback is for `liked` only - it is the one with a page
+        # worth reading. Every OTHER action still gets a real answer below,
+        # rather than being re-raised into the generic handler, which is what
+        # leaked "unexpected error: project 145572196912" to the user.
         if action == "liked":
-            try:
-                titles = _liked_from_page(limit)
-            except Exception:
-                titles = []
-            if titles:
-                return ToolResult.success("\n".join(titles), count=len(titles),
-                                          via="browser")
-            if isinstance(first_choice_failed, NeedsReconnect):
-                return reconnect
-            return ToolResult.failure(
-                "The YouTube API is switched off for this project, and the "
-                "eagle's browser is not signed in to YouTube either.",
-                guidance=(f"Call web_agency action='sign_in' with {_LIKED_URL}: "
-                          "a window opens, they sign in once, and it works from "
-                          "then on. Do not tell them their videos are private."))
-        raise first_choice_failed
+            titles = _liked_from_page(limit)
+            if titles is not SIGNED_OUT:
+                return (ToolResult.success("\n".join(titles), count=len(titles),
+                                           via="browser") if titles
+                        else ToolResult.success(
+                            "There are no liked videos on this account."))
 
-    except ApiNotEnabled as e:
-        project = ""
-        import re as _re
-        m = _re.search(r"project (\d+)", str(e))
-        if m:
-            project = ("https://console.developers.google.com/apis/api/"
-                       f"youtube.googleapis.com/overview?project={m.group(1)}")
-        return ToolResult.failure(
-            "The YouTube Data API is switched off on this Google Cloud "
-            "project. The user's account and sign-in are fine - this is one "
-            "toggle in the Cloud console.",
-            guidance=("Tell them to enable YouTube Data API v3 here, then try "
-                      "again in a minute: " + (project or
-                      "https://console.cloud.google.com/apis/library/youtube.googleapis.com")
-                      + ". Do NOT ask them to sign in again - they already "
-                      "have, and it will not help."))
-    except NeedsReconnect:
-        return reconnect
+        if isinstance(first_choice_failed, NeedsReconnect):
+            return reconnect
+        return _api_disabled(str(first_choice_failed))
+
     except Exception as e:
         return ToolResult.failure(
             f"YouTube did not answer: {e}",
