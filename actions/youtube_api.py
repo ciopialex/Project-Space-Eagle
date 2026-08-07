@@ -26,6 +26,7 @@ has not exposed since 2016), it says so and names the route that might.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from core.tool_result import ToolResult
@@ -41,6 +42,72 @@ MAX_ITEMS = 10
 #: `videos.list(myRating=liked)` sorts by upload date instead and would answer
 #: a different question convincingly.
 _LIKED_PLAYLIST = "LL"
+
+
+#: The liked-videos playlist, as a page rather than an API call.
+_LIKED_URL = "https://www.youtube.com/playlist?list=LL"
+
+#: Pull the titles out of a YouTube list page.
+#:
+#: Deliberately not `#video-title`, which is what every tutorial says and what
+#: YouTube used to ship - measured live, that selector now matches ZERO
+#: elements. Watch links are the thing that has survived every redesign, so
+#: they are what this keys on, deduplicated by video id because each video
+#: appears as several links (thumbnail, title, channel).
+_TITLES_JS = r"""(() => {
+  const seen = new Map();
+  for (const a of document.querySelectorAll('a[href*="watch?v="]')) {
+    const m = a.href.match(/[?&]v=([\w-]{6,})/);
+    if (!m) continue;
+    const text = (a.getAttribute('title')
+                  || a.getAttribute('aria-label')
+                  || a.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!text || /^\d+:\d+$/.test(text)) continue;
+    if (!seen.has(m[1]) || text.length > seen.get(m[1]).length) {
+      seen.set(m[1], text);
+    }
+  }
+  return [...seen.values()];
+})()"""
+
+#: YouTube's accessible label ends with the runtime — "... 5 minute și 32 de
+#: secunde", "... 16 minute". Fine for a screen reader, noise read aloud.
+_DURATION_TAIL = re.compile(
+    r"\s+\d+\s*(?:h|hr|hours?|ore|or[ăa]|min|mins?|minutes?|minute|minut|"
+    r"sec|secs?|seconds?|secunde|secund[ăa])\b.*$", re.IGNORECASE)
+
+
+def _clean_title(text: str) -> str:
+    return _DURATION_TAIL.sub("", (text or "").strip()).strip(" -–—·")
+
+
+def _liked_from_page(limit: int) -> list[str]:
+    """Read the liked-videos page in the eagle's own browser.
+
+    The way a person would do it, and the reason this exists: the API can be
+    switched off at the Cloud project, or unscoped, or quota'd - none of which
+    is the user's problem, and none of which stops a browser that is already
+    signed in. When the fast path cannot answer, the eagle should go and look
+    rather than apologise.
+
+    Returns [] when the browser is signed out, which the caller turns into a
+    sign-in prompt rather than "no videos".
+    """
+    from actions.grounding.web.browser import default_browser
+    from actions import web_agency as W
+
+    browser = default_browser()
+    browser.start()
+    if not browser.running:
+        return []
+    W._open_and_settle(browser, _LIKED_URL)
+    page = browser.page()
+    if page is None or W._wall_or_signed_out(page):
+        return []
+    raw = browser.call(lambda pg: pg.evaluate(_TITLES_JS), timeout=30.0) or []
+    titles = [_clean_title(t) for t in raw]
+    return [t for t in titles if t][:limit]
+
 
 _ACTIONS = ("liked", "subscriptions", "playlists", "history")
 
@@ -171,6 +238,26 @@ def _youtube_api(params: dict) -> ToolResult:
                     {"part": "snippet", "mine": "true",
                      "maxResults": min(limit, 50)}, token)
         return _speak(_titles(data), "playlists", limit)
+
+    except (ApiNotEnabled, NeedsReconnect) as first_choice_failed:
+        if action == "liked":
+            try:
+                titles = _liked_from_page(limit)
+            except Exception:
+                titles = []
+            if titles:
+                return ToolResult.success("\n".join(titles), count=len(titles),
+                                          via="browser")
+            if isinstance(first_choice_failed, NeedsReconnect):
+                return reconnect
+            return ToolResult.failure(
+                "The YouTube API is switched off for this project, and the "
+                "eagle's browser is not signed in to YouTube either.",
+                guidance=("Two ways: call web_agency action='sign_in' with "
+                          f"{_LIKED_URL} so they sign in once, or enable "
+                          "YouTube Data API v3 in their Google Cloud console. "
+                          "Do not tell them their videos are private."))
+        raise first_choice_failed
 
     except ApiNotEnabled as e:
         project = ""

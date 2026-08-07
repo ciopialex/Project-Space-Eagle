@@ -191,3 +191,65 @@ def test_a_genuinely_unscoped_token_still_says_reconnect(monkeypatch):
 
     r = Y.youtube_api({"action": "liked"})
     assert "sign in to google again" in (r.message + r.guidance).lower()
+
+
+# ── Finding a way when the API cannot answer ───────────────────────────────
+# From the user, after watching it give up: "it could just open the browser,
+# navigate to YouTube, look at the page, and tell me my latest liked video IF
+# everything else fails. Humans are all about finding a WAY."
+#
+# It had every piece and never chained them: the API failed, so it tried the
+# API again, then opened the user's OWN Chrome, then a screenshot, then vision,
+# then apologised. The fallback belongs in code, not in the model's judgement.
+
+def test_the_api_failing_falls_through_to_reading_the_page(monkeypatch):
+    monkeypatch.setattr(Y, "_token", lambda: "tok")
+    monkeypatch.setattr(Y, "_get",
+                        lambda *a, **k: (_ for _ in ()).throw(Y.ApiNotEnabled("project 1")))
+    monkeypatch.setattr(Y, "_liked_from_page",
+                        lambda limit: ["Sky Whisper — Slimesito"])
+
+    r = Y.youtube_api({"action": "liked", "limit": 1})
+    assert r.ok, "gave up while the browser could still have answered"
+    assert "Sky Whisper" in r.message
+
+
+def test_the_page_fallback_is_only_used_when_the_api_cannot_answer(monkeypatch):
+    """The API is ~20x faster. It stays the first choice."""
+    called = []
+    monkeypatch.setattr(Y, "_token", lambda: "tok")
+    monkeypatch.setattr(Y, "_liked_from_page", lambda limit: called.append(1) or [])
+    monkeypatch.setattr(Y, "_get", lambda *a, **k: liked_payload("From the API"))
+
+    r = Y.youtube_api({"action": "liked", "limit": 1})
+    assert "From the API" in r.message
+    assert not called, "went to the browser when the API had already answered"
+
+
+def test_a_signed_out_browser_reports_the_sign_in_not_a_shrug(monkeypatch):
+    monkeypatch.setattr(Y, "_token", lambda: "tok")
+    monkeypatch.setattr(Y, "_get",
+                        lambda *a, **k: (_ for _ in ()).throw(Y.ApiNotEnabled("project 1")))
+    monkeypatch.setattr(Y, "_liked_from_page", lambda limit: [])
+
+    r = Y.youtube_api({"action": "liked", "limit": 1})
+    assert r.ok is False
+    assert "sign" in (r.message + r.guidance).lower()
+
+
+def test_the_page_fallback_never_takes_the_tool_down(monkeypatch):
+    monkeypatch.setattr(Y, "_token", lambda: "tok")
+    monkeypatch.setattr(Y, "_get",
+                        lambda *a, **k: (_ for _ in ()).throw(Y.ApiNotEnabled("p")))
+    monkeypatch.setattr(Y, "_liked_from_page",
+                        lambda limit: (_ for _ in ()).throw(RuntimeError("browser gone")))
+    assert Y.youtube_api({"action": "liked"}).ok is False
+
+
+def test_durations_are_not_part_of_a_video_title():
+    """YouTube's accessible label carries the runtime — "... 5 minute și 32 de
+    secunde". Reading that aloud is noise."""
+    assert Y._clean_title("Some Song 5 minute și 32 de secunde") == "Some Song"
+    assert Y._clean_title("Another Track 16 minute") == "Another Track"
+    assert Y._clean_title("Talk 1 hour 3 minutes") == "Talk"
+    assert Y._clean_title("Normal Title") == "Normal Title"
