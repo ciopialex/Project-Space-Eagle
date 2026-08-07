@@ -310,3 +310,34 @@ def test_a_vanished_browser_ends_the_watch(monkeypatch):
         def page(self): return None
     b = Gone(walls=[])
     assert W._watch_until_signed_in(b, "https://x.test", timeout=5.0, poll=0.01) is False
+
+
+def test_the_handoff_leaves_no_browser_running(monkeypatch):
+    """`surface(False)` does not stop the browser — it RESTARTS it headless.
+    So a completed sign-in left a full Chrome resident for the rest of the
+    session, competing with the audio threads for a laptop's CPU. Nothing
+    needed it: the session is on disk, and the next web action can pay the
+    ~350ms cold start."""
+    closed = []
+
+    class B(FakeBrowser):
+        def close(self):
+            closed.append(True)
+
+    b = B(walls=[])
+    monkeypatch.setattr(W, "_wall_or_signed_out", lambda _p: "")
+    W._watch_until_signed_in(b, "https://www.youtube.com", timeout=1.0, poll=0.01)
+    assert closed, "left a headless Chrome running after the handoff"
+
+
+def test_giving_up_also_leaves_nothing_running(monkeypatch):
+    closed = []
+
+    class B(FakeBrowser):
+        def close(self):
+            closed.append(True)
+
+    b = B(walls=[])
+    monkeypatch.setattr(W, "_wall_or_signed_out", lambda _p: "blocked")
+    W._watch_until_signed_in(b, "https://x.test", timeout=0.05, poll=0.01)
+    assert closed, "abandoned handoff left a browser running"

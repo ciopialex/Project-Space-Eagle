@@ -438,6 +438,27 @@ def _recover_signed_out(browser, url: str) -> bool:
 _SIGN_IN_WATCH_S = 600.0
 
 
+def _stand_down(browser) -> None:
+    """Put the browser away properly - stopped, not merely hidden.
+
+    `surface(False)` does not stop anything: it RESTARTS the browser headless.
+    So a finished handoff left a full Chrome resident for the rest of the
+    session, competing with the audio threads for a laptop's CPU on every
+    turn, including the ones that never touch the web at all.
+
+    Nothing needs it to stay up. The session lives in the profile on disk, and
+    the next web action pays a ~350ms cold start - a price worth paying once,
+    against a browser idling behind every conversation.
+    """
+    try:
+        browser.close()
+    except Exception:
+        try:
+            browser.surface(False)     # at least get it off the screen
+        except Exception:
+            pass
+
+
 def _watch_until_signed_in(browser, url: str, *,
                            timeout: float = _SIGN_IN_WATCH_S,
                            poll: float = 2.0) -> bool:
@@ -464,17 +485,14 @@ def _watch_until_signed_in(browser, url: str, *,
             if not _wall_or_signed_out(page):
                 _HANDOFF.pop("url", None)
                 _record_signed_in(url)
-                browser.surface(False)
+                _stand_down(browser)
                 return True
         except Exception:
             pass                      # mid-navigation; look again shortly
         time.sleep(poll)
 
     _HANDOFF.pop("url", None)
-    try:
-        browser.surface(False)
-    except Exception:
-        pass
+    _stand_down(browser)
     return False
 
 
