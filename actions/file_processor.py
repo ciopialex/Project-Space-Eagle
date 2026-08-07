@@ -23,6 +23,8 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+
+from core.tool_result import ToolResult, normalize
 from datetime import datetime
 from core import user_paths
 
@@ -777,16 +779,33 @@ def _process_pptx(path: Path, action: str, params: dict, speak=None) -> str:
 
     return f"Unknown PPTX action: '{action}'. Try: summarize, extract_text, analyze"
 
-def file_processor(parameters: dict, player=None, speak=None) -> str:
-    file_path_str = parameters.get("file_path", "").strip()
+def file_processor(parameters: dict, player=None, speak=None) -> ToolResult:
+    """Read, convert or summarise a file. Never raises.
+
+    Migrated to the tool contract at the BOUNDARY. The internal helpers still
+    hand back prose - 123 call sites is churn with real regression risk - but
+    the failures decided HERE are the ones a user actually hits (a mis-heard
+    filename, a path that does not exist), and they used to arrive at the model
+    as ok=True with no next step. Each now says what to do instead.
+    """
+    parameters = parameters or {}
+    raw_path = parameters.get("file_path")
+    file_path_str = str(raw_path).strip() if raw_path else ""
     if not file_path_str:
-        return "No file path provided."
+        return ToolResult.failure(
+            "No file path was given.",
+            guidance="Ask the user which file they mean, and for its full path.")
 
     path = Path(file_path_str)
     if not path.exists():
-        return f"File not found: {file_path_str}"
+        return ToolResult.failure(
+            f"File not found: {file_path_str}",
+            guidance=("Ask the user to check the name — it may have been "
+                      "misheard. Do not guess a similar path."))
     if not path.is_file():
-        return f"Path is not a file: {file_path_str}"
+        return ToolResult.failure(
+            f"That is a folder, not a file: {file_path_str}",
+            guidance="Ask which file inside it they mean.")
 
     file_type   = _detect_type(path)
     action      = (parameters.get("action") or "").lower().strip()
@@ -804,9 +823,12 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
             model   = _gemini_client()
             prompt  = f"File: {path.name}\nContent preview:\n{content}\n\nTask: {action or instruction or 'Describe what this file contains and what can be done with it.'}"
             response = model.generate_content(prompt)
-            return response.text.strip()
+            return ToolResult.success(response.text.strip(), file=str(path))
         except Exception as e:
-            return f"Unknown file type ({path.suffix}). Could not process: {e}"
+            return ToolResult.failure(
+                f"Could not make sense of {path.name} ({path.suffix or 'no extension'}): {e}",
+                guidance="Tell the user this file type is not supported; do not "
+                         "claim to have read it.")
 
     dispatch = {
         "image":   _process_image,
@@ -826,12 +848,25 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
 
     handler = dispatch.get(file_type)
     if not handler:
-        return f"Unsupported file type: {file_type}"
+        return ToolResult.failure(
+            f"Nothing here can process a {file_type} file.",
+            guidance="Tell the user which formats are supported rather than "
+                     "attempting it another way.")
 
     try:
         result = handler(path, action, params, speak)
-        return result or "Done."
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return f"Processing failed: {e}"
+        # This used to return "Processing failed: X" as a plain string, which
+        # normalize() turned into ok=True - a crash reported as a success.
+        return ToolResult.failure(
+            f"Processing {path.name} failed: {e}",
+            guidance="Tell the user it did not work. Do not claim the file was "
+                     "read, converted or summarised.")
+
+    if isinstance(result, ToolResult):
+        return result
+    # The helper's own prose. It has not said whether it worked, so neither do
+    # we — `normalize` keeps `ok` off a legacy string rather than inventing one.
+    return normalize(result if result else "Done.")
