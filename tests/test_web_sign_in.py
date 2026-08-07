@@ -196,3 +196,117 @@ def test_recording_a_sign_in_keeps_the_sites_already_there(tmp_path, monkeypatch
 
     recorded = (tmp_path / P._IMPORTED_MARKER).read_text().split()
     assert set(recorded) == {"github.com", "youtube.com"}
+
+
+# ── The window closing the moment the user clicks "Sign in" ────────────────
+# Reported live with a screenshot: the window opened on youtube.com, the user
+# pressed "Conectează-te", and the window vanished. Clicking sign-in navigates
+# to accounts.google.com; mid-navigation the page has no readable controls, so
+# the wall check found no wall and the handoff concluded SUCCESS — hiding the
+# browser exactly when the human started typing.
+#
+# An unreadable page means "not yet", never "done". Success needs positive
+# evidence, and so does an auth page: being ON accounts.google.com is proof the
+# sign-in has NOT finished.
+
+class _Page:
+    def __init__(self, nodes, url):
+        self._nodes, self._url = nodes, url
+
+
+def _stub_page(monkeypatch, nodes, url):
+    monkeypatch.setattr(W, "_current_nodes", lambda _p: nodes)
+    monkeypatch.setattr(W, "_current_url", lambda _p: url)
+
+
+def test_a_page_with_nothing_on_it_is_not_a_finished_sign_in(monkeypatch):
+    """The exact frame the user lost their window on."""
+    _stub_page(monkeypatch, [], "https://accounts.google.com/signin")
+    assert W._wall_or_signed_out(object()), "an unreadable page read as signed in"
+
+
+def test_sitting_on_the_login_page_is_not_a_finished_sign_in(monkeypatch):
+    """Google's login page has no 'sign in to continue' banner to detect — it
+    IS the sign-in. Nothing in the wall vocabulary matches it, so it looked
+    like an ordinary signed-in page."""
+    _stub_page(monkeypatch, [object()], "https://accounts.google.com/v3/signin/identifier")
+    assert W._wall_or_signed_out(object())
+
+
+@pytest.mark.parametrize("url", [
+    "https://accounts.google.com/signin",
+    "https://login.microsoftonline.com/x",
+    "https://github.com/login",
+    "https://signin.aws.amazon.com/",
+    "https://www.facebook.com/login.php",
+])
+def test_known_auth_pages_all_count_as_unfinished(monkeypatch, url):
+    _stub_page(monkeypatch, [object()], url)
+    assert W._wall_or_signed_out(object()), url
+
+
+def test_a_real_page_with_no_wall_is_finished(monkeypatch):
+    """The other direction. If this stops being true the handoff never ends
+    and the window never closes."""
+    _stub_page(monkeypatch, [object(), object()], "https://www.youtube.com/playlist?list=LL")
+    monkeypatch.setattr(W, "wall_reason", lambda *_a: "")
+    monkeypatch.setattr(W, "signed_out_reason", lambda *_a: "")
+    assert W._wall_or_signed_out(object()) == ""
+
+
+def test_the_window_survives_a_click_that_navigates(monkeypatch):
+    """End to end: the user clicks sign-in, the page goes blank mid-navigation,
+    and the browser must still be on screen afterwards."""
+    b = FakeBrowser(walls=[])
+    states = iter(["a sign-in wall", "", "", "a sign-in wall"])  # blank frames in the middle
+    monkeypatch.setattr(W, "_wall_or_signed_out",
+                        lambda _p: next(states, "a sign-in wall"))
+    monkeypatch.setattr(W, "_current_nodes", lambda _p: [])
+    W._sign_in(b, "https://www.youtube.com", grace=0.0)
+    assert b.surfaced == [True], "the window was taken away mid-login"
+
+
+# ── Noticing, instead of waiting to be told ────────────────────────────────
+# The user signed in and the window just sat there. That was the design: phase
+# two only runs when someone calls sign_in again. Correct, and wrong — nobody
+# should have to announce to their assistant that they finished typing.
+
+def test_the_watcher_closes_the_window_once_the_wall_clears(monkeypatch):
+    b = FakeBrowser(walls=[])
+    states = iter(["a sign-in wall", "a sign-in wall", ""])
+    monkeypatch.setattr(W, "_wall_or_signed_out", lambda _p: next(states, ""))
+    done = W._watch_until_signed_in(b, "https://www.youtube.com",
+                                    timeout=5.0, poll=0.01)
+    assert done is True
+    assert b.surfaced[-1] is False, "the window was never put away"
+    assert not W._HANDOFF
+
+
+def test_the_watcher_gives_up_without_stranding_the_window(monkeypatch):
+    """If the user wanders off, the eagle must not keep a browser on their
+    screen forever — but it also must not yank it away while they might still
+    be typing. It waits generously, then tidies up."""
+    b = FakeBrowser(walls=[])
+    monkeypatch.setattr(W, "_wall_or_signed_out", lambda _p: "still blocked")
+    done = W._watch_until_signed_in(b, "https://x.test", timeout=0.05, poll=0.01)
+    assert done is False
+    assert b.surfaced[-1] is False, "left a browser window on the user's screen"
+
+
+def test_the_watcher_records_the_site_like_a_manual_confirm(monkeypatch, tmp_path):
+    import actions.grounding.web.profile_import as P
+    from core import user_paths
+    monkeypatch.setattr(user_paths, "browser_profile_dir", lambda: tmp_path)
+    b = FakeBrowser(walls=[])
+    monkeypatch.setattr(W, "_wall_or_signed_out", lambda _p: "")
+    W._watch_until_signed_in(b, "https://www.youtube.com", timeout=1.0, poll=0.01)
+    assert "youtube.com" in (tmp_path / P._IMPORTED_MARKER).read_text()
+
+
+def test_a_vanished_browser_ends_the_watch(monkeypatch):
+    """The user closed the window themselves. Polling a dead browser forever
+    is how a background thread outlives the thing it was watching."""
+    class Gone(FakeBrowser):
+        def page(self): return None
+    b = Gone(walls=[])
+    assert W._watch_until_signed_in(b, "https://x.test", timeout=5.0, poll=0.01) is False

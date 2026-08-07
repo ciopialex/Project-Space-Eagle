@@ -57,6 +57,8 @@ including the reproduction this closes.
 """
 from __future__ import annotations
 
+import threading
+import time
 import re
 from typing import Any
 
@@ -186,19 +188,47 @@ _HANDOFF: dict = {}
 _SIGN_IN_GRACE_S = 20.0
 
 
+#: Hosts and paths that ARE the sign-in, rather than pages showing a sign-in
+#: prompt. Nothing in the wall vocabulary matches them - Google's login page
+#: has no "sign in to continue" banner because it IS the thing - so without
+#: this they read as ordinary signed-in pages.
+_AUTH_MARKERS = ("accounts.google.com", "login.microsoftonline.com",
+                 "signin.aws.amazon.com", "appleid.apple.com",
+                 "/login", "/signin", "/sign_in", "/auth/", "/oauth")
+
+
+def _on_auth_page(url: str) -> bool:
+    lowered = (url or "").lower()
+    return any(marker in lowered for marker in _AUTH_MARKERS)
+
+
 def _wall_or_signed_out(page) -> str:
     """The ONLY thing read while the user is at the keyboard: a wall check.
 
     Not a page read, not a screenshot. Their password is not something to
     watch, and a handoff is the one moment the eagle is pointed at a form
     somebody is typing a secret into.
+
+    Success needs POSITIVE evidence. The user hit this live: they pressed
+    "Conectează-te", the browser navigated to Google's login, and for a frame
+    the page had no readable controls - so the wall check found no wall,
+    the handoff declared success, and the window was hidden at the exact
+    moment they started typing their password.
+
+    An empty page means "not yet", never "done", and being ON an auth page is
+    itself proof the sign-in has not finished.
     """
+    url = _current_url(page)
+    if _on_auth_page(url):
+        return "the user is still on the sign-in page"
     nodes = _current_nodes(page)
-    return wall_reason(nodes, _current_url(page)) or signed_out_reason(nodes)
+    if not nodes:
+        return "the page is still loading"
+    return wall_reason(nodes, url) or signed_out_reason(nodes)
 
 
 def _sign_in(browser, url: str, *, grace: float = _SIGN_IN_GRACE_S,
-             poll: float = 1.0) -> ToolResult:
+             poll: float = 1.0, watch: bool = True) -> ToolResult:
     """Put the eagle's browser on screen so the user can sign in, once.
 
     The eagle keeps its own browser profile, deliberately: attaching to the
@@ -270,6 +300,9 @@ def _sign_in(browser, url: str, *, grace: float = _SIGN_IN_GRACE_S,
     # thing guaranteed to waste the user's effort - and hand the turn back so
     # the eagle can actually speak.
     _HANDOFF["url"] = url
+    if watch:
+        threading.Thread(target=_watch_until_signed_in, args=(browser, url),
+                         daemon=True).start()
     return ToolResult.failure(
         f"A sign-in window for {url} is open on screen and waiting.",
         guidance=("Tell the user the window is open and ask them to sign in, "
@@ -397,6 +430,52 @@ def _recover_signed_out(browser, url: str) -> bool:
     except Exception:
         return False
     return True
+
+
+#: How long the eagle will keep an eye on an open sign-in window. Generous on
+#: purpose: 2FA on a phone is slow, and taking the window away early is the one
+#: failure that wastes work the user has already done.
+_SIGN_IN_WATCH_S = 600.0
+
+
+def _watch_until_signed_in(browser, url: str, *,
+                           timeout: float = _SIGN_IN_WATCH_S,
+                           poll: float = 2.0) -> bool:
+    """Close the sign-in window when the user finishes, without being asked.
+
+    The handoff used to end only when someone called sign_in a second time, so
+    the user signed in and the window simply sat there until they thought to
+    announce it. Nobody should have to tell their assistant they have stopped
+    typing.
+
+    Runs on its own thread. It reads nothing but the wall check - the same
+    single question asked during the handoff - so watching costs the user no
+    privacy they had not already accepted by opening the window.
+
+    Gives up eventually and tidies up regardless: a browser left on someone's
+    screen because they wandered off is the eagle's mess, not theirs.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        page = browser.page()
+        if page is None:
+            return False              # they closed it themselves
+        try:
+            if not _wall_or_signed_out(page):
+                _HANDOFF.pop("url", None)
+                _record_signed_in(url)
+                browser.surface(False)
+                return True
+        except Exception:
+            pass                      # mid-navigation; look again shortly
+        time.sleep(poll)
+
+    _HANDOFF.pop("url", None)
+    try:
+        browser.surface(False)
+    except Exception:
+        pass
+    return False
 
 
 def _record_signed_in(url: str) -> None:
