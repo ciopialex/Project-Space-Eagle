@@ -57,3 +57,7 @@ screenshot_*.png
 # never be committed back into the repository they are checked out from.
 .claude/worktrees/
 .superpowers/
+
+# Screenshots the vision tool writes into the repo root — these are
+# pictures of the user's actual screen and must never be committed.
+screenshot*.png
