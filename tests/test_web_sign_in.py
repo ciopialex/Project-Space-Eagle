@@ -174,7 +174,7 @@ def test_a_completed_sign_in_is_recorded_for_the_settings_panel(tmp_path, monkey
     the imported sites — because the list read the IMPORT marker and nothing
     wrote to it when a human signed in by hand. The panel was reporting a
     different question than the one it asked."""
-    import actions.grounding.web.profile_import as P
+    from actions.grounding.web import sessions as P
     from core import user_paths
     monkeypatch.setattr(user_paths, "browser_profile_dir", lambda: tmp_path)
 
@@ -184,21 +184,21 @@ def test_a_completed_sign_in_is_recorded_for_the_settings_panel(tmp_path, monkey
     result = W._sign_in(b, "https://www.youtube.com", grace=0.0, watch=False)   # phase 2
     assert result.ok
 
-    recorded = (tmp_path / P._IMPORTED_MARKER).read_text().split()
+    recorded = (tmp_path / P.MARKER).read_text().split()
     assert "youtube.com" in recorded
 
 
 def test_recording_a_sign_in_keeps_the_sites_already_there(tmp_path, monkeypatch, blocked):
-    import actions.grounding.web.profile_import as P
+    from actions.grounding.web import sessions as P
     from core import user_paths
     monkeypatch.setattr(user_paths, "browser_profile_dir", lambda: tmp_path)
-    (tmp_path / P._IMPORTED_MARKER).write_text("github.com\n")
+    (tmp_path / P.MARKER).write_text("github.com\n")
 
     b = FakeBrowser(walls=[""])
     blocked(b)
     W._sign_in(b, "https://www.youtube.com", grace=0.0, watch=False)
 
-    recorded = (tmp_path / P._IMPORTED_MARKER).read_text().split()
+    recorded = (tmp_path / P.MARKER).read_text().split()
     assert set(recorded) == {"github.com", "youtube.com"}
 
 
@@ -300,13 +300,13 @@ def test_the_watcher_gives_up_without_stranding_the_window(monkeypatch):
 
 
 def test_the_watcher_records_the_site_like_a_manual_confirm(monkeypatch, tmp_path):
-    import actions.grounding.web.profile_import as P
+    from actions.grounding.web import sessions as P
     from core import user_paths
     monkeypatch.setattr(user_paths, "browser_profile_dir", lambda: tmp_path)
     b = FakeBrowser(walls=[])
     monkeypatch.setattr(W, "_wall_or_signed_out", lambda _p: "")
     W._watch_until_signed_in(b, "https://www.youtube.com", timeout=1.0, poll=0.01)
-    assert "youtube.com" in (tmp_path / P._IMPORTED_MARKER).read_text()
+    assert "youtube.com" in (tmp_path / P.MARKER).read_text()
 
 
 def test_a_vanished_browser_ends_the_watch(monkeypatch):

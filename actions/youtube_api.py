@@ -253,10 +253,9 @@ def _youtube_api(params: dict) -> ToolResult:
             return ToolResult.failure(
                 "The YouTube API is switched off for this project, and the "
                 "eagle's browser is not signed in to YouTube either.",
-                guidance=("Two ways: call web_agency action='sign_in' with "
-                          f"{_LIKED_URL} so they sign in once, or enable "
-                          "YouTube Data API v3 in their Google Cloud console. "
-                          "Do not tell them their videos are private."))
+                guidance=(f"Call web_agency action='sign_in' with {_LIKED_URL}: "
+                          "a window opens, they sign in once, and it works from "
+                          "then on. Do not tell them their videos are private."))
         raise first_choice_failed
 
     except ApiNotEnabled as e:

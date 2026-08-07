@@ -363,26 +363,3 @@ def auth_domains_for(url: str) -> list[str]:
     return domains
 
 
-def login_remedy(url: str) -> str:
-    """The exact next step for a page that wants the user signed in.
-
-    Written as an instruction to the model rather than prose for the user,
-    because the failure this replaces was the eagle describing the problem and
-    handing the task back. It should be able to act on this without the user
-    having to know a command exists.
-    """
-    domains = auth_domains_for(url)
-    if not domains:
-        return ("Call web_agency action='sign_in' with this page's url so the "
-                "user can log in once.")
-    named = " ".join(domains)
-    extra = ""
-    if len(domains) > 1:
-        extra = (f" ({domains[1]} is included because that is where "
-                 f"{domains[0]}'s sign-in actually lives.)")
-    return (
-        f"Offer to fix this: call web_agency action='import_login' with "
-        f"domains='{named}' to copy the user's existing login across from "
-        f"their Chrome — tell them Chrome has to be closed for a moment "
-        f"first.{extra} If they would rather not, call action='sign_in' with "
-        f"this page's url instead and they can log in directly.")

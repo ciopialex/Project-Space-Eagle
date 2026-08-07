@@ -67,14 +67,13 @@ from actions.grounding.verify import act_and_verify
 from actions.grounding.web.consent import irreversible_reason
 from actions.grounding.web.grounder import WebGrounder
 from actions.grounding.web.handoff import (auth_domains_for,auth_domains_for, await_human,
-                                           cookie_wall_choice, login_remedy,
+                                           cookie_wall_choice,
                                            signed_out_reason, wall_reason)
 from actions.grounding.web.page import element_from, nodes_from_records, ref_of
 from actions.grounding.web.sense import PageSense
 from core.tool_result import ToolResult
 
-_ACTIONS = ("open", "look", "click", "type", "sign_in",
-            "import_login", "close")
+_ACTIONS = ("open", "look", "click", "type", "sign_in", "close")
 
 _NO_BROWSER_GUIDANCE = (
     "The eagle's browser could not start. Run "
@@ -145,35 +144,6 @@ def _current_url(page) -> str:
     except Exception:
         return ""
 
-
-def _import_login(browser, domains: list) -> ToolResult:
-    """Bring the named sites' logins across from the user's own Chrome.
-
-    The alternative to signing into each site inside the eagle's browser. Only
-    the sites named are imported — every other cookie is deleted from the copy
-    before the eagle's browser is ever pointed at it — so this is a property
-    the user can verify rather than a promise to behave. Importing the lot
-    would hand over their bank and their email to fetch a playlist.
-    """
-    from actions.grounding.web.profile_import import import_logins
-    from core import user_paths
-
-    # The browser must be down: it is about to have its profile replaced
-    # underneath it, and a running Chrome holds locks on the cookie store.
-    try:
-        browser.close()
-    except Exception:
-        pass
-
-    result = import_logins(list(domains or []),
-                           into=user_paths.browser_profile_dir())
-    if not result.ok:
-        return ToolResult.failure(result.detail, guidance=result.guidance)
-    return ToolResult.success(
-        result.detail + " The eagle is now signed in to those sites and will "
-        "stay signed in.",
-        imported=result.imported, dropped=result.dropped,
-        note=result.guidance)
 
 
 #: Which site currently has a sign-in window open, if any. Module-level for
@@ -370,66 +340,8 @@ def _clear_consent_walls(browser, grounder: WebGrounder) -> list[str]:
 #: A sign-in wall is resolvable by the eagle (import a session, or hand over
 #: the window once). A verification code or a human check is not — only the
 #: user can answer those, so they get the honest "I need you" and no remedy.
-#: URLs already repaired once this session. A wall the import did not clear -
-#: an expired Chrome session, a different Chrome profile, a site that wants a
-#: fresh password - will not clear on a second identical attempt either, and
-#: retrying spends the user's turn in a loop.
-_REPAIRED: set = set()
 
 
-def _auto_import(domains: list) -> bool:
-    """Copy the named sites' sessions across from Chrome. True if any arrived."""
-    from actions.grounding.web.profile_import import import_logins
-    from core import user_paths
-    try:
-        return bool(import_logins(list(domains),
-                                  into=user_paths.browser_profile_dir()).ok)
-    except Exception:
-        return False
-
-
-def _recover_signed_out(browser, url: str) -> bool:
-    """Fix a sign-in wall in place, without spending a turn asking.
-
-    The user's instruction, verbatim: "if I give it a command that implies
-    working on that site and it needs my login, it should automatically import
-    it without me saying it." Naming the task names the site, so this stays
-    inside the earlier ruling that only named sites are imported - the
-    ask-first turn bought nothing and cost the interaction its flow.
-
-    Still narrow: only the auth domains for THIS url, never the whole profile.
-    youtube.com pulls google.com and accounts.google.com because that is where
-    its sign-in actually lives, and importing youtube.com alone copies cookies
-    that prove nothing.
-
-    The page is re-read afterwards. Without that the eagle would go on to
-    report the signed-out page it already had, having fixed the problem and
-    not looked again.
-    """
-    if not url or url in _REPAIRED:
-        return False
-    _REPAIRED.add(url)
-
-    # The browser MUST come down first. The import replaces the profile
-    # directory, and a running Chromium does not re-read cookies from disk -
-    # so importing underneath a live browser lands 62 correct cookies on disk
-    # and changes nothing at all about the session. Found by running the real
-    # task and watching it report the page still signed out with a perfect
-    # profile sitting next to it.
-    try:
-        browser.close()
-    except Exception:
-        pass
-
-    if not _auto_import(auth_domains_for(url)):
-        return False
-
-    try:
-        browser.start()
-        _open_and_settle(browser, url)
-    except Exception:
-        return False
-    return True
 
 
 #: How long the eagle will keep an eye on an open sign-in window. Generous on
@@ -497,52 +409,25 @@ def _watch_until_signed_in(browser, url: str, *,
 
 
 def _record_signed_in(url: str) -> None:
-    """Note that this site now has a session, for the Settings panel to show.
-
-    The panel lists sites from the import marker, so a site the user signed
-    into BY HAND through the window never appeared there - the list answered
-    "what did we import" while claiming to answer "what can the eagle use".
-    Appended, never replaced: the two ways of getting a session are equal
-    citizens and neither should erase the other.
-    """
-    from actions.grounding.web.profile_import import _IMPORTED_MARKER, _normalise
+    """Note that this site now has a session, for the Settings panel."""
+    from actions.grounding.web import sessions
     from core import user_paths
-
-    domain = _normalise(url)
-    if not domain:
-        return
-    try:
-        marker = user_paths.browser_profile_dir() / _IMPORTED_MARKER
-        existing = set(marker.read_text().split()) if marker.exists() else set()
-        if domain in existing:
-            return
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("\n".join(sorted(existing | {domain})))
-    except Exception:
-        pass          # a bookkeeping note must never fail a completed sign-in
+    sessions.record(user_paths.browser_profile_dir(), url)
 
 
 def _remedy_for(url: str) -> str:
-    """What to tell the model to do about a sign-in wall on `url`.
+    """What to do about a sign-in wall. There is one answer.
 
-    Before the eagle has tried anything: import the user's session, silently.
-    After an import has already been tried on this url and the wall survived
-    it: stop recommending it. Measured on the real profile, Google's session
-    does not survive being lifted into another profile - every cookie name
-    transfers and decrypts, the browser loads SID/SAPISID/__Secure-1PSID, and
-    Google reports signed out anyway and deletes LOGIN_INFO. Chrome binds
-    those sessions to the profile that created them.
-
-    Repeating advice that has just been shown not to work is how an assistant
-    loses someone's trust. The window is the honest answer at that point.
+    There used to be three - import the session from Chrome, sign in through
+    the window, or reach for an API - and two of them did not work. Copying a
+    Chrome session cannot work for Google at all, and while failing it deleted
+    a login the user had just made by hand. Offering a menu of routes, two of
+    which quietly fail, is worse than offering one that works.
     """
-    if url in _REPAIRED:
-        return ("Their existing browser session could not be reused for this "
-                "site — it is tied to their own browser and the site rejects "
-                "a copy. Call web_agency action='sign_in' with this url: a "
-                "window opens, they sign in once, and it stays signed in from "
-                "then on. Do not offer to import the login again.")
-    return login_remedy(url)
+    return ("Call web_agency action='sign_in' with this url: a window opens, "
+            "the user signs in once, and the eagle stays signed in to that "
+            "site from then on. Do not suggest they open their own browser, "
+            "and never say their data is private.")
 
 
 def _open_and_settle(browser, url: str) -> list:
@@ -1195,12 +1080,6 @@ def _web_agency(params: dict, player: Any, browser: Any) -> ToolResult:
         cleared = _clear_consent_walls(browser, WebGrounder(browser.page))
         _reassert_target(browser, url, cleared)
         result = _look(browser, want_pixels=False)
-        # A sign-in wall is not a question to put to the user. Bring their
-        # existing session across and look again, so the turn ends with the
-        # page they asked for instead of an errand for them to run.
-        if _is_login_wall(str(result.data.get("needs_human") or "")) and \
-                _recover_signed_out(browser, url):
-            result = _look(browser, want_pixels=False)
         if cleared:
             note = ("Declined tracking on the consent wall ("
                     + ", ".join(repr(c) for c in cleared) + ") and carried on.")
@@ -1219,11 +1098,6 @@ def _web_agency(params: dict, player: Any, browser: Any) -> ToolResult:
             url = "https://" + url
         return _sign_in(browser, url)
 
-    if action == "import_login":
-        raw = params.get("domains") or params.get("url") or ""
-        domains = raw if isinstance(raw, list) else [
-            d for d in str(raw).replace(",", " ").split() if d]
-        return _import_login(browser, domains)
 
     if action == "look":
         return _look(browser, want_pixels=bool(params.get("want_pixels")))

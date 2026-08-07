@@ -513,19 +513,18 @@ TOOL_DECLARATIONS = [
             "REFUSES irreversible actions (paying, ordering, deleting) and says why "
             "— relay that and let the user decide. Declines cookie walls itself. "
             "STOPS and ASKS for a verification code or a 'not a robot' check. "
-            "If a site needs the user signed in, it handles that itself: it brings "
-            "their session across from Chrome, or opens a window for them to log in "
-            "once with action='sign_in'. NEVER tell the user to open their own "
-            "browser, and NEVER claim you cannot reach their account."
+            "If a site needs the user signed in, call action='sign_in' with that "
+            "url: a window opens, they sign in ONCE, and it stays signed in. That "
+            "is the only way in - never tell the user to open their own browser, "
+            "and never claim you cannot reach their account."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "open | look | click | type | sign_in | import_login (copy named sites' logins across from the user's Chrome) | close"},
+                "action":      {"type": "STRING", "description": "open | look | click | type | sign_in | close"},
                 "url":         {"type": "STRING", "description": "URL for the open action"},
                 "description": {"type": "STRING", "description": "Which control, in plain words: 'the Sign in button', 'the Email field'. Use a name from the last look."},
                 "text":        {"type": "STRING", "description": "Text to type, for the type action"},
-                "domains":     {"type": "STRING", "description": "For import_login: the sites to bring across, e.g. 'youtube.com google.com'. ONLY these are imported."},
                 "want_pixels": {"type": "BOOLEAN", "description": "Force a screenshot on look, when the structural read is not enough"},
                 "timeout":     {"type": "NUMBER", "description": "Seconds to wait for the user during sign_in (default 300)"},
                 "domains":     {"type": "STRING", "description": "For import_login: the sites to bring across, e.g. 'youtube.com google.com'. ONLY these are imported."},

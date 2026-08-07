@@ -176,8 +176,11 @@ def test_a_disabled_api_is_not_blamed_on_the_users_sign_in(monkeypatch):
 
     r = Y.youtube_api({"action": "liked"})
     assert r.ok is False
-    assert "sign in" not in r.message.lower(), "blamed the user's account again"
-    assert "console" in (r.message + r.guidance).lower(), "no link to the fix"
+    # It must say what is actually wrong — the API is off, their account is
+    # fine — and then name the ONE way in, not a menu of routes.
+    assert "switched off" in r.message.lower()
+    assert "sign_in" in r.guidance
+    assert "private" in r.guidance.lower(), "must still forbid the privacy lie"
 
 
 def test_a_genuinely_unscoped_token_still_says_reconnect(monkeypatch):

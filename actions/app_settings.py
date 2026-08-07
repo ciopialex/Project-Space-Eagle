@@ -97,11 +97,8 @@ def browser_sessions() -> list[str]:
     everywhere — there was no way to learn which sites the eagle could already
     use except by asking it to use one and seeing what happened.
     """
-    try:
-        raw = (_browser_profile() / ".aethelark-imported").read_text()
-    except Exception:
-        return []
-    return sorted({d.strip() for d in raw.splitlines() if d.strip()})
+    from actions.grounding.web import sessions
+    return sessions.signed_in_sites(_browser_profile())
 
 
 def snapshot() -> dict:

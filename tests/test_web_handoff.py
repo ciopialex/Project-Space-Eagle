@@ -314,16 +314,6 @@ def test_two_part_suffixes_are_not_truncated_to_nonsense():
     assert auth_domains_for("https://www.emag.ro/x") == ["emag.ro"]
 
 
-def test_the_remedy_names_the_command_and_the_domains():
-    from actions.grounding.web.handoff import login_remedy
-    remedy = login_remedy("https://www.youtube.com/feed/liked")
-    assert "import_login" in remedy
-    assert "youtube.com" in remedy and "google.com" in remedy
-    # Chrome being closed is a precondition the user must be told about.
-    assert "closed" in remedy.lower()
-    # And there must be a way out for someone who declines the import.
-    assert "sign_in" in remedy
-
 
 def test_a_wall_only_the_user_can_answer_gets_no_false_remedy():
     """The eagle can resolve a sign-in. It cannot resolve a 2FA code or a
