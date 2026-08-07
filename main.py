@@ -56,6 +56,7 @@ from actions.youtube_video     import youtube_video
 from actions.desktop           import desktop_control
 from actions.browser_control   import browser_control
 from actions.web_agency        import web_agency
+from actions.youtube_api       import youtube_api
 from actions.file_controller   import file_controller
 from actions.code_helper       import code_helper
 from actions.dev_agent         import dev_agent
@@ -473,6 +474,36 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "youtube_api",
+        "description": (
+            "The user's OWN YouTube account, read directly through the Google "
+            "account they already connected to Aethelark — no browser, no "
+            "sign-in, roughly 20x faster than loading the page. "
+            "USE THIS FIRST for: their liked videos, their playlists, their "
+            "subscriptions. action='liked' answers 'what did I like recently' "
+            "and 'play the song I liked last night'. "
+            "It CANNOT read watch history — Google removed that API in 2016 — "
+            "so for history use web_agency on youtube.com/feed/history. "
+            "It does not search YouTube and does not play anything: use "
+            "youtube_video to play a video once you know its name."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["liked", "subscriptions", "playlists", "history"],
+                    "description": "Which part of their account to read.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many to return (default 5, max 10). "
+                                   "Keep it small — this is spoken aloud.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "web_agency",
         "description": (
             "Uses a website the way a person would, in the eagle's OWN browser — "
@@ -887,6 +918,9 @@ TOOL_SPECS = {
     # their browser. Non-exclusive on purpose — this is the tool that can run
     # while the user is doing something else.
     "web_agency": ToolSpec(reads=["web"], priority=1, timeout_s=90.0),
+    # One HTTPS call. Non-exclusive and short: it touches nothing the user can
+    # see and has no reason to hold a slot.
+    "youtube_api": ToolSpec(reads=["net"], priority=1, timeout_s=20.0),
     "file_controller": ToolSpec(writes=["file"], priority=1),
     "send_message": ToolSpec(writes=["desktop"], exclusive=True, priority=1, timeout_s=130.0),
     "reminder": ToolSpec(writes=["system"], priority=1),
@@ -1279,6 +1313,10 @@ class AethelarkLive:
 
             elif name == "browser_control":
                 r = await loop.run_in_executor(self._tool_executor, lambda: browser_control(parameters=args, player=self.ui))
+                result = r or "Done."
+
+            elif name == "youtube_api":
+                r = await loop.run_in_executor(self._tool_executor, lambda: youtube_api(parameters=args))
                 result = r or "Done."
 
             elif name == "web_agency":

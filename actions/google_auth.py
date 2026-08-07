@@ -53,6 +53,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/calendar.readonly",     # read calendars/availability
     "https://www.googleapis.com/auth/contacts.readonly",     # resolve people (People API)
     "https://www.googleapis.com/auth/tasks",                 # Google Tasks
+    # Read-only, and it replaces an entire class of browser work. A Google
+    # session cannot be lifted into the eagle's browser - Chrome binds it to
+    # the profile that created it - so the user's own liked videos, playlists
+    # and subscriptions are reachable through the API or not at all.
+    "https://www.googleapis.com/auth/youtube.readonly",      # own playlists/likes
 ]
 
 
