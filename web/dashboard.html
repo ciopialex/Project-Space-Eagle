@@ -975,11 +975,11 @@ draw();
     // interface, only a voice command you had to know to say. This row shows
     // which sites it can already use and opens a real window to add one.
     + '<div class="set-sec"><div class="lbl">Sites the eagle can use</div>'
-    +   '<div class="set-row"><div class="ic">\u25C9</div><div class="tt">'
+    +   '<div class="set-row"><div class="ic">◉</div><div class="tt">'
     +     '<div class="t">Signed in <span class="set-badge off" id="set-br-badge">NONE</span></div>'
     +     '<div class="d" id="set-br-d">The eagle browses in its own window, so being '
     +       'logged in on Chrome does not sign it in.</div></div>'
-    +     '<button class="set-mini" id="set-br-btn">Sign in\u2026</button></div></div>'
+    +     '<button class="set-mini" id="set-br-btn">Sign in…</button></div></div>'
 
     + '<div class="set-sec"><div class="lbl">Startup</div>'
     +   '<div class="set-row"><div class="ic">\u23fb</div><div class="tt">'
@@ -1058,7 +1058,7 @@ draw();
       // LINKED badge here is true and misleading — they would only find out
       // by asking for a YouTube thing and being told to reconnect.
       gb.textContent = 'PARTIAL'; gb.className = 'set-badge off';
-      gd.textContent = (g.email || 'Account connected') + ' \u2014 YouTube not granted yet';
+      gd.textContent = (g.email || 'Account connected') + ' — YouTube not granted yet';
       gbtn.textContent = 'Reconnect'; gbtn.className = 'set-mini solid'; gbtn.dataset.act = 'conn';
     } else if (g.connected) {
       gb.textContent = 'LINKED'; gb.className = 'set-badge';
@@ -1082,7 +1082,7 @@ draw();
       if (sites.length) {
         brb.textContent = String(sites.length); brb.className = 'set-badge';
         // Named, not counted: "3 sites" tells the user nothing they can act on.
-        brd.textContent = sites.join(' \u00B7 ');
+        brd.textContent = sites.join(' · ');
       } else {
         brb.textContent = 'NONE'; brb.className = 'set-badge off';
         brd.textContent = 'The eagle browses in its own window, so being logged '
