@@ -30,7 +30,7 @@ WhatsApp, swarm, browser) works normally.
      `.../auth/gmail.readonly`, `.../auth/calendar.events`,
      `.../auth/calendar.readonly`, `.../auth/contacts.readonly`, `.../auth/tasks`.
    - **Test users** → add your own Google address
-     (`shennyonthebeat@gmail.com`). Unverified apps work for you + up to 100 test
+     (`you@example.com`). Unverified apps work for you + up to 100 test
      users — enough for personal use; no Google verification needed.
 
 4. **Credentials** → Create credentials → **OAuth client ID**:

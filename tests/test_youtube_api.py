@@ -171,7 +171,7 @@ def test_a_disabled_api_is_not_blamed_on_the_users_sign_in(monkeypatch):
     monkeypatch.setattr(Y, "_token", lambda: "good-token")
 
     def not_configured(url, params=None, token=None):
-        raise Y.ApiNotEnabled("project 145572196912")
+        raise Y.ApiNotEnabled("project 000000000000")
     monkeypatch.setattr(Y, "_get", not_configured)
 
     r = Y.youtube_api({"action": "liked"})
@@ -265,16 +265,16 @@ def test_every_action_gets_the_disabled_api_message(monkeypatch):
     """`except (ApiNotEnabled, NeedsReconnect)` was followed by a second
     `except ApiNotEnabled` that could never be reached, and the first one
     re-raised for any action but 'liked'. So subscriptions and playlists
-    surfaced "The YouTube tool hit an unexpected error: project 145572196912"
+    surfaced "The YouTube tool hit an unexpected error: project 000000000000"
     — an internal string, no remedy, straight to the user."""
     monkeypatch.setattr(Y, "_token", lambda: "tok")
     monkeypatch.setattr(Y, "_get", lambda *a, **k: (_ for _ in ()).throw(
-        Y.ApiNotEnabled("project 145572196912")))
+        Y.ApiNotEnabled("project 000000000000")))
     for action in ("subscriptions", "playlists"):
         r = Y.youtube_api({"action": action})
         assert "unexpected error" not in r.message.lower(), action
         assert "switched off" in r.message.lower(), action
-        assert "145572196912" in (r.message + r.guidance), (
+        assert "000000000000" in (r.message + r.guidance), (
             f"{action}: dropped the project id, so the user cannot find the toggle")
 
 

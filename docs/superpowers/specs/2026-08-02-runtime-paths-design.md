@@ -25,8 +25,8 @@ BASE_DIR == USER_DIR, so the curl install path behaves exactly as before."*
 **That is false**, and it is probably why the module sat unwired — it reads as
 safe. Measured on the development machine:
 
-    base_dir()   /home/shennyonthebeat/Projects/Space-Eagle
-    user_dir()   /home/shennyonthebeat/.local/share/aethelark
+    base_dir()   /home/you/Projects/Space-Eagle
+    user_dir()   /home/you/.local/share/aethelark
     same?        False
 
 `user_dir()` never returns the checkout on any platform. Today's users — every

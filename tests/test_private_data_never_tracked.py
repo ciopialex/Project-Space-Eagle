@@ -122,3 +122,74 @@ def test_memory_store_is_created_owner_only():
     from memory import memory_manager as mm
 
     assert mm._FILE_MODE == 0o600
+
+
+# ── Identifiers that belong to the person, not the project ─────────────────
+# The repo is PUBLIC. Runtime data was already guarded above; these are the
+# things that leak by being typed into source and docs rather than written by
+# the app. Two of them were added by an assistant pasting a real error message
+# into a comment and a test.
+
+import re  # noqa: E402
+
+PERSONAL_PATTERNS = {
+    "a real email address":        r"[\w.+-]+@(?:gmail|outlook|yahoo|proton)\.[a-z]+",
+    "an absolute home directory":  r"/home/[a-z][\w-]+/",
+    "a Google Cloud project id":   r"\bproject[ =:]+\d{9,}\b",
+}
+
+#: Files that legitimately contain an example of one of these. Each needs a
+#: reason, and the example must be obviously fake.
+PERSONAL_ALLOWED = {
+    "tests/test_private_data_never_tracked.py",   # the patterns themselves
+}
+
+
+def _is_placeholder(found: str) -> bool:
+    """Is this an instruction to the reader rather than somebody's real data?
+
+    Kept explicit rather than clever. A guard that quietly accepts too much is
+    the same failure as no guard, so each shape here is one a human would read
+    as "put your own value in".
+    """
+    if re.match(r"(you|user|someone|example|test)@", found):
+        return True
+    if found.startswith(("/home/you/", "/home/user/", "/home/username/")):
+        return True
+    if "example" in found:
+        return True
+    digits = re.sub(r"\D", "", found)
+    # A project id of all one digit, or the classic 1234..., is nobody's.
+    return bool(digits) and (len(set(digits)) == 1 or digits.startswith("12345"))
+
+
+def _tracked_text_files():
+    out = _git("ls-files").stdout.split("\n")
+    for rel in out:
+        if not rel or rel in PERSONAL_ALLOWED:
+            continue
+        path = REPO / rel
+        if not path.is_file() or path.suffix in (".png", ".jpg", ".ico", ".ttf"):
+            continue
+        try:
+            yield rel, path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+
+def test_no_personal_identifiers_are_tracked():
+    """A public repo. An email invites spam, a home path names the user, and a
+    Cloud project id points at their billing account."""
+    hits = []
+    for rel, text in _tracked_text_files():
+        for label, pattern in PERSONAL_PATTERNS.items():
+            for m in re.finditer(pattern, text):
+                found = m.group(0)
+                # Obvious placeholders. Kept narrow on purpose: "you@" and
+                # "/home/you/" read as instructions to the reader, not as
+                # somebody's actual address or account.
+                if _is_placeholder(found):
+                    continue
+                hits.append(f"{rel}: {label} — {found[:48]}")
+    assert hits == [], (
+        "these are published on a public repo:\n  " + "\n  ".join(sorted(set(hits))[:25]))

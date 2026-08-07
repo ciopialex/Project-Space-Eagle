@@ -110,7 +110,7 @@ Below are the 13 key behavioral challenges to solve. Rather than dictating rigid
 ---
 
 ### Challenge J: Autonomous Visual Web Verification Coupling
-* **Desired Behavior:** When a sub-agent modifies web code (HTML/CSS/JS), Eagle should automatically trigger [actions/browser_control.py](file:///home/shennyonthebeat/Projects/Space-Eagle/actions/browser_control.py) (Playwright / Chromium) to load the page, capture a screenshot, and feed the visual output back to both the agent and HUD for visual verification.
+* **Desired Behavior:** When a sub-agent modifies web code (HTML/CSS/JS), Eagle should automatically trigger [actions/browser_control.py](file:///home/you/Projects/Space-Eagle/actions/browser_control.py) (Playwright / Chromium) to load the page, capture a screenshot, and feed the visual output back to both the agent and HUD for visual verification.
 * **Open-Source Hints & References:**
   * Reference **Playwright** automated visual assertions and **AgentZero** computer-use visual feedback loops.
 
@@ -131,7 +131,7 @@ Below are the 13 key behavioral challenges to solve. Rather than dictating rigid
 ---
 
 ### Challenge M: Dashboard Web Real-Time Telemetry Streaming
-* **Desired Behavior:** The local web control panel in [dashboard/server.py](file:///home/shennyonthebeat/Projects/Space-Eagle/dashboard/server.py) should stream live sub-agent thought trees, terminal logs, and active Git Worktree diffs to web clients over Server-Sent Events (SSE) or WebSockets.
+* **Desired Behavior:** The local web control panel in [dashboard/server.py](file:///home/you/Projects/Space-Eagle/dashboard/server.py) should stream live sub-agent thought trees, terminal logs, and active Git Worktree diffs to web clients over Server-Sent Events (SSE) or WebSockets.
 
 ---
 
@@ -139,11 +139,11 @@ Below are the 13 key behavioral challenges to solve. Rather than dictating rigid
 
 To assist Fable5 in correlating behaviors to the codebase, here is the target mapping of files to modify or create:
 
-* **[actions/agent_delegation.py](file:///home/shennyonthebeat/Projects/Space-Eagle/actions/agent_delegation.py):** Upgrade to persistent PTY session registry, `pyte` virtual terminal screen parsing, and auto-approval input injection.
+* **[actions/agent_delegation.py](file:///home/you/Projects/Space-Eagle/actions/agent_delegation.py):** Upgrade to persistent PTY session registry, `pyte` virtual terminal screen parsing, and auto-approval input injection.
 * **[NEW] `actions/swarm_orchestrator.py`:** Create Git Worktree partition manager (`git worktree add`), real-time Blackboard telemetry sync (`.space_eagle/swarm_state.json`), and file-locking engine.
-* **[actions/screen_processor.py](file:///home/shennyonthebeat/Projects/Space-Eagle/actions/screen_processor.py):** Upgrade to hardware-accelerated video frame capture (VAAPI / NVENC PyAV integration).
-* **[ui.py](file:///home/shennyonthebeat/Projects/Space-Eagle/ui.py):** Upgrade `PillWidget` rendering with GPU shader overlays, audio-reactive FFT breathing, and vectorized path scaling.
-* **[dashboard/server.py](file:///home/shennyonthebeat/Projects/Space-Eagle/dashboard/server.py):** Add SSE / WebSocket real-time swarm telemetry streaming.
+* **[actions/screen_processor.py](file:///home/you/Projects/Space-Eagle/actions/screen_processor.py):** Upgrade to hardware-accelerated video frame capture (VAAPI / NVENC PyAV integration).
+* **[ui.py](file:///home/you/Projects/Space-Eagle/ui.py):** Upgrade `PillWidget` rendering with GPU shader overlays, audio-reactive FFT breathing, and vectorized path scaling.
+* **[dashboard/server.py](file:///home/you/Projects/Space-Eagle/dashboard/server.py):** Add SSE / WebSocket real-time swarm telemetry streaming.
 
 ---
 
@@ -154,7 +154,7 @@ To assist Fable5 in correlating behaviors to the codebase, here is the target ma
 3. **Phase 3:** Build `actions/swarm_orchestrator.py` with `git worktree` isolation and `.space_eagle/swarm_state.json` real-time blackboard sync.
 4. **Phase 4:** Add real-time human interjection traps (`Ctrl+C` PTY interrupts) and self-healing agent circuit breakers.
 5. **Phase 5:** Connect the delegated Reviewer Agent for automated worktree branch verification and git merges.
-6. **Phase 6:** Integrate browser visual verification coupling with [actions/browser_control.py](file:///home/shennyonthebeat/Projects/Space-Eagle/actions/browser_control.py).
+6. **Phase 6:** Integrate browser visual verification coupling with [actions/browser_control.py](file:///home/you/Projects/Space-Eagle/actions/browser_control.py).
 7. **Phase 7:** Elevate `ui.py` with GPU shader layers and resolution-independent vector rendering.
 
 Good luck, Fable. You have the full context, strategic vision, ecosystem references, and target file mapping. Take the wheel!

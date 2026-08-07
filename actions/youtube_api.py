@@ -281,7 +281,7 @@ def _youtube_api(params: dict) -> ToolResult:
         # The page fallback is for `liked` only - it is the one with a page
         # worth reading. Every OTHER action still gets a real answer below,
         # rather than being re-raised into the generic handler, which is what
-        # leaked "unexpected error: project 145572196912" to the user.
+        # leaked "unexpected error: project 000000000000" to the user.
         if action == "liked":
             titles = _liked_from_page(limit)
             if titles is not SIGNED_OUT:
