@@ -412,6 +412,12 @@ def get_desktop_stats() -> str:
         f"  Path    : {desktop}"
     )
 
+#: The actions this tool implements. Named in one place so the "unknown
+#: action" message cannot drift away from what actually exists.
+_ACTIONS = ("wallpaper", "wallpaper_url", "current_wallpaper", "organize",
+            "clean", "list", "stats", "task")
+
+
 def desktop_control(
     parameters: dict = None,
     response=None,
@@ -473,8 +479,18 @@ def desktop_control(
 
         else:
             if action:
-                code = _ask_gemini_for_desktop_action(action)
-                return _execute_generated_code(code, player=player)
+                # This used to hand the unrecognised string to Gemini and exec
+                # the result. A typo - or an action name the model invented -
+                # silently became code execution, and the caller could not tell
+                # "no such action" from "it ran something". Found with
+                # action='list_windows', which generated a Windows-only
+                # pyautogui call and reported its AttributeError as the answer.
+                #
+                # Code generation is still here; it just has to be asked for.
+                return (f"'{action}' is not a desktop action. Use one of: "
+                        f"{', '.join(_ACTIONS)}. For anything else, pass "
+                        "action='task' with a plain-English description and it "
+                        "will be worked out from there.")
             return "No action or task specified."
 
     except Exception as e:
