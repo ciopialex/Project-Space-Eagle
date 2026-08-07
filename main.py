@@ -506,32 +506,17 @@ TOOL_DECLARATIONS = [
     {
         "name": "web_agency",
         "description": (
-            "Uses a website the way a person would, in the eagle's OWN browser — "
-            "reads what controls the page actually has, then clicks and types by "
-            "name. Use this for working INSIDE a site: pressing buttons, filling "
-            "fields, navigating an interface the eagle has never seen. Runs in the "
-            "background, so it does not take over the user's screen. "
-            "Works on pages in English, Romanian and Spanish; on other languages it "
-            "errs toward asking the user before acting. "
-            "REFUSES irreversible actions (paying, ordering, deleting an account, signing) "
-            "and reports why, so the model must relay that to the user and let them decide. "
-            "Clears cookie/consent walls itself by DECLINING tracking, never accepting. "
-            "When a site requires the user to be signed in, call action='sign_in' with "
-            "that url: it puts the eagle's browser on screen so they can log in once, "
-            "then hides it again and the session persists for good. The eagle's browser "
-            "is separate from the user's Chrome ON PURPOSE, so their being logged in "
-            "there does not sign the eagle in. NEVER tell the user to open their own "
-            "browser and look for themselves, and never claim you lack access to their "
-            "account — call sign_in. "
-            "As a faster alternative to signing in site by site, action='import_login' "
-            "copies the user's EXISTING logins across from their own Chrome — but ONLY "
-            "for the sites they name, never all of them. Chrome must be closed first. "
-            "For Google sites (YouTube, Gmail, Drive) import google.com alongside them, "
-            "because that is where the sign-in actually lives. "
-            "STOPS and ASKS for a verification code or a 'not a robot' check, which "
-            "only the user can answer. "
-            "Use browser_control instead when the user just wants a page opened in "
-            "THEIR browser with their own logins."
+            "Uses a website the way a person would, in the eagle's OWN browser: "
+            "reads the page's real controls, then clicks and types them by name. "
+            "For anything INSIDE a site. Runs in the background, never takes over "
+            "the user's screen. Reads English, Romanian and Spanish pages. "
+            "REFUSES irreversible actions (paying, ordering, deleting) and says why "
+            "— relay that and let the user decide. Declines cookie walls itself. "
+            "STOPS and ASKS for a verification code or a 'not a robot' check. "
+            "If a site needs the user signed in, it handles that itself: it brings "
+            "their session across from Chrome, or opens a window for them to log in "
+            "once with action='sign_in'. NEVER tell the user to open their own "
+            "browser, and NEVER claim you cannot reach their account."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -540,7 +525,6 @@ TOOL_DECLARATIONS = [
                 "url":         {"type": "STRING", "description": "URL for the open action"},
                 "description": {"type": "STRING", "description": "Which control, in plain words: 'the Sign in button', 'the Email field'. Use a name from the last look."},
                 "text":        {"type": "STRING", "description": "Text to type, for the type action"},
-                "timeout":     {"type": "NUMBER", "description": "Seconds to wait for the user during sign_in (default 300)"},
                 "domains":     {"type": "STRING", "description": "For import_login: the sites to bring across, e.g. 'youtube.com google.com'. ONLY these are imported."},
                 "want_pixels": {"type": "BOOLEAN", "description": "Force a screenshot on look, when the structural read is not enough"},
                 "timeout":     {"type": "NUMBER", "description": "Seconds to wait for the user during sign_in (default 300)"},
