@@ -61,26 +61,6 @@ def _normalize_url(url: str) -> str:
     return "https://" + url
 
 
-def _user_agent() -> str:
-    if _OS == "Windows":
-        return (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        )
-    if _OS == "Darwin":
-        return (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        )
-    return (
-        "Mozilla/5.0 (X11; Linux x86_64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    )
-
-
 _AUTOMATION_BASE = Path.home() / ".aethelark_profiles"
 _LEGACY_AUTOMATION_BASE = Path.home() / ".jarvis_profiles"
 
@@ -1023,10 +1003,6 @@ class _BrowserSession:
             return f"Page reloaded: {page.url}"
         except Exception as e:
             return f"Reload error: {e}"
-
-    async def close_browser(self) -> str:
-        await self._async_close()
-        return f"{self.browser_name} closed."
 
 class _SessionRegistry:
     """Tüm aktif tarayıcı oturumlarını yönetir."""

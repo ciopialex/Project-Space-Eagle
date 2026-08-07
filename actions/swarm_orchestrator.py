@@ -102,25 +102,6 @@ class Blackboard:
             del s["decisions"][:-100]
         self.update(m)
 
-    def claim_file(self, agent: str, rel_path: str) -> bool:
-        result = {}
-        def m(s):
-            owner = s["file_claims"].get(rel_path)
-            if owner and owner["agent"] != agent:
-                result["ok"] = False
-            else:
-                s["file_claims"][rel_path] = {"agent": agent, "ts": time.time()}
-                result["ok"] = True
-        self.update(m)
-        return result["ok"]
-
-    def release_file(self, agent: str, rel_path: str):
-        def m(s):
-            owner = s["file_claims"].get(rel_path)
-            if owner and owner["agent"] == agent:
-                del s["file_claims"][rel_path]
-        self.update(m)
-
     # -------------------------------------------------------- lessons (wisdom)
     # A caught error becomes a SHARED, DURABLE lesson so no agent repeats it —
     # "one agent's scar vaccinates the swarm." Kept in a SEPARATE lessons.json so

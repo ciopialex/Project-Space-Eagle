@@ -308,12 +308,5 @@ AGENT_ALIASES = {
     "kimi": "kimi",
 }
 
-def resolve_agent_key(name: str) -> str:
-    """Normalize user voice inputs ('claude', 'cloud', 'antigravity') to registry keys."""
-    if not name:
-        return ""
-    clean = name.strip().lower().replace(" ", "_")
-    return AGENT_ALIASES.get(clean, clean)
-
 for _key, _adapter in AGENT_REGISTRY.items():
     _adapter.registry_key = _key

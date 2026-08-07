@@ -77,21 +77,6 @@ def _load_client_secret() -> str:
         return ""
 
 
-def set_client_secret(secret: str) -> bool:
-    """Persist the Desktop client secret (required by Google's token endpoint)."""
-    secret = (secret or "").strip()
-    if not secret:
-        return False
-    try:
-        cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
-    except Exception:
-        cfg = {}
-    cfg["google_client_secret"] = secret
-    CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
-    return True
-
-
 def set_client_id(client_id: str) -> bool:
     """Persist the Google OAuth Desktop client ID into config (merge-safe)."""
     client_id = (client_id or "").strip()

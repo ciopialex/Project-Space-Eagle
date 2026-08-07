@@ -724,11 +724,6 @@ class MetricBar(QWidget):
         self.setFixedHeight(38)
         self.setMinimumWidth(80)
 
-    def set_value(self, pct: float, text: str):
-        self._value = max(0.0, min(100.0, pct))
-        self._text  = text
-        self.update()
-
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -2206,12 +2201,6 @@ class PillWidget(QFrame):
             self.target_color = QColor("#3B82F6")
         self.update()
 
-    def set_swarm_status(self, working: int = 0, needs_you: int = 0, total: int = 0):
-        """Ambient swarm readout for the collapsed pill in HARDCORE — show it
-        even from across the room. Pass total=0 to clear back to normal states."""
-        self._swarm = {"working": working, "needs_you": needs_you, "total": total} if total else None
-        self.update()
-
     def set_audio_level(self, level: float):
         """Voice envelope (0..1) from the TTS stream — drives glow breathing."""
         self._audio_level = max(self._audio_level, min(max(level, 0.0), 1.0))
@@ -2225,58 +2214,6 @@ class PillWidget(QFrame):
             p.addRoundedRect(rect, rect.height() / 2, rect.height() / 2)
             self._capsule_path_cache = (key, p)
         return self._capsule_path_cache[1]
-
-    def _logo_layers(self, pulse_col: QColor):
-        """(blurred silver base, blurred glow mask for pulse_col).
-
-        Visually equivalent to the old per-frame tint+blur composite, but
-        the expensive PIL Gaussian blur now runs once per layer instead of
-        33 times per second: pulse intensity is applied at draw time via
-        painter opacity (radial alpha scales linearly, so the result is
-        identical).
-        """
-        from PyQt6.QtGui import QImage
-        img_w = self.logo_image.width()
-        img_h = self.logo_image.height()
-
-        if self._logo_base_img is None:
-            base = QImage(img_w, img_h, QImage.Format.Format_ARGB32_Premultiplied)
-            base.fill(Qt.GlobalColor.transparent)
-            tp = QPainter(base)
-            tp.setRenderHint(QPainter.RenderHint.Antialiasing)
-            tp.drawImage(0, 0, self.logo_image)
-            tp.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-            logo_grad = QLinearGradient(0, 0, 0, img_h)
-            logo_grad.setColorAt(0.0, QColor(229, 229, 234, 225))
-            logo_grad.setColorAt(0.5, QColor(200, 200, 208, 195))
-            logo_grad.setColorAt(1.0, QColor(176, 176, 180, 210))
-            tp.setBrush(QBrush(logo_grad))
-            tp.setPen(Qt.PenStyle.NoPen)
-            tp.drawRect(0, 0, img_w, img_h)
-            tp.end()
-            self._logo_base_img = _make_blurred_logo_image(base, blur_radius=1.1)
-
-        ckey = (pulse_col.red() // 8, pulse_col.green() // 8, pulse_col.blue() // 8)
-        glow = self._logo_glow_cache.get(ckey)
-        if glow is None:
-            g = QImage(img_w, img_h, QImage.Format.Format_ARGB32_Premultiplied)
-            g.fill(Qt.GlobalColor.transparent)
-            tp = QPainter(g)
-            tp.setRenderHint(QPainter.RenderHint.Antialiasing)
-            tp.drawImage(0, 0, self.logo_image)
-            tp.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-            state_glow = QRadialGradient(img_w / 2, img_h / 2, img_w * 0.4)
-            state_glow.setColorAt(0.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), 255))
-            state_glow.setColorAt(1.0, QColor(pulse_col.red(), pulse_col.green(), pulse_col.blue(), 0))
-            tp.setBrush(QBrush(state_glow))
-            tp.setPen(Qt.PenStyle.NoPen)
-            tp.drawRect(0, 0, img_w, img_h)
-            tp.end()
-            glow = _make_blurred_logo_image(g, blur_radius=1.1)
-            if len(self._logo_glow_cache) >= 48:
-                self._logo_glow_cache.pop(next(iter(self._logo_glow_cache)))
-            self._logo_glow_cache[ckey] = glow
-        return self._logo_base_img, glow
 
     def update_pulse(self):
         # Advance the live-indicator animation (waveform / dots)
@@ -4717,11 +4654,6 @@ class MainWindow(QMainWindow):
                 row.setStyleSheet(f"color: {'#b9b9c2' if not done else C.GREEN}; background: transparent;")
                 self._tl_box.addWidget(row)
         self._tl_box.addStretch()
-
-    def set_swarm_timeline(self, events: list):
-        """Feed the HARDCORE timeline. events = [(ts, text, done_bool), …]."""
-        self._tl_events = list(events or [])
-        self._render_timeline()
 
     def set_swarm_mission(self, repo="—", worktrees=0, merged="0 / 0", conflicts=0,
                           progress=0, cpu="—", tasks="—", elapsed="—"):

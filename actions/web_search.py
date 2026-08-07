@@ -114,43 +114,6 @@ def _format_news(query: str, results: list[dict]) -> str:
 
 # ── Briefing helper ────────────────────────────────────────────────────────────
 
-def _gemini_headlines(n: int = 5) -> tuple[list[str], str]:
-    """
-    Fetches current headlines via Gemini grounded search.
-    Optimised for speed: minimal prompt + strict token cap.
-    Returns (headline_list, raw_text_for_display).
-    """
-    import re
-    from config import get_client
-
-    client = get_client()
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=f"Current world news: {n} headlines. Numbered list, titles only.",
-        config={"tools": [{"google_search": {}}]},
-    )
-
-    raw = ""
-    for part in response.candidates[0].content.parts:
-        if hasattr(part, "text") and part.text:
-            raw += part.text
-
-    headlines = []
-    for line in raw.strip().split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        # Only accept lines that begin with a number — skips preamble/closing sentences
-        if not re.match(r'^[\d]+[.\)\-]', line):
-            continue
-        clean = re.sub(r'^[\d]+[.\)\-]\s*', '', line)
-        clean = re.sub(r'^\*+\s*',          '', clean).strip()
-        if clean and len(clean) > 10:
-            headlines.append(clean)
-
-    return headlines[:n], raw.strip()
-
-
 # ── Modes ──────────────────────────────────────────────────────────────────────
 
 def _search(query: str) -> str:

@@ -194,9 +194,3 @@ def watch_directory(root, player=None, session=None):
         _WATCHERS[key] = w
         return w
 
-
-def stop_all_watchers():
-    with _WATCHERS_LOCK:
-        for w in _WATCHERS.values():
-            w.stop()
-        _WATCHERS.clear()

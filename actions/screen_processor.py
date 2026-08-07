@@ -254,9 +254,6 @@ class _VisionSession:
             self._loop,
         )
 
-    def is_ready(self) -> bool:
-        return self._session is not None
-
     def _run_event_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)

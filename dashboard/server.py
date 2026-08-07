@@ -59,14 +59,6 @@ def _make_uploads_dir() -> Path:
 
 UPLOADS_DIR = _make_uploads_dir()
 
-def _get_gemini_key() -> str | None:
-    try:
-        import json as _json
-        with open(user_paths.api_keys_path(), "r", encoding="utf-8") as f:
-            return _json.load(f).get("gemini_api_key")
-    except Exception:
-        return None
-
 _KEY_CHARS = [c for c in (string.ascii_uppercase + string.digits)
               if c not in ('O', 'I', 'L', '0', '1')]
 
@@ -426,9 +418,6 @@ class DashboardServer:
             return None
 
     # ── callbacks ────────────────────────────────────────────────────────
-
-    def set_wake_callback(self, fn) -> None:
-        self._wake_callback = fn
 
     def set_connect_callback(self, fn) -> None:
         self._connect_callback = fn
