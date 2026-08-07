@@ -336,6 +336,37 @@ def _clear_consent_walls(browser, grounder: WebGrounder) -> list[str]:
 #: A sign-in wall is resolvable by the eagle (import a session, or hand over
 #: the window once). A verification code or a human check is not — only the
 #: user can answer those, so they get the honest "I need you" and no remedy.
+def _reassert_target(browser, url: str, cleared: list) -> None:
+    """After a consent wall, go back to the page the user actually asked for.
+
+    Clearing Google's wall does not return you to your destination — it
+    bounces to `<target>&cbrd=1`, a stripped shell. Measured live on
+    youtube.com/playlist?list=LL: the real page carries 58 controls including
+    the Romanian sign-in prompt, the bounce page carries 7 and no prompt at
+    all, and it landed there in 2 runs out of 3.
+
+    That single fact produced the failure the user hit four times: with no
+    sign-in prompt on the page there was nothing for `signed_out_reason` to
+    match, so the tool reported ok=True on a page with nothing on it, and the
+    model filled the silence with "YouTube keeps that private". Every earlier
+    fix in this area was upstream of it and could not have helped - the wall
+    detector was correct, the Romanian phrase was in the vocabulary, the
+    settle logic was fine. The eagle was reading a different page than the one
+    it had been asked about.
+
+    Only after a wall was actually cleared: an unconditional second navigation
+    would cost a page load on every open and re-run whatever the first load
+    did. Failure here is swallowed on purpose - this is a correction, not the
+    mission, and the caller still has a page to report on.
+    """
+    if not cleared or not url:
+        return
+    try:
+        browser.goto(url)
+    except Exception:
+        pass
+
+
 def _is_login_wall(reason: str) -> bool:
     lowered = (reason or "").lower()
     if any(w in lowered for w in ("verification code", "human check")):
@@ -937,6 +968,7 @@ def _web_agency(params: dict, player: Any, browser: Any) -> ToolResult:
         # page earned; a fresh site shouldn't inherit a stale failure count.
         _SENSE.note_success()
         cleared = _clear_consent_walls(browser, WebGrounder(browser.page))
+        _reassert_target(browser, url, cleared)
         result = _look(browser, want_pixels=False)
         if cleared:
             note = ("Declined tracking on the consent wall ("

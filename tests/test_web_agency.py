@@ -532,3 +532,73 @@ def test_the_retry_path_re_gates_the_freshly_resolved_node():
     assert clicked == [], (
         "the retry actuated the freshly re-resolved irreversible control "
         "without ever consulting the gate")
+
+
+# ── The consent bounce: what actually broke "show me my liked videos" ───────
+# Reproduced live, 2 runs in 3. Clearing Google's consent wall does not return
+# you to the page you asked for — it bounces to `...&cbrd=1`, a stripped shell
+# with 7 controls instead of 58. The eagle then reported ok=True on a page with
+# nothing on it, `signed_out_reason` had no sign-in prompt to find, and the
+# model filled the silence with "YouTube keeps that private."
+#
+# Every previous fix in this area was upstream of this one and could not have
+# helped: the wall detector was right, the vocabulary had the Romanian phrase,
+# the settle logic was fine. The eagle was simply looking at a different page
+# than the one it was asked about.
+
+class BouncingBrowser:
+    """A browser whose consent flow lands somewhere other than the target."""
+
+    def __init__(self, bounce_to="https://www.youtube.com/playlist?list=LL&cbrd=1"):
+        self.bounce_to = bounce_to
+        self.visited = []
+        self._url = "about:blank"
+
+    def goto(self, url):
+        self.visited.append(url)
+        self._url = url
+        return url
+
+    def bounce(self):
+        self._url = self.bounce_to
+
+    def url(self):
+        return self._url
+
+
+def test_the_target_url_is_reasserted_after_a_consent_wall(monkeypatch):
+    """The fix. Whatever the consent flow decides to do with us, the page the
+    user asked about is the page the eagle must end up reading."""
+    import actions.web_agency as W
+
+    b = BouncingBrowser()
+    monkeypatch.setattr(W, "_clear_consent_walls",
+                        lambda _br, _gr: (b.bounce(), ["Respinge tot"])[1])
+
+    target = "https://www.youtube.com/playlist?list=LL"
+    W._reassert_target(b, target, ["Respinge tot"])
+    assert b.visited[-1] == target, (
+        f"after a consent bounce the eagle stayed on {b.url()!r}")
+
+
+def test_nothing_is_renavigated_when_no_wall_was_cleared(monkeypatch):
+    """An extra navigation on every ordinary open would cost a page load for
+    nothing, and would re-run any side effect the first load had."""
+    b = BouncingBrowser()
+    b.goto("https://example.test/page")
+    W_visited_before = list(b.visited)
+    import actions.web_agency as W
+    W._reassert_target(b, "https://example.test/page", [])
+    assert b.visited == W_visited_before
+
+
+def test_a_reassert_failure_does_not_lose_the_turn(monkeypatch):
+    """The re-navigation is a correction, not the mission. If it fails the
+    eagle still reports on whatever it can see."""
+    import actions.web_agency as W
+
+    class Broken(BouncingBrowser):
+        def goto(self, url):
+            raise RuntimeError("network died")
+
+    W._reassert_target(Broken(), "https://x.test/", ["Respinge tot"])  # must not raise
