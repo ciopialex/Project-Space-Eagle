@@ -510,3 +510,65 @@ def test_default_browser_returns_one_instance_under_concurrent_first_calls(
         "concurrent first calls to default_browser() constructed more than "
         "one EagleBrowser — callers would end up scattered across separate "
         "browsers, profiles, and job queues")
+
+
+# ── The keyring, which is why every imported login was silently useless ─────
+# Chrome on Linux encrypts cookie values with a key held in the system keyring
+# (scheme "v11"). Playwright launches Chrome with --password-store=basic to
+# avoid keyring prompts, and basic cannot decrypt v11 — so Chrome discarded
+# every imported cookie and wrote fresh empty ones. Measured on the real
+# profile: 0 cookies visible with basic, 61 with gnome-libsecret, including
+# SID/SAPISID/__Secure-1PSID.
+#
+# Nothing reported an error. The import said it worked, the database was
+# correct, and the eagle simply appeared signed out.
+
+class _FakePW:
+    def __init__(self):
+        self.kwargs = None
+        self.chromium = self
+
+    def launch_persistent_context(self, path, **kwargs):
+        self.kwargs = kwargs
+        class Ctx:
+            pages = []
+            def new_page(self_inner): return object()
+            def set_default_timeout(self_inner, _ms): pass
+        return Ctx()
+
+
+def test_a_chrome_profile_is_launched_against_the_system_keyring(tmp_path, monkeypatch):
+    import actions.grounding.web.browser as B
+    monkeypatch.setattr(B.sys, "platform", "linux")
+    (tmp_path / B._CHANNEL_MARKER).write_text("chrome")
+
+    pw = _FakePW()
+    B._default_launcher(pw, tmp_path, True)
+
+    assert "--password-store=basic" in (pw.kwargs.get("ignore_default_args") or []), (
+        "Playwright's default basic store cannot decrypt Chrome's v11 cookies")
+    assert any("password-store=gnome" in a for a in pw.kwargs.get("args", []))
+
+
+def test_the_bundled_chromium_is_left_alone(tmp_path, monkeypatch):
+    """Only a profile imported FROM Chrome carries v11 values. The bundled
+    browser has nothing to decrypt, and forcing a keyring it may not have can
+    only cost a prompt or a failed launch."""
+    import actions.grounding.web.browser as B
+    monkeypatch.setattr(B.sys, "platform", "linux")
+
+    pw = _FakePW()
+    B._default_launcher(pw, tmp_path, True)          # no channel marker
+    assert not pw.kwargs.get("ignore_default_args")
+
+
+def test_the_keyring_flag_is_linux_only(tmp_path, monkeypatch):
+    """macOS and Windows use their own credential stores and the flag means
+    nothing there."""
+    import actions.grounding.web.browser as B
+    (tmp_path / B._CHANNEL_MARKER).write_text("chrome")
+    for plat in ("darwin", "win32"):
+        monkeypatch.setattr(B.sys, "platform", plat)
+        pw = _FakePW()
+        B._default_launcher(pw, tmp_path, True)
+        assert not pw.kwargs.get("ignore_default_args"), plat

@@ -376,13 +376,65 @@ def _recover_signed_out(browser, url: str) -> bool:
         return False
     _REPAIRED.add(url)
 
+    # The browser MUST come down first. The import replaces the profile
+    # directory, and a running Chromium does not re-read cookies from disk -
+    # so importing underneath a live browser lands 62 correct cookies on disk
+    # and changes nothing at all about the session. Found by running the real
+    # task and watching it report the page still signed out with a perfect
+    # profile sitting next to it.
+    try:
+        browser.close()
+    except Exception:
+        pass
+
     if not _auto_import(auth_domains_for(url)):
         return False
+
     try:
-        browser.goto(url)
+        browser.start()
+        _open_and_settle(browser, url)
     except Exception:
         return False
     return True
+
+
+def _remedy_for(url: str) -> str:
+    """What to tell the model to do about a sign-in wall on `url`.
+
+    Before the eagle has tried anything: import the user's session, silently.
+    After an import has already been tried on this url and the wall survived
+    it: stop recommending it. Measured on the real profile, Google's session
+    does not survive being lifted into another profile - every cookie name
+    transfers and decrypts, the browser loads SID/SAPISID/__Secure-1PSID, and
+    Google reports signed out anyway and deletes LOGIN_INFO. Chrome binds
+    those sessions to the profile that created them.
+
+    Repeating advice that has just been shown not to work is how an assistant
+    loses someone's trust. The window is the honest answer at that point.
+    """
+    if url in _REPAIRED:
+        return ("Their existing browser session could not be reused for this "
+                "site — it is tied to their own browser and the site rejects "
+                "a copy. Call web_agency action='sign_in' with this url: a "
+                "window opens, they sign in once, and it stays signed in from "
+                "then on. Do not offer to import the login again.")
+    return login_remedy(url)
+
+
+def _open_and_settle(browser, url: str) -> list:
+    """Navigate to `url` and get to the page the user actually asked for.
+
+    One function because it has to happen twice: on the first open, and again
+    after an auto-import, which restarts the browser onto a fresh profile that
+    has never seen this site's consent wall. Doing only the navigation the
+    second time landed the eagle back on consent.youtube.com with 200 controls
+    and no video on it - the wall cleared, the login imported, and the page
+    still wrong.
+    """
+    browser.goto(url)
+    cleared = _clear_consent_walls(browser, WebGrounder(browser.page))
+    _reassert_target(browser, url, cleared)
+    return cleared
 
 
 def _reassert_target(browser, url: str, cleared: list) -> None:
@@ -508,7 +560,7 @@ def _look(browser, want_pixels: bool) -> ToolResult:
         # work out that a command existed, and which domains to name.
         if _is_login_wall(needs_human):
             lines.append(f"This page wants the user signed in. "
-                         f"{login_remedy(current_url)}")
+                         f"{_remedy_for(current_url)}")
         else:
             lines.append(f"This needs the user — {needs_human} "
                         f"({_NO_HANDOFF_WINDOW}).")

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import queue
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -108,12 +109,32 @@ def _default_launcher(playwright, profile: Path, headless: bool):
     """A persistent context, so logins survive between sessions."""
     channel = profile_channel(profile)
     launch_kwargs = {"channel": channel} if channel and channel != "chromium" else {}
+
+    # Chrome on Linux encrypts cookie values with a key from the system
+    # keyring (scheme "v11"). Playwright launches Chrome with
+    # --password-store=basic to avoid keyring prompts, and basic cannot
+    # decrypt v11 - so Chrome silently DISCARDED every cookie the import had
+    # just brought across and wrote fresh empty ones in their place. Measured
+    # on the real profile: 0 cookies visible under basic, 61 under
+    # gnome-libsecret, including SID/SAPISID/__Secure-1PSID.
+    #
+    # Nothing errored anywhere. The import reported success, the database was
+    # correct, and the eagle simply appeared signed out - which is exactly
+    # what the user kept reporting.
+    #
+    # Only for a Chrome-channel profile: the bundled chromium has nothing
+    # encrypted to read, and demanding a keyring it may not have can only cost
+    # a prompt or a failed launch.
+    if channel == "chrome" and sys.platform.startswith("linux"):
+        launch_kwargs["ignore_default_args"] = ["--password-store=basic"]
     context = playwright.chromium.launch_persistent_context(
         str(profile),
         headless=headless,
         **launch_kwargs,
         viewport={"width": 1440, "height": 900},
-        args=["--disable-blink-features=AutomationControlled"],
+        args=(["--disable-blink-features=AutomationControlled"]
+              + (["--password-store=gnome-libsecret"]
+                 if launch_kwargs.get("ignore_default_args") else [])),
     )
     context.set_default_timeout(_NAV_TIMEOUT_MS)
     _remember_channel(profile, channel)

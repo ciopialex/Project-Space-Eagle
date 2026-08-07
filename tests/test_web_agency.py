@@ -616,11 +616,16 @@ def test_a_sign_in_wall_repairs_itself_without_asking(monkeypatch):
     calls = {"imported": None, "visits": []}
 
     class B:
+        def close(self): pass
+        def start(self): pass
+
         def goto(self, url):
             calls["visits"].append(url)
             return url
 
     monkeypatch.setattr(W, "_auto_import", lambda dom: calls.__setitem__("imported", dom) or True)
+    monkeypatch.setattr(W, "_open_and_settle",
+                        lambda br, u: calls["visits"].append(u))
     repaired = W._recover_signed_out(B(), "https://www.youtube.com/playlist?list=LL")
 
     assert repaired is True
@@ -639,8 +644,12 @@ def test_recovery_is_attempted_once_per_url(monkeypatch):
     import actions.web_agency as W
     seen = []
     monkeypatch.setattr(W, "_auto_import", lambda dom: seen.append(dom) or True)
+    monkeypatch.setattr(W, "_open_and_settle", lambda br, u: None)
 
     class B:
+        def close(self): pass
+        def start(self): pass
+
         def goto(self, url):
             return url
 
@@ -653,9 +662,78 @@ def test_recovery_is_attempted_once_per_url(monkeypatch):
 def test_a_failed_import_does_not_claim_repair(monkeypatch):
     import actions.web_agency as W
     monkeypatch.setattr(W, "_auto_import", lambda dom: False)
+    monkeypatch.setattr(W, "_open_and_settle", lambda br, u: (_ for _ in ()).throw(
+        AssertionError("must not re-navigate after a failed import")))
 
     class B:
-        def goto(self, url):
-            raise AssertionError("must not re-navigate after a failed import")
+        def close(self): pass
+        def start(self): pass
 
     assert W._recover_signed_out(B(), "https://github.com/settings") is False
+
+
+def test_the_browser_is_restarted_around_an_auto_import(monkeypatch):
+    """The import replaces the profile DIRECTORY. A running Chromium does not
+    re-read cookies from disk, so importing underneath a live browser lands
+    perfectly on disk and changes nothing about the session.
+
+    Caught by running the real task: the eagle imported 62 correct cookies
+    into the right profile and then reported the page still signed out.
+    """
+    import actions.web_agency as W
+    order = []
+
+    class B:
+        def close(self):
+            order.append("close")
+
+        def start(self):
+            order.append("start")
+
+        def goto(self, url):
+            order.append("goto")
+            return url
+
+    monkeypatch.setattr(W, "_auto_import",
+                        lambda dom: order.append("import") or True)
+    monkeypatch.setattr(W, "_open_and_settle",
+                        lambda br, u: order.append("goto"))
+    W._REPAIRED.clear()
+    assert W._recover_signed_out(B(), "https://www.youtube.com/x") is True
+    assert order.index("close") < order.index("import"), (
+        "imported while the browser was still holding the old profile")
+    assert order.index("import") < order.index("goto")
+
+
+def test_a_wall_that_survived_the_import_stops_offering_the_import(monkeypatch):
+    """Measured on the real profile: the import is flawless — every cookie
+    name transfers, values decrypt, and the browser loads 61 of them including
+    SID/SAPISID/__Secure-1PSID — and Google still reports signed out, then
+    deletes LOGIN_INFO. Google binds sessions to the profile that created
+    them, so a lifted session is detected and revoked.
+
+    Telling the user to import again after that is advice that cannot work.
+    Once the invisible path has been tried and failed, the remedy is the
+    window."""
+    import actions.web_agency as W
+    W._REPAIRED.clear()
+    url = "https://www.youtube.com/playlist?list=LL"
+
+    assert "import_login" in W._remedy_for(url)
+    W._REPAIRED.add(url)
+    remedy = W._remedy_for(url)
+    assert "sign_in" in remedy
+    assert "import_login" not in remedy, (
+        "still recommending the import that was just proven not to work")
+
+
+
+@pytest.fixture(autouse=True)
+def _forget_repairs():
+    """`_REPAIRED` is process-wide by design — a wall is repaired once per run,
+    not once per call. That makes it leak between tests, which is how three
+    tests above started failing on the order they happened to run in."""
+    import actions.web_agency as W
+    W._REPAIRED.clear()
+    yield
+    W._REPAIRED.clear()
