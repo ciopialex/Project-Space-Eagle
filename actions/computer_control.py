@@ -349,20 +349,28 @@ def _drag(x1: int, y1: int, x2: int, y2: int, duration: float = 0.5) -> str:
 def _clipboard_get() -> str:
     if _PYPERCLIP:
         return pyperclip.paste()
+    # No reader available, so the copy cannot be confirmed. The pause is a
+    # blind one and labelled as such rather than dressed up as a result.
     _hotkey("ctrl", "c")
-    time.sleep(0.2)
+    time.sleep(_BLIND_GRACE_S)
     return "(copied — pyperclip unavailable for read)"
 
 
 def _clipboard_paste(text: str) -> str:
-    if _PYPERCLIP:
-        pyperclip.copy(text)
-        time.sleep(0.1)
-        _require_pyautogui()
-        paste_key = "command" if _get_os() == "mac" else "ctrl"
-        pyautogui.hotkey(paste_key, "v")
-        return f"Pasted: {text[:60]}{'…' if len(text) > 60 else ''}"
-    return "pyperclip not available"
+    if not _PYPERCLIP:
+        return "pyperclip not available"
+    pyperclip.copy(text)
+    # Ctrl+V before the copy lands pastes whatever was in the clipboard
+    # BEFORE - silently, into whatever the user had open. Wait for the text
+    # to actually be there, and refuse rather than paste something else.
+    if not _await_clipboard(text):
+        return ("Could not put that on the clipboard, so nothing was pasted — "
+                "pasting now would have inserted the previous clipboard "
+                "contents instead.")
+    _require_pyautogui()
+    paste_key = "command" if _get_os() == "mac" else "ctrl"
+    pyautogui.hotkey(paste_key, "v")
+    return f"Pasted: {text[:60]}{'…' if len(text) > 60 else ''}"
 
 
 def _screenshot(save_path: str | None = None) -> str:

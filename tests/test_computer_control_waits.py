@@ -75,3 +75,38 @@ def test_clipboard_wait_gives_up_rather_than_pasting_the_previous_thing(monkeypa
     monkeypatch.setattr(C, "_clipboard_text", lambda: "something older")
     monkeypatch.setattr(C.time, "sleep", lambda s: None)
     assert C._await_clipboard("new text", timeout=0.1, poll=0.02) is False
+
+
+def test_paste_waits_for_the_copy_rather_than_guessing(monkeypatch):
+    """_clipboard_paste slept 100ms then pressed Ctrl+V. If the copy had not
+    landed, Ctrl+V pastes the PREVIOUS clipboard into the user's document."""
+    order = []
+    monkeypatch.setattr(C, "pyperclip", type("P", (), {
+        "copy": staticmethod(lambda t: order.append(("copy", t))),
+        "paste": staticmethod(lambda: "new text")})())
+    monkeypatch.setattr(C, "_clipboard_text", lambda: "new text")
+    monkeypatch.setattr(C, "_require_pyautogui", lambda: None)
+    monkeypatch.setattr(C, "pyautogui", type("A", (), {
+        "hotkey": staticmethod(lambda *k: order.append(("paste", k)))})())
+    monkeypatch.setattr(C.time, "sleep", lambda s: order.append(("sleep", s)))
+
+    C._clipboard_paste("new text")
+    assert ("paste", ("ctrl", "v")) in order or any(o[0] == "paste" for o in order)
+    assert not any(o[0] == "sleep" and o[1] >= 0.1 for o in order), \
+        "still sleeping a fixed 100ms instead of checking"
+
+
+def test_paste_refuses_rather_than_pasting_the_wrong_thing(monkeypatch):
+    monkeypatch.setattr(C, "pyperclip", type("P", (), {
+        "copy": staticmethod(lambda t: None),
+        "paste": staticmethod(lambda: "something older")})())
+    monkeypatch.setattr(C, "_clipboard_text", lambda: "something older")
+    monkeypatch.setattr(C, "_require_pyautogui", lambda: None)
+    pressed = []
+    monkeypatch.setattr(C, "pyautogui", type("A", (), {
+        "hotkey": staticmethod(lambda *k: pressed.append(k))})())
+    monkeypatch.setattr(C.time, "sleep", lambda s: None)
+
+    result = C._clipboard_paste("new text")
+    assert not pressed, "pasted the previous clipboard contents"
+    assert "not" in result.lower() or "could" in result.lower()
