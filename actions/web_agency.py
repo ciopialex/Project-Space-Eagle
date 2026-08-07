@@ -174,61 +174,108 @@ def _import_login(browser, domains: list) -> ToolResult:
         note=result.guidance)
 
 
-def _sign_in(browser, url: str, timeout: float) -> ToolResult:
+#: Which site currently has a sign-in window open, if any. Module-level for
+#: the same reason `_SENSE` is: the handoff spans two tool calls (two model
+#: turns), and the browser is process-wide.
+_HANDOFF: dict = {}
+
+#: How long `sign_in` will wait in-call before handing the turn back. Must stay
+#: comfortably inside `TOOL_SPECS["web_agency"].timeout_s` in main.py — the
+#: original bug was those two numbers living in different files and never being
+#: compared. `test_the_grace_wait_cannot_exceed_the_tool_budget` compares them.
+_SIGN_IN_GRACE_S = 20.0
+
+
+def _wall_or_signed_out(page) -> str:
+    """The ONLY thing read while the user is at the keyboard: a wall check.
+
+    Not a page read, not a screenshot. Their password is not something to
+    watch, and a handoff is the one moment the eagle is pointed at a form
+    somebody is typing a secret into.
+    """
+    nodes = _current_nodes(page)
+    return wall_reason(nodes, _current_url(page)) or signed_out_reason(nodes)
+
+
+def _sign_in(browser, url: str, *, grace: float = _SIGN_IN_GRACE_S,
+             poll: float = 1.0) -> ToolResult:
     """Put the eagle's browser on screen so the user can sign in, once.
 
     The eagle keeps its own browser profile, deliberately: attaching to the
     user's Chrome would inherit every session they have open, silently, and
     fight them for their own window. The cost of that choice is one login per
-    site — and until now there was no way to pay it, because the browser runs
-    headless and nothing could show it. So a signed-in page was simply
-    unreachable, and the eagle kept inventing reasons why.
+    site. The session persists in the profile afterwards, so this is a
+    one-time cost per site rather than a step in every task.
 
-    This is the whole of the handoff: show the window, get out of the way,
-    wait, put it back. While the user is at the keyboard the eagle does not
-    perceive the page — no collecting, no screenshots — it only re-checks
-    whether the wall has cleared. Their password is not something to watch.
+    **This does not block until the user is done.** The first version waited
+    up to 300 seconds inside a tool whose budget is 90, so it was killed every
+    time and could only ever have succeeded if the user signed in within 90
+    seconds - 2FA on a phone rarely does. Worse, the kill is external, so the
+    cleanup that puts the browser back to headless never ran and the window
+    could be left on screen.
 
-    The session persists in the profile afterwards, so this is a one-time cost
-    per site rather than a step in every task.
+    Holding a tool slot for minutes is also simply the wrong shape here: it
+    blocks the batch and the eagle cannot say a word while it waits. So the
+    handoff is two-phase. This call shows the window and hands the turn back
+    quickly; a later call - after the user says they are done - confirms it
+    and puts the window away. A short grace wait covers the case where the
+    user is quick, so a remembered password still finishes in one turn.
+
+    The eagle never takes the user's word for it: phase two re-checks the wall
+    rather than trusting "I signed in".
     """
-    if not browser.surface(True):
-        return ToolResult.failure(
-            "Could not put the browser on screen for the user to sign in.",
-            guidance=("Tell the user the sign-in window would not open. They "
-                      "can retry, or sign in later."))
-    try:
+    pending = _HANDOFF.get("url") == url
+
+    if not pending:
+        if not browser.surface(True):
+            return ToolResult.failure(
+                "Could not put the browser on screen for the user to sign in.",
+                guidance=("Tell the user the sign-in window would not open. "
+                          "They can retry, or sign in later."))
         try:
             browser.goto(url)
         except Exception as e:
+            _HANDOFF.pop("url", None)
             browser.surface(False)
             return ToolResult.failure(
                 f"Could not open {url} to sign in: {e}",
                 guidance="Check the address and try again.")
 
-        def _still_blocked() -> str:
-            # Deliberately the ONLY thing read while the user is typing: a
-            # wall check, not a page read.
-            page = browser.page()
-            if page is None:
-                return "browser gone"
-            nodes = _current_nodes(page)
-            return (wall_reason(nodes, _current_url(page))
-                    or signed_out_reason(nodes))
+    page = browser.page()
+    if page is None:
+        _HANDOFF.pop("url", None)
+        return ToolResult.failure(
+            "The browser closed during sign-in.",
+            guidance="Ask the user whether they want to try again.")
 
-        cleared = await_human(_still_blocked, timeout=timeout, poll=2.0)
-    finally:
-        browser.surface(False)
+    def _still_blocked() -> str:
+        pg = browser.page()
+        if pg is None:
+            return "browser gone"
+        return _wall_or_signed_out(pg)
+
+    cleared = (not _still_blocked()) if grace <= 0 else await_human(
+        _still_blocked, timeout=grace, poll=poll)
 
     if cleared:
+        _HANDOFF.pop("url", None)
+        browser.surface(False)
         return ToolResult.success(
-            f"The user signed in at {url}. The eagle's browser stays signed "
-            "in from now on, so this is not needed again for this site.",
+            f"Signed in at {url}. The eagle's browser stays signed in from "
+            "now on, so this is not needed again for this site.",
             signed_in=True, url=url)
+
+    # Still blocked. Leave the window up - taking it away mid-login is the one
+    # thing guaranteed to waste the user's effort - and hand the turn back so
+    # the eagle can actually speak.
+    _HANDOFF["url"] = url
     return ToolResult.failure(
-        f"The sign-in window at {url} closed without the sign-in completing.",
-        guidance=("Ask the user whether they want to try again — the window "
-                  "is open only while this runs, and it timed out."))
+        f"A sign-in window for {url} is open on screen and waiting.",
+        guidance=("Tell the user the window is open and ask them to sign in, "
+                  "then to say when they are done - and call sign_in again "
+                  "for the same url to confirm it. Do not claim they are "
+                  "signed in until that call succeeds."),
+        awaiting_user=True, url=url)
 
 
 def _clear_consent_walls(browser, grounder: WebGrounder) -> list[str]:
@@ -907,7 +954,7 @@ def _web_agency(params: dict, player: Any, browser: Any) -> ToolResult:
                 guidance="Pass url='https://…' with action='sign_in'.")
         if "://" not in url:
             url = "https://" + url
-        return _sign_in(browser, url, float(params.get("timeout") or 300.0))
+        return _sign_in(browser, url)
 
     if action == "import_login":
         raw = params.get("domains") or params.get("url") or ""
