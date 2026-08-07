@@ -10,15 +10,21 @@ This records the timeline the *user* experiences, not the one the code finds
 convenient. The gap between "you stopped talking" and "you heard something" is
 made of several independent delays that get blamed on each other:
 
-    speech_end   -> turn_detected   the VAD's silence window. A fixed cost on
-                                    EVERY turn, paid before any work starts.
-    turn_detected-> model_request   transcript + routing + our own dispatch.
-    model_request-> first_token     network round trip + model prefill.
+    speech_start -> speech_end      how long the user talked. Context, not a
+                                    cost - but a turn's other numbers cannot
+                                    be read without it.
+    speech_end   -> first_token     the server's silence window (a fixed cost
+                                    paid on EVERY turn before any work starts)
+                                    plus network and model prefill.
     first_token  -> first_audio     our playback path: buffering, format
                                     conversion, device open.
-    turn_detected-> first_tool      how long until something real happens,
+    speech_end   -> first_tool      how long until something real happens,
                                     which is the number that actually matters
                                     for a mission.
+    first_audio  -> complete        how long the reply talked FOR. The eagle's
+                                    own telemetry showed 17s queued; a reply
+                                    nobody wanted to sit through is a latency
+                                    problem wearing a verbosity costume.
 
 Marks are recorded from several threads (mic, receive loop, playback, tool
 executor), so writes are locked. Cost when disabled is one attribute read.
@@ -38,27 +44,31 @@ from typing import Callable
 #: documentation, not enforcement — a turn that skips marks (a conversational
 #: reply never reaches `first_tool`) is normal and must not distort the report.
 MARKS = (
-    "speech_start",      # user began speaking (VAD onset)
-    "speech_end",        # user stopped speaking (VAD offset)
-    "turn_detected",     # server declared end-of-turn; work may begin
-    "transcript",        # final transcript available
-    "route",             # tool/route chosen
-    "model_request",     # request dispatched to the model
-    "first_token",       # first token or audio chunk back from the model
+    "speech_start",      # user began speaking (client-side VAD onset)
+    "speech_end",        # user stopped speaking (client-side VAD offset)
+    "first_token",       # first byte of any kind back from the server
     "first_audio",       # first sample actually handed to the speaker
     "first_tool",        # first tool call started executing
-    "complete",          # turn finished
+    "complete",          # server declared turn_complete
 )
 
 #: The segments worth reporting, as (label, from_mark, to_mark). These are the
 #: independent delays — reporting only a total invites blaming whichever
 #: component is most recently suspected.
+#:
+#: There is deliberately no `vad` segment. End-of-turn detection is server-side
+#: (`AutomaticActivityDetection`) and the server sends no event when it fires:
+#: `ActivityStart`/`ActivityEnd` in the SDK are client->server messages for
+#: MANUAL VAD, not notifications we receive. So the silence window is not
+#: separately observable, and a mark for it would sit permanently unset while
+#: looking like a measurement. It is folded into `response` instead, where the
+#: configured floor (see VAD_FLOOR_MS) accounts for a known part of the total.
 SEGMENTS = (
-    ("vad",      "speech_end",    "turn_detected"),
-    ("dispatch", "turn_detected", "model_request"),
-    ("model",    "model_request", "first_token"),
-    ("audio",    "first_token",   "first_audio"),
-    ("tool",     "turn_detected", "first_tool"),
+    ("speech",   "speech_start", "speech_end"),   # how long the user talked
+    ("response", "speech_end",   "first_token"),  # VAD window + network + prefill
+    ("audio",    "first_token",  "first_audio"),  # our own playback path
+    ("tool",     "speech_end",   "first_tool"),
+    ("spoken",   "first_audio",  "complete"),     # how long the reply talked FOR
 )
 
 #: The two numbers a user would recognise. `to_voice` is "how long after I
@@ -68,6 +78,12 @@ HEADLINES = (
     ("to_voice",  "speech_end", "first_audio"),
     ("to_action", "speech_end", "first_tool"),
 )
+
+#: The server's silence window before it will admit the user has stopped
+#: talking. Not measured — configured, and therefore a known constant floor
+#: under every `response` number. Recorded here so a reader can subtract it
+#: instead of mistaking a config choice for a slow model.
+VAD_FLOOR_MS = 550
 
 
 def _enabled_by_default() -> bool:

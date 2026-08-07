@@ -39,7 +39,10 @@ from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
 )
 from core.tool_result import ToolResult, normalize
+from core.tool_fallback import with_fallback_guidance
 from core import proc_registry
+from core.turn_trace import TraceLog, TurnTrace, _enabled_by_default as _trace_enabled
+from core.mic_vad import SpeechDetector
 
 from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
@@ -981,6 +984,62 @@ class AethelarkLive:
         # starve asyncio.to_thread (memory loads, dashboard snapshots, news).
         self._tool_executor = _make_tool_executor()
 
+        # ── Latency tracing (AETHELARK_TRACE=1) ───────────────────────────────
+        # Off by default and inert when off: no VAD is constructed, and every
+        # mark is an attribute read that returns immediately. On, it answers the
+        # only question that matters here — where the time between "I stopped
+        # talking" and "I heard something" actually goes.
+        self._trace_on = _trace_enabled()
+        self._trace: TurnTrace | None = None
+        self._trace_log = TraceLog(emit=lambda line: print(f"[Aethelark] {line}"))
+        self._vad = SpeechDetector(rate=SEND_SAMPLE_RATE,
+                                   frame_samples=CHUNK_SIZE) if self._trace_on else None
+
+    # ── Trace helpers ───────────────────────────────────────────────────────
+    # Deliberately tiny and total: these are called from four different threads
+    # (mic, receive loop, playback, tool dispatch) on the hot path of a live
+    # conversation. Instrumentation that can throw would make the diagnostic
+    # worse than the disease.
+
+    def _trace_mark(self, name: str) -> None:
+        t = self._trace
+        if t is not None:
+            t.mark(name)
+
+    def _trace_begin(self) -> None:
+        """Open a new turn. The previous one is dropped, not reported.
+
+        A turn the user abandoned mid-sentence has no meaningful end, and
+        publishing its half-filled numbers would drag the medians toward
+        whatever the abandonment happened to cost."""
+        self._trace = TurnTrace(turn=self._turn_epoch, enabled=True)
+
+    def _trace_finish(self) -> None:
+        t, self._trace = self._trace, None
+        if t is not None:
+            self._trace_log.finish(t)
+
+    def _trace_mic_frame(self, data) -> None:
+        """Timestamp the user's speech from a single outgoing mic frame.
+
+        A method rather than a closure inside `_listen_audio` so it can be
+        driven by a test without a sound device: the marks it sets are the
+        origin of every latency number, and an origin nothing can exercise is
+        an origin nobody can trust.
+
+        Fed the frames that are actually SENT, not every frame the device
+        produces, so our estimate of "the user stopped" is made from the same
+        audio the server's own VAD judged.
+        """
+        if self._vad is None:
+            return
+        event = self._vad.feed(data)
+        if event == "start":
+            self._trace_begin()
+            self._trace_mark("speech_start")
+        elif event == "end":
+            self._trace_mark("speech_end")
+
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
         if self._dashboard is None:
@@ -1041,6 +1100,11 @@ class AethelarkLive:
         self.set_speaking(False)
         if self._turn_done_event:
             self._turn_done_event.clear()
+        # An interrupted turn never reached its own end. Reporting it would
+        # mix "how long the eagle took" with "how long the user tolerated it".
+        self._trace = None
+        if self._vad is not None:
+            self._vad.reset()
         self.ui.write_log("SYS: Interrupted — listening...")
 
     def _discard_stragglers(self) -> bool:
@@ -1419,6 +1483,13 @@ class AethelarkLive:
         # instead of parsing prose. Legacy string tools are unaffected.
         tr = normalize(result)
 
+        # A narrow tool failing is not the task being impossible. Attach the
+        # general tool that covers the same ground, by mechanism rather than
+        # by hoping the model remembers the prompt — this is the exact point
+        # where "YouTube keeps that private" was returned about the user's own
+        # liked videos, with web_agency never tried.
+        tr = with_fallback_guidance(name, tr)
+
         _elapsed_ms = (time.monotonic() - _t0) * 1000
         # Check for stale result — epoch may have advanced during execution
         if call_epoch != self._turn_epoch:
@@ -1552,6 +1623,7 @@ class AethelarkLive:
             out_queue = self.out_queue
             if out_queue is None:
                 return
+            self._trace_mic_frame(msg.get("data"))
             try:
                 out_queue.put_nowait(msg)
             except asyncio.QueueFull:
@@ -1620,6 +1692,12 @@ class AethelarkLive:
 
                     self._last_server_activity = time.monotonic()
 
+                    # First byte of the ANSWER, not of the connection. Session
+                    # resumption handles arrive on their own schedule and would
+                    # otherwise stamp first_token during the user's sentence.
+                    if response.data or response.server_content or response.tool_call:
+                        self._trace_mark("first_token")
+
                     if response.data:
                         if self._discard_stragglers():
                             pass  # tail of the cancelled turn — drop it
@@ -1677,6 +1755,8 @@ class AethelarkLive:
                                 self._last_user_speech = time.monotonic()
 
                         if sc.turn_complete:
+                            self._trace_mark("complete")
+                            self._trace_finish()
                             self._turn_epoch += 1
                             if self._turn_done_event:
                                 self._turn_done_event.set()
@@ -1880,6 +1960,11 @@ class AethelarkLive:
                     except Exception as re_err:
                         print(f"[Aethelark] Resampling error: {re_err}")
                         out = chunk
+
+                # The user hears the speaker, not the queue. Marking here — at
+                # the device write — is what makes `audio` our own playback
+                # cost rather than a number we could blame on the network.
+                self._trace_mark("first_audio")
 
                 try:
                     stream.write(out)
@@ -2171,6 +2256,11 @@ class AethelarkLive:
                      if self._batch_needs_exclusion(function_calls)
                      else contextlib.nullcontext())
             async with guard:
+                # Marked after the lock is held, so `to_action` counts time
+                # spent queued behind another batch. That wait is latency the
+                # user experiences; marking at dispatch instead would make a
+                # contended pipeline look identical to an idle one.
+                self._trace_mark("first_tool")
                 fn_responses = await self._schedule_tool_calls(function_calls, call_epoch)
             if fn_responses:
                 await session.send_tool_response(function_responses=fn_responses)
