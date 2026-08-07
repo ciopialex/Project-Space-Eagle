@@ -763,7 +763,7 @@ _ENGLISH_COMMITTING_KEYS = frozenset({
     "submit", "file", "confirm", "delete", "remove", "subscribe",
     "unsubscribe", "agree", "accept", "sign", "signing", "send", "publish",
     "post", "book", "apply", "deactivate", "terminate", "erase", "wipe",
-    "withdraw", "authorize", "authorise", "donate", "bid",
+    "withdraw", "authorize", "authorise", "donate", "bid", "reserve",
 })
 #: English pair verbs are *expected* to be ordinary English words — that is
 #: the whole reason they are paired rather than bare. "Close", "Cancel",
@@ -772,7 +772,8 @@ _ENGLISH_COMMITTING_KEYS = frozenset({
 #: dictionary-collision test below is about *non-English* vocabulary
 #: accidentally matching an English word, which is a different risk.
 _ENGLISH_PAIR_VERBS = frozenset({"close", "cancel", "disable", "end",
-                                 "terminate"})
+                                 "terminate", "empty", "start", "begin",
+                                 "activate", "upgrade", "downgrade"})
 
 _NON_ENGLISH_COMMITTING = sorted(set(_COMMITTING) - _ENGLISH_COMMITTING_KEYS)
 _NON_ENGLISH_PAIR_VERBS = sorted(set(_COMMITTING_PAIRS) - _ENGLISH_PAIR_VERBS)
@@ -1142,3 +1143,62 @@ def test_the_depunctuated_reading_cannot_invent_a_word():
     forming something committing would be a false refusal factory."""
     assert irreversible_reason("Show-all results", "button") == ""
     assert irreversible_reason("Next-page", "button") == ""
+
+
+# ── Commit buttons found by probing realistic page copy ─────────────────────
+# The ledger flagged the pairs table drifting per-verb. Probing around it found
+# four more gaps of the same shape: a real button that spends money or destroys
+# data and that this guard waved through.
+
+REALISTIC_COMMITS = [
+    # The pairs-union gap the ledger named: `close`/`disable` had the account
+    # set but not the subscription set, so half the sentence was unguarded.
+    "Close subscription", "Disable subscription", "Close plan",
+    # Permanent destruction, and the one word that means it.
+    "Empty trash", "Empty bin", "Empty the recycle bin",
+    # A free trial is a billing obligation with a delay on it. This is the one
+    # a person is most likely to click without reading.
+    "Start free trial", "Begin free trial", "Start your free trial",
+    # Changes what the user is charged, in both directions.
+    "Upgrade plan", "Downgrade plan", "Upgrade subscription",
+    "Upgrade to Premium",
+    # `Book now` already refused; its synonym did not.
+    "Reserve now", "Reserve table",
+]
+
+
+@pytest.mark.parametrize("label", REALISTIC_COMMITS)
+def test_realistic_commit_buttons_are_refused(label):
+    assert irreversible_reason(label, "button"), f"{label!r} slipped through"
+
+
+REALISTIC_BENIGN = [
+    # Every one of these shares a verb with the list above. If the fix cannot
+    # tell them apart it has traded a security hole for an eagle that cannot
+    # dismiss a dialog.
+    "Close", "Close dialog", "Close window", "Close tab",
+    "Cancel", "Disable notifications", "Disable dark mode",
+    "Empty", "Empty cart", "Start", "Start recording", "Start over",
+    "Upgrade app", "Upgrade software", "Reserved seats",
+    "Free trial details", "Compare plans", "Plan details",
+    "Trash", "Recycle bin",
+]
+
+
+@pytest.mark.parametrize("label", REALISTIC_BENIGN)
+def test_ordinary_copy_sharing_those_verbs_still_passes(label):
+    assert irreversible_reason(label, "button") == "", (
+        f"{label!r} is ordinary copy and must stay clickable")
+
+
+def test_the_pairs_table_shares_its_object_sets():
+    """The ledger's finding, stated as a property rather than as examples:
+    a verb that ends a relationship must not distinguish between ending an
+    account and ending a subscription. They drifted apart once already."""
+    from actions.grounding.web.consent import (
+        _ACCOUNT_OBJECTS, _COMMITTING_PAIRS, _SUBSCRIPTION_OBJECTS)
+    both = _ACCOUNT_OBJECTS | _SUBSCRIPTION_OBJECTS
+    for verb in ("close", "cancel", "disable", "end"):
+        objects, _reason = _COMMITTING_PAIRS[verb]
+        assert both <= objects, (
+            f"{verb!r} guards {sorted(objects)} but not {sorted(both - objects)}")
