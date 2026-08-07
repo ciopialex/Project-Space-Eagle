@@ -572,3 +572,69 @@ def test_the_keyring_flag_is_linux_only(tmp_path, monkeypatch):
         pw = _FakePW()
         B._default_launcher(pw, tmp_path, True)
         assert not pw.kwargs.get("ignore_default_args"), plat
+
+
+# ── surface(): the check that meant the window never opened ────────────────
+# `if self.running and self.headless == bool(visible): return True` reads as
+# "already in the requested state, nothing to do" and means the opposite.
+# headless == visible is TRUE exactly when the browser is hidden and the caller
+# asked for it visible — the case that needs work. So surface() no-opped and
+# returned success whenever the browser was already running, which in the real
+# sign-in flow it always is.
+#
+# Caught by calling it for real and watching `headless` stay False after
+# surface(False) put it "away". Nothing failed; the window simply stayed on
+# screen and the eagle reported it had gone.
+
+class _Recording:
+    """EagleBrowser's surface() over a fake lifecycle."""
+    surface = EagleBrowser.surface
+
+    def __init__(self, headless=True, running=True):
+        self.headless = headless
+        self._running = running
+        self.restarts = 0
+        self._lifecycle_lock = threading.RLock()
+
+    @property
+    def running(self):
+        return self._running
+
+    def close(self):
+        self._running = False
+
+    def start(self):
+        self._running = True
+        self.restarts += 1
+
+
+def test_showing_a_hidden_browser_actually_restarts_it():
+    """The bug. A running headless browser asked to become visible must come
+    down and go back up — Playwright fixes headless at launch."""
+    b = _Recording(headless=True, running=True)
+    assert b.surface(True) is True
+    assert b.headless is False, "reported success while staying hidden"
+    assert b.restarts == 1
+
+
+def test_hiding_a_visible_browser_actually_restarts_it():
+    b = _Recording(headless=False, running=True)
+    assert b.surface(False) is True
+    assert b.headless is True, "reported success while staying on screen"
+    assert b.restarts == 1
+
+
+def test_a_browser_already_in_the_requested_state_is_left_alone():
+    """The early return is worth having — restarting a correct browser costs
+    the user a visible flicker and drops the page."""
+    for headless, want in ((True, False), (False, True)):
+        b = _Recording(headless=headless, running=True)
+        assert b.surface(want) is True
+        assert b.restarts == 0, "restarted a browser that was already correct"
+
+
+def test_a_stopped_browser_is_started_into_the_requested_state():
+    b = _Recording(headless=True, running=False)
+    assert b.surface(True) is True
+    assert b.headless is False
+    assert b.restarts == 1

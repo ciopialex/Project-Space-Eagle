@@ -412,7 +412,13 @@ class EagleBrowser:
         Returns True if the browser is now in the requested state.
         """
         with self._lifecycle_lock:
-            if self.running and self.headless == bool(visible):
+            # `headless == (not visible)` is the "already correct" test.
+            # This once read `headless == bool(visible)`, which is true exactly
+            # when the browser is hidden and the caller asked for it visible -
+            # the case that needs work. So surface() no-opped and returned
+            # success whenever the browser was already running, which in the
+            # sign-in flow it always is, and the window never opened.
+            if self.running and self.headless == (not bool(visible)):
                 return True
             self.close()
             self.headless = not bool(visible)
