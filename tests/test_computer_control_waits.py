@@ -109,4 +109,7 @@ def test_paste_refuses_rather_than_pasting_the_wrong_thing(monkeypatch):
 
     result = C._clipboard_paste("new text")
     assert not pressed, "pasted the previous clipboard contents"
-    assert "not" in result.lower() or "could" in result.lower()
+    # A ToolResult now: the caller gets an explicit ok=False and a next step,
+    # instead of prose it has to interpret.
+    assert result.ok is False
+    assert "type" in result.guidance.lower(), "no fallback offered"

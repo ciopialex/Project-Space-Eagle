@@ -17,6 +17,7 @@ from pathlib import Path
 
 from actions.grounding import find_element
 from core import user_paths
+from core.tool_result import ToolResult, normalize
 
 try:
     import pyautogui
@@ -256,7 +257,7 @@ def _await_clipboard(text: str, timeout: float = 1.0, poll: float = 0.02) -> boo
     return False
 
 
-def _focus_result(title: str) -> str:
+def _focus_result(title: str) -> ToolResult:
     """What to report after asking a window manager to focus something.
 
     Every platform branch used to `time.sleep(0.3)` and then return
@@ -267,13 +268,21 @@ def _focus_result(title: str) -> str:
     """
     focused = _await_focus(title)
     if focused is True:
-        return f"Focused window: {title}"
+        return ToolResult.success(f"Focused window: {title}", window=title)
     if focused is None:
-        return (f"Asked the desktop to focus '{title}'. This system will not "
-                "report which window is focused, so this is unverified — "
-                "check before typing anything important into it.")
-    return (f"Could not focus a window matching '{title}' — it may be closed, "
-            "minimised, or named differently. Nothing was typed.")
+        # A real third answer: Wayland refuses to say which window is focused.
+        # Flattening it either way would be a lie, so it is a failure with the
+        # uncertainty stated - the caller must not type into it blind.
+        return ToolResult.failure(
+            f"Asked the desktop to focus '{title}', but this system will not "
+            "report which window is focused, so it is unverified.",
+            guidance=("Do not type anything important yet. Ask the user to "
+                      "confirm the right window is in front."))
+    return ToolResult.failure(
+        f"Could not focus a window matching '{title}'. Nothing was typed.",
+        guidance=("It may be closed, minimised, or named differently. Ask the "
+                  "user what the window is actually called - do not guess a "
+                  "similar title and type into whatever comes forward."))
 
 
 def _type(text: str, interval: float = 0.03) -> str:
@@ -364,9 +373,11 @@ def _clipboard_paste(text: str) -> str:
     # BEFORE - silently, into whatever the user had open. Wait for the text
     # to actually be there, and refuse rather than paste something else.
     if not _await_clipboard(text):
-        return ("Could not put that on the clipboard, so nothing was pasted — "
-                "pasting now would have inserted the previous clipboard "
-                "contents instead.")
+        return ToolResult.failure(
+            "Could not put that on the clipboard, so nothing was pasted.",
+            guidance=("Pasting anyway would have inserted the PREVIOUS "
+                      "clipboard contents into the user's document. Try "
+                      "action='type' instead."))
     _require_pyautogui()
     paste_key = "command" if _get_os() == "mac" else "ctrl"
     pyautogui.hotkey(paste_key, "v")
@@ -521,6 +532,17 @@ def _wait_for_element(description: str, intent: str = "click",
             f"{timeout:.0f}s — blocked on: {result.failed_check}.")
 
 
+#: Every action this tool implements, named once so the error
+#: messages cannot drift from what is actually dispatched below.
+_ACTIONS = (
+    "type", "smart_type", "click", "left_click", "double_click",
+    "right_click", "move", "drag", "hotkey", "press", "scroll", "copy",
+    "paste", "screenshot", "wait", "clear_field", "focus_window",
+    "screen_find", "screen_click", "random_data", "user_data",
+    "wait_for_element", "scroll_into_view",
+)
+
+
 def computer_control(
     parameters: dict,
     response=None,
@@ -568,18 +590,35 @@ def computer_control(
       screen_click  — AI element finder + click
       random_data   — generate fake form data
       user_data     — pull real data from memory
+      wait_for_element — poll until an element appears
+      scroll_into_view — scroll until an element is on screen
     """
     params = parameters or {}
-    action = params.get("action", "").lower().strip()
+    action = str(params.get("action") or "").lower().strip()
 
     if not action:
-        return "No action specified for computer_control."
+        return ToolResult.failure(
+            "No action was given.",
+            guidance=f"Pick one of: {', '.join(_ACTIONS)}.")
 
     if player:
         player.write_log(f"[Computer] {action}")
 
     print(f"[ComputerControl] ▶ {action}  {params}")
 
+    try:
+        result = _dispatch_action(action, params, player)
+        return result if isinstance(result, ToolResult) else normalize(result)
+    except Exception as e:
+        print(f"[ComputerControl] ❌ {action}: {e}")
+        return ToolResult.failure(
+            f"'{action}' failed: {e}",
+            guidance=("Tell the user it did not work. Do NOT assume the "
+                      "keyboard or mouse did anything, and do not retry the "
+                      "same way."))
+
+
+def _dispatch_action(action: str, params: dict, player=None):
     try:
 
         if action == "type":
@@ -690,8 +729,16 @@ def computer_control(
                 print(f"[ComputerControl] ⚠️ No '{field}' in memory, using random: {value}")
             return value
 
-        return f"Unknown action: '{action}'"
+        return ToolResult.failure(
+            f"'{action}' is not something computer_control does.",
+            guidance=f"Use one of: {', '.join(_ACTIONS)}.")
 
     except Exception as e:
         print(f"[ComputerControl] ❌ {action}: {e}")
-        return f"computer_control '{action}' failed: {e}"
+        # This used to return a string, which normalize turned into ok=True -
+        # a crash reported as success, by the tool that drives the keyboard.
+        return ToolResult.failure(
+            f"'{action}' failed: {e}",
+            guidance=("Tell the user it did not work. Do NOT assume the "
+                      "keyboard or mouse did anything, and do not retry the "
+                      "same way."))

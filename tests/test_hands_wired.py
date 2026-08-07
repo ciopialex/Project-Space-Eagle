@@ -149,6 +149,20 @@ def test_screen_click_goes_through_the_actionability_layer():
 
 
 def test_new_actions_are_dispatchable():
-    src = inspect.getsource(cc.computer_control)
+    """Reads the DISPATCHER, not the entrypoint. computer_control is now a
+    thin boundary that hands off to _dispatch_action, so inspecting the
+    entrypoint proved nothing about what is reachable."""
+    src = inspect.getsource(cc._dispatch_action)
     for action in ("screen_click", "wait_for_element", "scroll_into_view"):
-        assert f'"{action}"' in src
+        assert f'"{action}"' in src, f"{action} is no longer dispatched"
+
+
+def test_every_dispatched_action_is_advertised():
+    """The error messages list _ACTIONS. If the dispatcher handles something
+    that list omits, the tool refuses an action it can actually perform and
+    tells the model it does not exist."""
+    src = inspect.getsource(cc._dispatch_action)
+    import re
+    dispatched = set(re.findall(r'action (?:==|in \()\s*[("]([a-z_]+)"', src))
+    missing = {a for a in dispatched if a not in cc._ACTIONS}
+    assert missing == set(), f"dispatched but never advertised: {sorted(missing)}"
