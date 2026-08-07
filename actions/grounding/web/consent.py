@@ -260,6 +260,9 @@ _COMMITTING = {
     "publish": "it publishes something",
     "post": "it posts something publicly",
     "book": "it books something",
+    # `book`'s synonym, and it was missing while `book` refused. "Reserve now"
+    # and "Reserve a table" commit the user exactly as much.
+    "reserve": "it reserves something",
     "apply": "it submits an application",
     "deactivate": "it deactivates an account",
     "terminate": "it terminates a service",
@@ -390,12 +393,41 @@ _COMMITTING_PAIRS = {
     # `Disable account` and `End subscription` all allowed while
     # `Close account` refused, purely because only `close` had been given the
     # account set. Common English copy, so the sets are shared, not per-verb.
-    "close": (_ACCOUNT_OBJECTS, "it closes an account"),
+    # All four take BOTH sets. The comment above already said the sets are
+    # shared "so the two senses cannot drift apart per-verb" - and then `close`
+    # and `disable` were given only the account set, so "Close subscription"
+    # and "Disable subscription" were allowed. Exactly the drift it warned
+    # about, one edit later. Shared by construction now, and asserted by
+    # test_the_pairs_table_shares_its_object_sets rather than by comment.
+    "close": (_ACCOUNT_OBJECTS | _SUBSCRIPTION_OBJECTS,
+              "it closes an account or subscription"),
     "cancel": (_ACCOUNT_OBJECTS | _SUBSCRIPTION_OBJECTS,
                "it cancels an account or subscription"),
-    "disable": (_ACCOUNT_OBJECTS, "it disables an account"),
+    "disable": (_ACCOUNT_OBJECTS | _SUBSCRIPTION_OBJECTS,
+                "it disables an account or subscription"),
     "end": (_ACCOUNT_OBJECTS | _SUBSCRIPTION_OBJECTS,
             "it ends an account or subscription"),
+
+    # `empty` is benign on a cart and permanent on a wastebasket. Paired
+    # rather than bare so "Empty cart" stays clickable - emptying a cart is
+    # reversible, emptying the trash is the button that ends a file's life.
+    "empty": ({"trash", "bin", "wastebasket", "recycle"},
+              "it permanently deletes everything in the trash"),
+
+    # A free trial is a billing obligation with a delay on it, and it is the
+    # one a person clicks without reading. `start`/`begin` are far too common
+    # bare ("Start", "Start recording") to be committing on their own.
+    "start": ({"trial"}, "it starts a trial that becomes a paid subscription"),
+    "begin": ({"trial"}, "it starts a trial that becomes a paid subscription"),
+    "activate": ({"trial", "subscription", "plan"},
+                 "it activates a paid subscription"),
+
+    # Both directions change what the user is charged. Bare "Upgrade" is
+    # ordinarily a software update, so the plan words carry the meaning.
+    "upgrade": (_SUBSCRIPTION_OBJECTS | {"premium", "pro", "plus"},
+                "it changes a paid plan"),
+    "downgrade": (_SUBSCRIPTION_OBJECTS | {"premium", "pro", "plus"},
+                  "it changes a paid plan"),
     # `terminate` is deliberately NOT here — it is already a bare committing
     # verb, and left that way. "Terminate process" / "Terminate instance"
     # would become benign if it were paired, and a word that strong is worth
