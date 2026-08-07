@@ -628,7 +628,19 @@ def _strip_noise(text: str, *, replacement: str = "") -> str:
     return text
 
 
-def _tokenise(text: str, *, replacement: str) -> list[str]:
+#: Punctuation that can sit inside a word without a reader noticing much:
+#: "De.lete", "B-u-y", "Pur_chase". Every one of these is a word boundary to
+#: `re.split`, which is exactly why they hid a committing word from every
+#: reading this guard had.
+_INWORD_PUNCT = r".\-_'’·*~^|/\\,;:+="
+
+#: Only *between* two word characters. A leading or trailing mark is ordinary
+#: punctuation ("Delete." / "-Delete"), already handled by the normal split;
+#: removing those too would merge genuinely separate words across a space.
+_DEPUNCT_RE = re.compile(rf"(?<=\w)[{_INWORD_PUNCT}]+(?=\w)")
+
+
+def _tokenise(text: str, *, replacement: str, depunct: bool = False) -> list[str]:
     text = _strip_noise(text, replacement=replacement).lower()
     # Fold homoglyphs onto the Latin letter they are standing in for, so a
     # page that spells "order" with a Cyrillic о is tokenised exactly like
@@ -643,6 +655,14 @@ def _tokenise(text: str, *, replacement: str) -> list[str]:
         # character silently act as a word boundary — see _ALLOWED_CHARS
         # for why an allowlist and not another exclusion-list entry.
         return []
+    if depunct:
+        # The third reading: punctuation *inside* a word is deleted rather
+        # than treated as a boundary, so "De.lete" reads as "delete". Kept as
+        # one extra tokenisation instead of adding these marks to the noise
+        # set, because each noise character doubles the mixed readings and
+        # trips the _MAX_NOISE_CHARS bound - an ordinary hyphenated label
+        # would start being refused as "too decorative to read".
+        text = _DEPUNCT_RE.sub("", text)
     return [w for w in re.split(r"[^a-z0-9]+", text) if w]
 
 
@@ -652,6 +672,13 @@ def _words(text: str) -> list[str]:
     is checked alongside, never instead of, `_words_split()`.
     """
     return _tokenise(text, replacement="")
+
+
+def _words_depunct(text: str) -> list[str]:
+    """Tokenise `text` with in-word punctuation removed - the "depunctuated"
+    reading. See `_DEPUNCT_RE` and `irreversible_reason()`.
+    """
+    return _tokenise(text, replacement="", depunct=True)
 
 
 def _words_split(text: str) -> list[str]:
@@ -797,7 +824,9 @@ def irreversible_reason(name: str, role: str = "") -> str:
         return ("it has no readable label, so there is no way to tell what it "
                 "does")
 
-    reason = _reason_for_words(words_join) or _reason_for_words(words_split)
+    reason = (_reason_for_words(words_join)
+              or _reason_for_words(words_split)
+              or _reason_for_words(_words_depunct(name)))
     if reason:
         return reason
 

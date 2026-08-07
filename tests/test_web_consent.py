@@ -1089,3 +1089,56 @@ def test_interior_noise_is_still_enumerated_after_that_narrowing():
     assert "deletes" in irreversible_reason(f"De{hair}lete{hair}account")
     assert "places an order" in irreversible_reason(f"Or{hair}der{hair}now")
 
+
+
+# ── ASCII punctuation inside a committing word ──────────────────────────────
+# The Unicode work hardened this guard against invisible and homoglyph attacks
+# and left the most ordinary evasion open: a full stop. `re.split` treats every
+# ASCII punctuation mark as a word boundary, so "De.lete account" could only
+# ever read as ['de','lete','account'] — 'delete' was unreachable by any
+# reading. Nothing exotic required, and it defeated the guard completely.
+
+PUNCT_EVASIONS = [
+    "De.lete account", "De-lete account", "De_lete account",
+    "D.e.l.e.t.e account", "P.ay now", "B-u-y now", "Pur.chase",
+    "Confirm p_ayment", "Ș.terge contul", "Cumpă.ră acum", "Pa.gar ahora",
+    "Un-subscribe", "Trans.fer funds",
+]
+
+
+@pytest.mark.parametrize("label", PUNCT_EVASIONS)
+def test_punctuation_inside_a_word_does_not_hide_it(label):
+    assert irreversible_reason(label, "button"), f"{label!r} slipped through"
+
+
+ORDINARY_HYPHENATED = [
+    "Sign-in", "Log-in", "E-mail me", "Opt-in", "Read-only view",
+    "Sign in", "Search", "Next", "Back", "Show more", "Add-on details",
+    "Follow-up", "Two-factor setup",
+]
+
+
+@pytest.mark.parametrize("label", ORDINARY_HYPHENATED)
+def test_ordinary_hyphenated_copy_still_passes(label):
+    """The paired test. A fix that refuses "Sign-in" has replaced a security
+    hole with an eagle that cannot log in — this guard's failure history is
+    mostly fixes that closed the named case and broke the neighbourhood."""
+    assert irreversible_reason(label, "button") == "", (
+        f"{label!r} is ordinary copy and must stay clickable")
+
+
+def test_send_stays_committing_even_hyphenated():
+    """Not a false positive: `send` is deliberately committing (a message
+    cannot be unsent), so "Re-send code" refusing is the guard working. Pinned
+    because it looks like ordinary copy and would otherwise invite a
+    well-meant "fix" that reopens the hole."""
+    assert irreversible_reason("Re-send code", "button")
+    assert irreversible_reason("Send code", "button")
+
+
+def test_the_depunctuated_reading_cannot_invent_a_word():
+    """Joining across punctuation must not fabricate a committing word out of
+    two innocent ones — "Pa" + "y" is the intended catch, but "Ship" + "ay"
+    forming something committing would be a false refusal factory."""
+    assert irreversible_reason("Show-all results", "button") == ""
+    assert irreversible_reason("Next-page", "button") == ""
