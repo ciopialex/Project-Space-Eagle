@@ -604,3 +604,57 @@ def test_a_reassert_failure_does_not_lose_the_turn(monkeypatch):
     W._reassert_target(Broken(), "https://x.test/", ["Respinge tot"])  # must not raise
 
 
+
+
+# ── Throughput: the two fixed costs inside a single `open` ─────────────────
+# Measured live on youtube.com/playlist?list=LL, one open broken down:
+#   goto+settle 2205ms | consent wall 4001ms | re-assert 2703ms | look 20ms
+# Two thirds of that is waiting decided in advance rather than measured.
+
+def test_the_consent_wait_is_condition_based_not_a_fixed_countdown():
+    """The wall-clearing loop slept 500ms six times regardless of the page —
+    the same fixed-delay-as-measurement bug already fixed in _settle, which
+    cost 1200ms on every navigation until it was."""
+    import inspect
+    import actions.web_agency as W
+    src = inspect.getsource(W._clear_consent_walls)
+    assert "wait_for_timeout(500)" not in src, (
+        "still counting down instead of watching the page")
+    assert "_settle" in src, "should reuse the adaptive settle"
+
+
+def test_a_correct_landing_is_not_re_navigated(monkeypatch):
+    """The re-assert exists because Google's consent flow bounces to
+    `...&cbrd=1`. When it did NOT bounce, navigating again costs a full page
+    load — 2703ms measured — to arrive where we already were."""
+    import actions.web_agency as W
+    visits = []
+
+    class B:
+        def goto(self, url):
+            visits.append(url)
+            return url
+        def page(self):
+            return object()
+
+    target = "https://www.youtube.com/playlist?list=LL"
+    monkeypatch.setattr(W, "_current_url", lambda _p: target)
+    W._reassert_target(B(), target, ["Respinge tot"])
+    assert visits == [], "re-navigated to the page it was already on"
+
+
+def test_a_bounced_landing_is_still_corrected(monkeypatch):
+    import actions.web_agency as W
+    visits = []
+
+    class B:
+        def goto(self, url):
+            visits.append(url)
+            return url
+        def page(self):
+            return object()
+
+    target = "https://www.youtube.com/playlist?list=LL"
+    monkeypatch.setattr(W, "_current_url", lambda _p: target + "&cbrd=1")
+    W._reassert_target(B(), target, ["Respinge tot"])
+    assert visits == [target], "left the eagle on the consent bounce page"

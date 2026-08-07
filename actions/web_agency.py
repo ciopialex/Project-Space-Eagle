@@ -102,7 +102,7 @@ _SENSE = PageSense()
 def _browser(explicit):
     if explicit is not None:
         return explicit
-    from actions.grounding.web.browser import default_browser
+    from actions.grounding.web.browser import _settle, default_browser
     return default_browser()
 
 
@@ -322,18 +322,16 @@ def _clear_consent_walls(browser, grounder: WebGrounder) -> list[str]:
             break
         cleared.append(choice)
         # The click navigates, and the destination is a single-page app that
-        # mounts its content well after the navigation resolves. A fixed pause
-        # is the wrong tool: too short and the next read sees a bare footer
-        # (measured), too long and every consent wall costs that much. Wait
-        # until the page actually has something on it, with a hard cap.
-        for _ in range(6):
-            try:
-                browser.call(lambda pg: pg.wait_for_timeout(500), timeout=20.0)
-            except Exception:
-                break
-            page = browser.page()
-            if page is None or len(_current_nodes(page)) >= 20:
-                break
+        # mounts its content well after the navigation resolves. This used to
+        # count down 500ms six times regardless of the page - the same
+        # fixed-delay-as-measurement mistake already fixed in `_settle`, and it
+        # cost 4001ms of a 8929ms `open` measured on youtube.com. Watch the DOM
+        # instead: a finished page proves itself in ~200ms, a slow one still
+        # gets its full budget.
+        try:
+            browser.call(lambda pg: _settle(pg), timeout=20.0)
+        except Exception:
+            pass
     return cleared
 
 
@@ -486,6 +484,19 @@ def _reassert_target(browser, url: str, cleared: list) -> None:
     """
     if not cleared or not url:
         return
+    # Only when the flow actually bounced. Measured at 2703ms on youtube.com,
+    # which is a full page load spent arriving where we already were - the
+    # consent wall does not always redirect.
+    try:
+        page = browser.page()
+        # Compared EXACTLY. An earlier version stripped `&cbrd=` before
+        # comparing, which made the bounce page - the whole reason this
+        # function exists - look identical to the target and skipped the
+        # correction it was written to perform.
+        if page is not None and _current_url(page).rstrip("/") == url.rstrip("/"):
+            return
+    except Exception:
+        pass
     try:
         browser.goto(url)
     except Exception:
