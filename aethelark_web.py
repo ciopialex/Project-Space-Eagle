@@ -556,7 +556,11 @@ class WebShellUI(QObject):
                 # the sign-in has not happened yet. Relayed as-is rather than
                 # dressed up as an error.
                 self.write_log("SYS: " + (result.message or "Sign-in window opened."))
-                self._push("setSettings", snapshot())
+                # `_push` touches the web view, which from a worker thread
+                # takes the whole app down - the crash the user hit. The
+                # settings signal marshals it back to the GUI thread, which is
+                # why `_push_settings_async` exists at all.
+                self._push_settings_async(snapshot())
             except Exception as e:
                 self.write_log(f"SYS: Could not open the sign-in window: {e}")
 

@@ -259,6 +259,7 @@ def _sign_in(browser, url: str, *, grace: float = _SIGN_IN_GRACE_S,
 
     if cleared:
         _HANDOFF.pop("url", None)
+        _record_signed_in(url)
         browser.surface(False)
         return ToolResult.success(
             f"Signed in at {url}. The eagle's browser stays signed in from "
@@ -396,6 +397,32 @@ def _recover_signed_out(browser, url: str) -> bool:
     except Exception:
         return False
     return True
+
+
+def _record_signed_in(url: str) -> None:
+    """Note that this site now has a session, for the Settings panel to show.
+
+    The panel lists sites from the import marker, so a site the user signed
+    into BY HAND through the window never appeared there - the list answered
+    "what did we import" while claiming to answer "what can the eagle use".
+    Appended, never replaced: the two ways of getting a session are equal
+    citizens and neither should erase the other.
+    """
+    from actions.grounding.web.profile_import import _IMPORTED_MARKER, _normalise
+    from core import user_paths
+
+    domain = _normalise(url)
+    if not domain:
+        return
+    try:
+        marker = user_paths.browser_profile_dir() / _IMPORTED_MARKER
+        existing = set(marker.read_text().split()) if marker.exists() else set()
+        if domain in existing:
+            return
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("\n".join(sorted(existing | {domain})))
+    except Exception:
+        pass          # a bookkeeping note must never fail a completed sign-in
 
 
 def _remedy_for(url: str) -> str:
