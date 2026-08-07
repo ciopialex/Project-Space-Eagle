@@ -85,6 +85,16 @@ def google_capabilities() -> dict:
     }
 
 
+def youtube_state() -> dict:
+    """Which wall stands between the eagle and the user's YouTube, if any."""
+    try:
+        from actions.youtube_setup import youtube_status
+        return youtube_status()
+    except Exception as e:
+        return {"state": "error", "label": "Could not check",
+                "action": f"Try again in a moment ({e})."}
+
+
 def _browser_profile():
     from core import user_paths
     return user_paths.browser_profile_dir()
@@ -160,6 +170,10 @@ def snapshot() -> dict:
                 **{k: v for k, v in google_capabilities().items()
                    if k in ("youtube", "needs_reconnect")},
             },
+            # What the YouTube link can actually do, and what to press if it
+            # cannot. Probing costs one cheap API call, so it is computed here
+            # rather than on a timer.
+            "youtube": youtube_state(),
             # The eagle's own browser sign-ins, which are NOT the user's Chrome.
             "browser": {"sites": browser_sessions()},
             # WhatsApp Web login lives in the browser profile, not a token we own,

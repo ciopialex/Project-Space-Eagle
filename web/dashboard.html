@@ -968,12 +968,17 @@ draw();
     +   '<div class="set-row"><div class="ic">W</div><div class="tt">'
     +     '<div class="t">WhatsApp</div>'
     +     '<div class="d">Link via QR to send messages by voice.</div></div>'
-    +     '<button class="set-mini" id="set-wa-btn">Link</button></div></div>'
+    +     '<button class="set-mini" id="set-wa-btn">Link</button></div>'
 
     // The eagle's browser is separate from the user's Chrome ON PURPOSE, and
     // that was invisible everywhere: "how do I log in?" had no answer in the
     // interface, only a voice command you had to know to say. This row shows
     // which sites it can already use and opens a real window to add one.
+    +   '<div class="set-row"><div class="ic">▶</div><div class="tt">'
+    +     '<div class="t">YouTube <span class="set-badge off" id="set-yt-badge">CHECKING</span></div>'
+    +     '<div class="d" id="set-yt-d">Liked videos, playlists and subscriptions.</div></div>'
+    +     '<button class="set-mini" id="set-yt-btn">Connect</button></div></div>'
+
     + '<div class="set-sec"><div class="lbl">Sites the eagle can use</div>'
     +   '<div class="set-row"><div class="ic">◉</div><div class="tt">'
     +     '<div class="t">Signed in <span class="set-badge off" id="set-br-badge">NONE</span></div>'
@@ -1075,6 +1080,21 @@ draw();
       gbtn.textContent = 'Connect'; gbtn.className = 'set-mini'; gbtn.dataset.act = 'conn';
     }
 
+    var yt = (s.accounts || {}).youtube || {};
+    var ytb = document.getElementById('set-yt-badge'),
+        ytd = document.getElementById('set-yt-d'),
+        ytn = document.getElementById('set-yt-btn');
+    if (ytb) {
+      ytb.textContent = (yt.label || 'Checking').toUpperCase();
+      ytb.className = (yt.state === 'ready') ? 'set-badge' : 'set-badge off';
+      // The ACTION, not the diagnosis. Each state has a different fix and the
+      // user should never have to work out which wall they are at.
+      ytd.textContent = yt.action || 'Liked videos, playlists and subscriptions.';
+      ytn.style.display = (yt.state === 'ready') ? 'none' : '';
+      ytn.textContent = (yt.state === 'needs_api') ? 'Turn on'
+                      : (yt.state === 'needs_scope') ? 'Reconnect' : 'Connect';
+    }
+
     var sites = ((s.accounts || {}).browser || {}).sites || [];
     var brb = document.getElementById('set-br-badge'),
         brd = document.getElementById('set-br-d');
@@ -1146,6 +1166,12 @@ draw();
   function wire() {
     document.getElementById('set-close').onclick = close;
     scrim.addEventListener('click', function (e) { if (e.target === scrim) close(); });
+
+    var ytBtn = document.getElementById('set-yt-btn');
+    if (ytBtn) ytBtn.onclick = function () {
+      this.textContent = 'Working…';
+      if (pb() && pb().connect_youtube) pb().connect_youtube();
+    };
 
     var brBtn = document.getElementById('set-br-btn');
     if (brBtn) brBtn.onclick = function () {

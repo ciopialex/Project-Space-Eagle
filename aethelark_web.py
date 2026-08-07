@@ -113,6 +113,8 @@ class WebBridge(QObject):
     @pyqtSlot(str)
     def browser_sign_in(self, site): self._ui.browser_sign_in(site)
     @pyqtSlot()
+    def connect_youtube(self): self._ui.connect_youtube()
+    @pyqtSlot()
     def rerun_onboarding(self): self._ui.rerun_onboarding()
 
     @pyqtSlot(int, int)
@@ -523,6 +525,43 @@ class WebShellUI(QObject):
             except Exception as _e:
                 print(f"[aethelark_web.py] Non-fatal error at line 488: {_e}")
         threading.Thread(target=_flow, daemon=True).start()
+
+    def connect_youtube(self):
+        """One button, whichever wall the user is actually at.
+
+        Connecting YouTube used to take four separate discoveries - sign in,
+        find the token predates the YouTube scope, reconnect, then find the
+        Data API switched off on the Cloud project. Each has a different fix,
+        and the eagle spent two rounds blaming the user's account for the last
+        one. This does the right one and says what it did.
+        """
+        import threading
+
+        def _run():
+            try:
+                from actions.youtube_setup import youtube_status, enable_api
+                from actions.app_settings import snapshot
+                status = youtube_status()
+                state = status.get("state")
+
+                if state == "ready":
+                    self.write_log("SYS: YouTube is already connected.")
+                elif state in ("needs_google", "needs_scope"):
+                    self.write_log("SYS: Opening Google sign-in — this also "
+                                   "grants YouTube.")
+                    self.connect_google()
+                    return                     # connect_google pushes settings
+                elif state == "needs_api":
+                    ok, detail = enable_api(status.get("project", ""))
+                    self.write_log("SYS: " + detail)
+                else:
+                    self.write_log("SYS: " + status.get("action", "Try again."))
+
+                self._push_settings_async(snapshot())
+            except Exception as e:
+                self.write_log(f"SYS: Could not connect YouTube: {e}")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def browser_sign_in(self, site: str):
         """Open the eagle's own browser so the user can sign in to `site`.
