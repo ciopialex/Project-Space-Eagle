@@ -1,0 +1,34 @@
+<!doctype html>
+<title>Icon-only controls</title>
+<!--
+Controls whose name lives on a DESCENDANT, not on the element itself. This is
+the commonest real shape on a news or shop homepage: a link wrapping an icon.
+Measured on digi24.ro, 74 of 309 interactive controls had no accessible name
+by the old chain, which meant the eagle could not see or click any of them.
+
+Each control below is named the way a real site names it. The pairs at the
+bottom are the ones that must NOT acquire a name, so the fallback cannot be
+accused of inventing one.
+-->
+<body>
+  <!-- named on a descendant -->
+  <a href="/home"><img src="i.png" alt="Home"></a>
+  <a href="/cart"><img src="i.png" title="Shopping cart"></a>
+  <a href="/profile"><span aria-label="Your profile"></span></a>
+  <button><svg aria-label="Search"></svg></button>
+  <button><svg><title>Close dialog</title></svg></button>
+  <a href="/rss"><i class="icon" title="RSS feed"></i></a>
+
+  <!-- the element's own attributes still win over a descendant's -->
+  <a href="/x" aria-label="Outer wins"><img src="i.png" alt="Inner loses"></a>
+  <a href="/y" title="Own title wins"><i class="icon"></i></a>
+
+  <!-- visible text still wins over everything below it -->
+  <a href="/z"><img src="i.png" alt="Alt loses">Real text</a>
+
+  <!-- must stay nameless: nothing here is a label -->
+  <a href="/nameless1"><img src="i.png" alt=""></a>
+  <a href="/nameless2"><span></span></a>
+  <button><svg></svg></button>
+  <a href="/nameless3"><img src="i.png" alt="   "></a>
+</body>

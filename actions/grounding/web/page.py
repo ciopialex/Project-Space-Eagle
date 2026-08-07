@@ -131,9 +131,35 @@ _ACCESSIBLE_NAME_JS = r"""
     // not share that blind spot, so it is the fallback rather than the
     // first choice — it also happily includes text from display:none
     // descendants, which `innerText` correctly leaves out.
-    return clean(el.innerText) || clean(el.textContent) || clean(el.getAttribute('alt'))
-        || clean(el.getAttribute('placeholder')) || clean(el.getAttribute('title'))
-        || clean(el.getAttribute('name'));
+    const own = clean(el.innerText) || clean(el.textContent)
+        || clean(el.getAttribute('alt')) || clean(el.getAttribute('placeholder'))
+        || clean(el.getAttribute('title')) || clean(el.getAttribute('name'));
+    if (own) return own;
+
+    // Last resort: the name lives on a DESCENDANT, not on the element.
+    // `<a href="/home"><img alt="Home"></a>` is the commonest shape on a news
+    // or shop homepage, and the whole chain above misses it - `alt` is on the
+    // img, and the link has no text of its own. Measured on digi24.ro, 74 of
+    // 309 interactive controls were nameless for exactly this reason, and a
+    // control the collector cannot name is dropped entirely: the eagle could
+    // not see or click any of them, while a human clicks them by sight.
+    //
+    // Strictly a fallback, and only real label attributes are read - never a
+    // filename, an href or a class. A decorative `alt=""` is a deliberate
+    // statement that the image is not a label, so it yields nothing and the
+    // control stays nameless rather than acquiring an invented one. A
+    // fabricated name is worse than none: the grounder would match a
+    // description to a control that does not do what the name implies.
+    if (el.querySelector) {
+      const inner = el.querySelector('[aria-label],[alt],[title]');
+      if (inner) {
+        const t = clean(inner.getAttribute('aria-label'))
+            || clean(inner.getAttribute('alt'))
+            || clean(inner.getAttribute('title'));
+        if (t) return t;
+      }
+    }
+    return '';
   };
 """
 
