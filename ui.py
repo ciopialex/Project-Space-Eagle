@@ -116,20 +116,6 @@ def _make_gaussian_shadow_image(w: int, h: int, render_rect: QRectF, offset_y: f
         return QImage()
 
 
-def _make_blurred_logo_image(img: QImage, blur_radius: float = 1.1) -> QImage:
-    """Applies a subtle 1.1px PIL Gaussian Blur to the AE logo image for liquid-smooth anti-aliased edges."""
-    try:
-        from PIL import Image, ImageFilter
-        ptr = img.bits()
-        ptr.setsize(img.height() * img.bytesPerLine())
-        pil_img = Image.frombuffer('RGBA', (img.width(), img.height()), ptr, 'raw', 'BGRA', img.bytesPerLine(), 1)
-        blurred = pil_img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-        b_bytes = blurred.tobytes('raw', 'BGRA')
-        return QImage(b_bytes, blurred.width, blurred.height, img.bytesPerLine(), QImage.Format.Format_ARGB32_Premultiplied).copy()
-    except Exception:
-        return img
-
-
 def _read_full_config() -> dict:
     """Read api_keys.json config dict. Returns {} on any error."""
     try:

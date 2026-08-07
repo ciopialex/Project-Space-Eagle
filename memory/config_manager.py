@@ -24,9 +24,6 @@ def load_api_keys() -> dict:
         print(f"❌ Failed to load api_keys.json: {e}")
         return {}
 
-def get_gemini_key() -> str | None:
-    return load_api_keys().get("gemini_api_key")
-
 def get_brief_enabled() -> bool:
     return load_api_keys().get("morning_brief_enabled", True)
 
