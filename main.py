@@ -273,6 +273,41 @@ def _collapse_repeats(text: str) -> str:
             last = norm
     return " ".join(out) if out else text
 
+
+def _computer_control_actions() -> str:
+    """Read from computer_control's own _ACTIONS, for the same reason as
+    below: the hand-typed version had already lost drag, wait_for_element and
+    scroll_into_view, which work and which the model was never told about."""
+    try:
+        from actions.computer_control import _ACTIONS
+        return " | ".join(_ACTIONS)
+    except Exception:
+        return "type | click | hotkey | press | scroll | screenshot"
+
+
+def _computer_settings_actions() -> str:
+    """The action vocabulary, read from the implementation itself.
+
+    This was the string "The action to perform", and computer_settings
+    implements 66 actions. The model cannot invoke what it has never heard of,
+    so 59 working capabilities - lock screen, mute, snap window, switch tab,
+    toggle wifi, task manager - were unreachable by voice. The eagle was less
+    capable than the eagle, and no test could see it: the code worked, the
+    tests passed, and the features were dead because nothing advertised them.
+
+    Generated rather than typed, because a hand-written list is exactly how
+    they went missing in the first place.
+    """
+    try:
+        from actions.computer_settings import ACTION_MAP
+        names = sorted(ACTION_MAP)
+    except Exception:
+        names = []
+    extra = ["volume_set", "type_text", "press_key", "reload_n"]
+    return ("One of: " + ", ".join(names + extra) + ". "
+            "volume_set/type_text/press_key/reload_n take `value`.")
+
+
 TOOL_DECLARATIONS = [
     {
         "name": "open_app",
@@ -431,7 +466,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "The action to perform"},
+                "action":      {"type": "STRING", "description": _computer_settings_actions()},
                 "description": {"type": "STRING", "description": "Natural language description of what to do"},
                 "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."}
             },
@@ -570,7 +605,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "write | edit | explain | run | build | auto (default: auto)"},
+                "action":      {"type": "STRING", "description": "write | edit | explain | run | build | optimize | screen_debug | auto (default: auto)"},
                 "description": {"type": "STRING", "description": "What the code should do or what change to make"},
                 "language":    {"type": "STRING", "description": "Programming language (default: python)"},
                 "output_path": {"type": "STRING", "description": "Where to save the file"},
@@ -656,7 +691,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | screen_find | screen_click | random_data | user_data"},
+                "action":      {"type": "STRING", "description": _computer_control_actions()},
                 "text":        {"type": "STRING", "description": "Text to type or paste"},
                 "x":           {"type": "INTEGER", "description": "X coordinate"},
                 "y":           {"type": "INTEGER", "description": "Y coordinate"},
