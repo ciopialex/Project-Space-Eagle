@@ -25,6 +25,12 @@ import threading
 import time
 import json
 import sys
+
+# Line-buffer stdout before anything prints. Redirected output is
+# block-buffered by default, so `eagle > log.txt` loses everything
+# still in the buffer when the process dies - which is exactly the
+# moment the log matters most.
+from core import logsetup  # noqa: E402,F401
 import traceback
 import uuid
 from datetime import datetime
