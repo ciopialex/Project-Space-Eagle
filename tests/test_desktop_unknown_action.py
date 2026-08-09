@@ -35,14 +35,15 @@ def test_an_unknown_action_does_not_reach_the_code_generator(monkeypatch):
 
     result = D.desktop_control({"action": "list_windows"})
     assert called == [], "a bogus action was turned into generated code and run"
-    assert "list_windows" in result
+    # The entrypoint returns a ToolResult now; the refusal is in .message.
+    assert "list_windows" in result.message
 
 
 def test_an_unknown_action_names_the_real_ones(monkeypatch):
     monkeypatch.setattr(D, "_ask_gemini_for_desktop_action", lambda t: "")
     result = D.desktop_control({"action": "definitely_not_real"})
     for verb in ("wallpaper", "organize", "stats", "task"):
-        assert verb in result, f"did not tell the caller about '{verb}'"
+        assert verb in result.message, f"did not tell the caller about '{verb}'"
 
 
 def test_the_code_generator_is_still_reachable_when_asked(monkeypatch):

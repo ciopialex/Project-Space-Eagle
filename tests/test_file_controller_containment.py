@@ -235,11 +235,13 @@ def test_noisy_directories_are_pruned_from_searches(sandbox):
 
 
 def test_unknown_action_lists_the_known_ones(sandbox):
+    # The entrypoint now returns a ToolResult (the helpers still return prose,
+    # which is what every other test in this file asserts on).
     out = fc.file_controller({"action": "explode"})
-    assert "Unknown action" in out and "rename" in out
+    assert "Unknown action" in out.message and "rename" in out.message
 
 
 def test_malformed_parameters_are_reported_not_raised(sandbox):
     out = fc.file_controller({"action": "read", "path": "desktop",
                               "name": "a.txt", "max_chars": "not-a-number"})
-    assert "Invalid parameters" in out
+    assert "Invalid parameters" in out.message

@@ -67,16 +67,51 @@ class ToolResult:
         return resp
 
 
+class Failed(str):
+    """A helper's prose that remembers it is a failure.
+
+    The boundary migration (see `file_processor`) works while the ENTRYPOINT is
+    what decides the failure. Across most of the remaining queue it is not:
+    `file_controller` decides "Source not found" eleven functions deep and
+    `_guard` turns every containment breach into a sentence, so by the time the
+    entrypoint sees it there is only a string left — indistinguishable from a
+    successful one unless you grep its prose, which is the exact bug this
+    contract exists to kill.
+
+    Being a `str` subclass is the whole design. Every existing caller, format,
+    comparison and test behaves identically, so a tool migrates without
+    touching its call sites; the deciding code just says `Failed(...)` instead
+    of returning a bare string, and carries the next step it already knew.
+
+    String operations on it (`+`, `.strip()`, `.join()`) return plain `str`.
+    That is deliberate: a derived value was not the thing the deciding code
+    judged, so it degrades to today's behaviour rather than claiming a
+    failure it cannot vouch for.
+    """
+
+    guidance: str
+
+    def __new__(cls, text: str, guidance: str = "") -> "Failed":
+        obj = super().__new__(cls, text)
+        obj.guidance = guidance
+        return obj
+
+
 def normalize(raw: Any) -> ToolResult:
     """Coerce any tool's return value into a ToolResult.
 
     - ToolResult  → as-is (migrated tools).
+    - Failed      → explicit failure, with its guidance (migrated helpers).
     - str         → success wrapper (legacy tools; same behaviour as before).
     - None        → generic success ("Done.").
     - other       → str()-wrapped success.
     """
     if isinstance(raw, ToolResult):
         return raw
+    if isinstance(raw, Failed):
+        # Checked before `str` — Failed IS a str, and the legacy branch below
+        # would swallow it into an ok=True with no status at all.
+        return ToolResult.failure(str(raw), guidance=raw.guidance)
     if raw is None:
         return ToolResult.success("Done.")
     if isinstance(raw, str):

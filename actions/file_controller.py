@@ -32,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core import journal
+from core.tool_result import Failed, ToolResult, normalize
 
 try:
     import send2trash
@@ -143,18 +144,36 @@ def _guard(fn):
     The model receives this string, so it has to read as an outcome. Paths are
     reported as the resolved value on purpose: when a request is refused the
     user should see exactly what it resolved to.
+
+    Each is returned as `Failed` rather than a bare string. It is still a
+    `str` — every caller and every containment test is unaffected — but the
+    entrypoint can now tell a refusal from a result without reading the prose,
+    which is what let "Access denied" reach the model as a completed action.
     """
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
         except _Denied as e:
-            return f"Access denied: {e}"
+            return Failed(
+                f"Access denied: {e}",
+                guidance=("That path is outside the folders this can touch. "
+                          "Tell the user it was refused — do not retry with a "
+                          "different spelling of the same location."))
         except PermissionError as e:
-            return f"Permission denied: {e.filename or ''}".strip()
+            return Failed(
+                f"Permission denied: {e.filename or ''}".strip(),
+                guidance="The user's account cannot access this. Say so; do "
+                         "not retry.")
         except FileNotFoundError as e:
-            return f"Not found: {e.filename or ''}".strip()
+            return Failed(
+                f"Not found: {e.filename or ''}".strip(),
+                guidance="Ask the user to confirm the name — it may have been "
+                         "misheard. Do not guess a similar path.")
         except OSError as e:
-            return f"{fn.__name__} failed: {e.strerror or e}"
+            return Failed(
+                f"{fn.__name__} failed: {e.strerror or e}",
+                guidance="Tell the user this did not work. Do not claim the "
+                         "file was changed.")
     wrapper.__name__ = fn.__name__
     wrapper.__doc__ = fn.__doc__
     return wrapper
@@ -205,7 +224,8 @@ def _stat_or_none(path: Path):
 def list_files(path: str = "desktop", show_hidden: bool = False) -> str:
     target = _resolve(path)
     if not target.is_dir():
-        return f"Not a directory: {target}"
+        return Failed(f"Not a directory: {target}",
+                      guidance=('Ask the user which folder they mean.'))
 
     entries = []
     for item in sorted(target.iterdir()):
@@ -264,7 +284,8 @@ def create_file(path: str, name: str = "", content: str = "") -> str:
 def create_folder(path: str, name: str = "") -> str:
     target = _resolve(path, name)
     if target.is_dir():
-        return f"Folder already exists: {target.name}"
+        return Failed(f"Folder already exists: {target.name}",
+                      guidance=('Nothing was created because it is already there. Say so; do not create a variant name.'))
     target.mkdir(parents=True, exist_ok=True)
     journal.record("mkdir", path=target)
     return f"Folder created: {target.name}"
@@ -274,18 +295,25 @@ def create_folder(path: str, name: str = "") -> str:
 def delete_file(path: str, name: str = "") -> str:
     target = _resolve(path, name)
     if not target.exists():
-        return f"Not found: {target.name}"
+        return Failed(f"Not found: {target.name}",
+                      guidance="Ask the user to confirm the name — it may have "
+                               "been misheard. Do not guess a similar file.")
 
     # The well-known directories themselves are never deletable, however the
     # request is phrased.
     protected = {p.resolve() for p in _shortcuts().values()}
     if target in protected:
-        return f"Protected directory, cannot delete: {target.name}"
+        return Failed(f"Protected directory, cannot delete: {target.name}",
+                      guidance=('Tell the user a well-known folder cannot be deleted. Do not attempt its contents instead unless they ask.'))
 
     if not _SEND2TRASH:
-        return ("send2trash is not installed, so deletion is disabled - "
-                "nothing here removes a file permanently. "
-                "Run: pip install send2trash")
+        return Failed(
+            "send2trash is not installed, so deletion is disabled - "
+            "nothing here removes a file permanently. "
+            "Run: pip install send2trash",
+            guidance="Nothing was deleted. Tell the user the dependency is "
+                     "missing; do not fall back to removing the file another "
+                     "way.")
 
     # Two tiers of recoverable. The system trash always applies, so the user
     # can retrieve this by hand either way; staging the bytes as well is what
@@ -319,14 +347,17 @@ def _destination_for(src: Path, destination: str) -> Path:
 @_guard
 def move_file(path: str, name: str = "", destination: str = "") -> str:
     if not destination:
-        return "No destination specified."
+        return Failed("No destination specified.",
+                      guidance=('Ask the user where it should go.'))
     src = _resolve(path, name)
     if not src.exists():
-        return f"Source not found: {src.name}"
+        return Failed(f"Source not found: {src.name}",
+                      guidance=('Ask the user to confirm the filename.'))
 
     dst = _destination_for(src, destination)
     if dst.exists():
-        return f"'{dst.name}' already exists in {dst.parent.name}/ - not overwriting."
+        return Failed(f"'{dst.name}' already exists in {dst.parent.name}/ - not overwriting.",
+                      guidance=('Ask the user whether to replace it or pick another name.'))
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(src), str(dst))
@@ -337,14 +368,17 @@ def move_file(path: str, name: str = "", destination: str = "") -> str:
 @_guard
 def copy_file(path: str, name: str = "", destination: str = "") -> str:
     if not destination:
-        return "No destination specified."
+        return Failed("No destination specified.",
+                      guidance=('Ask the user where it should go.'))
     src = _resolve(path, name)
     if not src.exists():
-        return f"Source not found: {src.name}"
+        return Failed(f"Source not found: {src.name}",
+                      guidance=('Ask the user to confirm the filename.'))
 
     dst = _destination_for(src, destination)
     if dst.exists():
-        return f"'{dst.name}' already exists in {dst.parent.name}/ - not overwriting."
+        return Failed(f"'{dst.name}' already exists in {dst.parent.name}/ - not overwriting.",
+                      guidance=('Ask the user whether to replace it or pick another name.'))
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
@@ -359,9 +393,12 @@ def copy_file(path: str, name: str = "", destination: str = "") -> str:
 def rename_file(path: str, name: str = "", new_name: str = "") -> str:
     target = _resolve(path, name)
     if not target.exists():
-        return f"Not found: {target.name}"
+        return Failed(f"Not found: {target.name}",
+                      guidance="Ask the user to confirm the name — it may have "
+                               "been misheard. Do not guess a similar file.")
     if not new_name:
-        return "No new name provided."
+        return Failed("No new name provided.",
+                      guidance=('Ask the user what to call it.'))
 
     # THE fix. The old version joined new_name onto the parent and renamed
     # with no containment check at all, so "../../.ssh/authorized_keys"
@@ -371,7 +408,8 @@ def rename_file(path: str, name: str = "", new_name: str = "") -> str:
     leaf = _bare_name(new_name)
     new_path = _resolve(str(target.parent), leaf)
     if new_path.exists():
-        return f"A file named '{leaf}' already exists here."
+        return Failed(f"A file named '{leaf}' already exists here.",
+                      guidance=('Ask the user for a different name.'))
 
     target.rename(new_path)
     journal.record("rename", src=target, dst=new_path)
@@ -382,9 +420,11 @@ def rename_file(path: str, name: str = "", new_name: str = "") -> str:
 def read_file(path: str, name: str = "", max_chars: int = _MAX_READ_CHARS) -> str:
     target = _resolve(path, name)
     if not target.exists():
-        return f"File not found: {target.name}"
+        return Failed(f"File not found: {target.name}",
+                      guidance=('Ask the user to confirm the filename.'))
     if not target.is_file():
-        return f"Not a file: {target.name}"
+        return Failed(f"Not a file: {target.name}",
+                      guidance=('That is a folder. Ask which file inside it they mean.'))
 
     limit = max(1, int(max_chars))
     # Read one character past the limit rather than slurping the file and
@@ -429,7 +469,8 @@ def find_files(name: str = "", extension: str = "",
                path: str = "home", max_results: int = 20) -> str:
     root = _resolve(path)
     if not root.is_dir():
-        return f"Search path not found: {root}"
+        return Failed(f"Search path not found: {root}",
+                      guidance=('Ask the user where to search.'))
 
     wanted_ext = extension.lower().lstrip("*") if extension else ""
     if wanted_ext and not wanted_ext.startswith("."):
@@ -458,7 +499,8 @@ def find_files(name: str = "", extension: str = "",
 def get_largest_files(path: str = "downloads", count: int = 10) -> str:
     root = _resolve(path)
     if not root.is_dir():
-        return f"Path not found: {root}"
+        return Failed(f"Path not found: {root}",
+                      guidance=('Ask the user which folder they mean.'))
 
     limit = max(1, min(int(count), 50))
 
@@ -525,7 +567,8 @@ _EXT_TO_FOLDER: dict[str, str] = {
 def organize_desktop() -> str:
     desktop = _resolve("desktop")
     if not desktop.is_dir():
-        return f"No desktop directory at {desktop}"
+        return Failed(f"No desktop directory at {desktop}",
+                      guidance=('Tell the user there is no Desktop folder to organise.'))
 
     moved: list[str] = []
     skipped = 0
@@ -561,7 +604,9 @@ def get_file_info(path: str, name: str = "") -> str:
     target = _resolve(path, name)
     info = _stat_or_none(target)
     if info is None:
-        return f"Not found: {target.name}"
+        return Failed(f"Not found: {target.name}",
+                      guidance="Ask the user to confirm the name — it may have "
+                               "been misheard. Do not guess a similar file.")
 
     fields = {
         "Name":      target.name,
@@ -578,8 +623,14 @@ def get_file_info(path: str, name: str = "") -> str:
 # ── tool entry point ────────────────────────────────────────────────────────
 
 def file_controller(parameters: dict | None = None, response=None,
-                    player=None, session_memory=None) -> str:
-    """Dispatch one file action. Called from main.py's tool executor."""
+                    player=None, session_memory=None) -> ToolResult:
+    """Dispatch one file action. Called from main.py's tool executor.
+
+    Returns a `ToolResult`. The helpers still return prose — the containment
+    tests assert on those strings and there is no reason to churn them — but a
+    refusal now arrives here marked as `Failed`, so the verdict is read off
+    the type rather than guessed from the wording.
+    """
     params = parameters or {}
     action = str(params.get("action", "")).lower().strip()
     path = params.get("path", "desktop")
@@ -613,10 +664,21 @@ def file_controller(parameters: dict | None = None, response=None,
 
     handler = handlers.get(action)
     if handler is None:
-        return f"Unknown action: '{action}'. Known: {', '.join(sorted(handlers))}"
+        return ToolResult.failure(
+            f"Unknown action: '{action}'. Known: {', '.join(sorted(handlers))}",
+            guidance="Pick one of the listed actions, or tell the user this "
+                     "tool does not do what they asked.")
 
     try:
-        return handler()
+        outcome = handler()
     except (TypeError, ValueError) as e:
         # A malformed argument from the model is a bad request, not a crash.
-        return f"Invalid parameters for '{action}': {e}"
+        return ToolResult.failure(
+            f"Invalid parameters for '{action}': {e}",
+            guidance="Re-read the parameters for this action and call it again "
+                     "with the right types. Do not tell the user it worked.")
+
+    # `normalize` reads the marker: Failed → ok=False with its guidance,
+    # anything else → the success it plainly is, since every refusal in this
+    # module is marked at the point it is decided.
+    return normalize(outcome)

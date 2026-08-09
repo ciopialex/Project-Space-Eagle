@@ -10,6 +10,19 @@ import platform
 from pathlib import Path
 from datetime import datetime
 from core import user_paths
+from core.tool_result import Failed, ToolResult, normalize
+
+
+class GenerationFailed(Failed):
+    """The brain did not return code — it returned why it could not.
+
+    A distinct type because the hazard is specific: this value must never
+    reach `compile()`. It used to be `f"ERROR: {e}"`, an ordinary string, and
+    `desktop_control` handed the generator's output straight to the executor.
+    A rate limit — routine on a free tier — was therefore compiled as Python,
+    and the user asking to tidy their desktop was told "Execution error:
+    invalid syntax (<aethelark_desktop>, line 1)".
+    """
 
 try:
     import pyautogui
@@ -84,7 +97,9 @@ def _build_sandbox() -> dict:
 
 def _execute_generated_code(code: str, player=None) -> str:
     if not code or code.strip() == "UNSAFE":
-        return "This action cannot be performed safely."
+        return Failed(
+            "This action cannot be performed safely.",
+            guidance="The model declined this as unsafe. Tell the user it was not done and why; do not rephrase and retry.")
 
     # Kod temizleme
     if code.startswith("```"):
@@ -100,13 +115,20 @@ def _execute_generated_code(code: str, player=None) -> str:
         return "\n".join(output_lines) if output_lines else "Done."
     except Exception as e:
         print(f"[Desktop] Exec error: {e}\nCode:\n{code[:300]}")
-        return f"Execution error: {e}"
+        return Failed(
+            f"Execution error: {e}",
+            guidance="The generated step failed. Tell the user it did not work; do not claim the desktop changed.")
 
 
 def _ask_gemini_for_desktop_action(task: str) -> str:
+    """The generated code, or a `GenerationFailed` saying why there is none.
 
+    Never raises. Client construction is inside the try for that reason: it
+    reads the API key off disk, so a missing or malformed `api_keys.json` —
+    the state every new install starts in — used to escape this function
+    entirely, past its own error handling.
+    """
     from google import genai as _genai
-    _client = _genai.Client(api_key=_get_api_key())
 
     desktop = str(_get_desktop())
 
@@ -144,6 +166,7 @@ Output ONLY the Python code. No explanation, no markdown, no backticks.
 Task: {task}"""
 
     try:
+        _client = _genai.Client(api_key=_get_api_key())
         response = _client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
         code = response.text.strip()
         if code.startswith("```"):
@@ -151,14 +174,23 @@ Task: {task}"""
             code  = "\n".join(lines[1:-1]).strip()
         return code
     except Exception as e:
-        return f"ERROR: {e}"
+        # NOT a bare string: the caller executes whatever this returns.
+        return GenerationFailed(
+            f"Could not work out how to do that: {e}",
+            guidance="Tell the user this did not run. If it mentions a rate "
+                     "limit or quota, say it will work again shortly — do not "
+                     "describe it as a bug or retry immediately.")
 
 def set_wallpaper(image_path: str) -> str:
     path = Path(image_path).expanduser().resolve()
     if not path.exists():
-        return f"Image not found: {image_path}"
+        return Failed(
+            f"Image not found: {image_path}",
+            guidance="Ask the user to confirm the image path.")
     if path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
-        return f"Unsupported format: {path.suffix}. Use jpg, png, bmp or webp."
+        return Failed(
+            f"Unsupported format: {path.suffix}. Use jpg, png, bmp or webp.",
+            guidance="Ask the user for a jpg or png instead.")
 
     try:
         if _OS == "Windows":
@@ -234,7 +266,9 @@ for (var i = 0; i < allDesktops.length; i++) {{
             return f"Wallpaper set: {path.name}"
 
     except Exception as e:
-        return f"Could not set wallpaper: {e}"
+        return Failed(
+            f"Could not set wallpaper: {e}",
+            guidance="Tell the user the wallpaper was not changed.")
 
 
 def set_wallpaper_from_url(url: str) -> str:
@@ -250,7 +284,9 @@ def set_wallpaper_from_url(url: str) -> str:
             print(f"[desktop.py] Non-fatal error at line 247: {_e}")
         return result
     except Exception as e:
-        return f"Could not download wallpaper: {e}"
+        return Failed(
+            f"Could not download wallpaper: {e}",
+            guidance="Tell the user the image could not be fetched; ask for another link.")
 
 
 def get_current_wallpaper() -> str:
@@ -282,10 +318,14 @@ def get_current_wallpaper() -> str:
                     capture_output=True, text=True
                 )
                 return f"Current wallpaper: {result.stdout.strip()}"
-            return "Wallpaper path retrieval not supported for this desktop environment."
+            return Failed(
+                "Wallpaper path retrieval not supported for this desktop environment.",
+                guidance="Tell the user this desktop does not report it.")
 
     except Exception as e:
-        return f"Could not get wallpaper: {e}"
+        return Failed(
+            f"Could not get wallpaper: {e}",
+            guidance="Tell the user the current wallpaper could not be read.")
 
 FILE_TYPE_MAP = {
     "Images":      {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".ico", ".heic"},
@@ -444,38 +484,48 @@ def desktop_control(
     try:
         if action == "wallpaper":
             path = params.get("path", "")
-            return set_wallpaper(path) if path else "No image path provided."
+            return normalize(set_wallpaper(path) if path else Failed(
+                "No image path provided.",
+                guidance="Ask the user which image they want as the wallpaper."))
 
         elif action == "wallpaper_url":
             url = params.get("url", "")
-            return set_wallpaper_from_url(url) if url else "No URL provided."
+            return normalize(set_wallpaper_from_url(url) if url else Failed(
+                "No URL provided.",
+                guidance="Ask the user for the image address."))
 
         elif action == "current_wallpaper":
-            return get_current_wallpaper()
+            return normalize(get_current_wallpaper())
 
         elif action == "organize":
-            return organize_desktop(params.get("mode", "by_type"))
+            return normalize(organize_desktop(params.get("mode", "by_type")))
 
         elif action == "clean":
-            return clean_desktop()
+            return normalize(clean_desktop())
 
         elif action == "list":
-            return list_desktop()
+            return normalize(list_desktop())
 
         elif action == "stats":
-            return get_desktop_stats()
+            return normalize(get_desktop_stats())
 
         elif action == "task" or task:
             actual_task = task or params.get("description", "")
             if not actual_task:
-                return "Please describe what you want to do on the desktop."
+                return ToolResult.failure(
+                    "Please describe what you want to do on the desktop.",
+                    guidance="Ask the user what they want done.")
 
             print(f"[Desktop] Asking Gemini: {actual_task}")
             if player:
                 player.write_log("[Desktop] Generating action...")
 
             code = _ask_gemini_for_desktop_action(actual_task)
-            return _execute_generated_code(code, player=player)
+            # The gate. Generation failing is not code to run — it used to be
+            # compiled anyway, turning every rate limit into a syntax error.
+            if isinstance(code, GenerationFailed):
+                return normalize(code)
+            return normalize(_execute_generated_code(code, player=player))
 
         else:
             if action:
@@ -487,12 +537,19 @@ def desktop_control(
                 # pyautogui call and reported its AttributeError as the answer.
                 #
                 # Code generation is still here; it just has to be asked for.
-                return (f"'{action}' is not a desktop action. Use one of: "
-                        f"{', '.join(_ACTIONS)}. For anything else, pass "
-                        "action='task' with a plain-English description and it "
-                        "will be worked out from there.")
-            return "No action or task specified."
+                return ToolResult.failure(
+                    f"'{action}' is not a desktop action. Use one of: "
+                    f"{', '.join(_ACTIONS)}. For anything else, pass "
+                    "action='task' with a plain-English description and it "
+                    "will be worked out from there.",
+                    guidance="Nothing ran. Call this again with a listed "
+                             "action, or with action='task'.")
+            return ToolResult.failure(
+                "No action or task specified.",
+                guidance="Ask the user what they want done on the desktop.")
 
     except Exception as e:
         print(f"[Desktop] Error: {e}")
-        return f"Desktop control error: {e}"
+        return ToolResult.failure(
+            f"Desktop control error: {e}",
+            guidance="Tell the user this action failed; do not claim it worked.")
