@@ -48,6 +48,7 @@ from core.tool_result import ToolResult, normalize
 from core.tool_fallback import with_fallback_guidance
 from core import diag
 from core.vision_guard import VisionGuard
+from core.quota import explain_quota
 from core import proc_registry
 from core.turn_trace import TraceLog, TurnTrace, _enabled_by_default as _trace_enabled
 from core.mic_vad import SpeechDetector
@@ -1626,6 +1627,10 @@ class AethelarkLive:
         # where "YouTube keeps that private" was returned about the user's own
         # liked videos, with web_agency never tried.
         tr = with_fallback_guidance(name, tr)
+        # Nine tools call Gemini inside themselves and the brain runs on a free
+        # tier. A rate limit surfacing as a tool failure sends the user hunting
+        # a bug in something that works and will work again in a minute.
+        tr = explain_quota(tr)
 
         _elapsed_ms = (time.monotonic() - _t0) * 1000
         # Check for stale result — epoch may have advanced during execution

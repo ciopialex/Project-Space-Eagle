@@ -7,6 +7,21 @@ of it.
 
 ---
 
+## 0. The design principle everything follows
+
+**Make it work on a dumb brain.** The brain is Gemini 2.5 on a free tier —
+roughly 15 requests a minute. Every decision moved out of the model and into
+code is a decision that stops depending on how clever the model is: routing
+precedence, the capability catalogue, the consent gate, the intent decoder,
+the tool contract, the vision guard.
+
+That is the bet: when the brain is swapped for a better one, human emulation
+gets closer *because the scaffolding already holds*, not because the model
+finally guessed right. Anything that only works with a smart brain is not
+built yet.
+
+---
+
 ## 1. What works right now
 
 | capability | state | evidence |
@@ -27,7 +42,32 @@ two others were built and deleted (see §4).
 
 ## 2. Open work, in priority order
 
-### DONE since this was written (2026-08-09)
+### DONE 2026-08-09 (second pass — all found by running real sentences)
+- **web_agency clicks.** `receives_events` compared identity, so a product
+  card (a LINK wrapping an IMAGE, most of the web) failed its own hit test:
+  5009ms, 76 tries, "covered by something else" with nothing covering it. The
+  hit test now reports the control a click would *activate*. Verified live:
+  opens the page, resolves "Bambu Lab P2S 3D Printer", clicks, lands on
+  /products/p2s.
+- **Bot walls are honest.** Cloudflare's "Enable JavaScript and cookies" was
+  reported as `ok=True, 1 control`. Measured: it never clears (16s, both
+  Chromium and Chrome) while the store subdomain serves 69 controls.
+- **Video summarising works.** TWO dead bugs: the transcript API had been
+  renamed (every fetch returned None → "no transcript available" for every
+  video on YouTube), and `_handle_summarize` **ignored the url and opened a
+  GUI paste box** — so it summarised whatever the user pasted. Live: a
+  confident summary of a completely different video.
+- **The vision loop is closed.** Five `screen_process` calls in a row, after
+  it had already answered. The old guard was a 4s timer cleared at every
+  turn_complete, so one call per turn sailed through.
+- **Quota is not a broken tool.** Nine tools call Gemini internally; two
+  explained a 429. Relabelled at the single choke point.
+- **Detailed terminal logs** — `[Tool] ✓/✗/?` with the reason, the next step,
+  and secrets redacted by key name. `?` means the tool reported no status.
+- **Logs survive a crash.** Redirected output was block-buffered: a 40s boot
+  captured ONE line.
+
+### DONE 2026-08-09 (first pass)
 - **Intent layer built and measured.** `core/capabilities.py` (40 capabilities,
   100% tool coverage) + `core/intent.py`, wired to `input_transcription` so it
   predicts while the user is still speaking. Measured: **231ms off the critical
@@ -69,13 +109,9 @@ Also worth checking with zero instrumentation: **does a `🔧` line appear in th
 terminal when the user says "how are you doing"?** If a tool fires on a
 greeting, that is seconds right there and it is a routing bug.
 
-### P3 — Video summarisation
-Wanted, and currently impossible. Three routes tried and all failed:
-the timedtext endpoint returns empty to any HTTP client; the same fetch from
-*inside* the page needs a signed origin token now; clicking "Show transcript"
-leaves the panel unpopulated. Best hypothesis: it needs a **signed-in**
-browser, which is now achievable. Retry after a real sign-in before writing
-any code.
+### P3 — Video summarising: WORKS, blocked only by quota
+Transcript fetch and summarising both verified end to end. The remaining
+failure is a Gemini 429 on the free tier, which resets. Nothing to build.
 
 ### P4 — Spotify, then GitHub
 Both have clean APIs and the same OAuth shape as Google. Spotify covers
