@@ -258,10 +258,11 @@ for (var i = 0; i < allDesktops.length; i++) {{
                     capture_output=True
                 )
                 if result.returncode != 0:
-                    return (
+                    return Failed(
                         f"Could not set wallpaper automatically on {desktop_env}. "
-                        f"Try manually or install 'feh'."
-                    )
+                        f"Try manually or install 'feh'.",
+                        guidance="The wallpaper was NOT changed. Tell the user "
+                                 "which desktop environment is unsupported.")
 
             return f"Wallpaper set: {path.name}"
 

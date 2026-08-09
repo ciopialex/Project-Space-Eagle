@@ -253,7 +253,8 @@ def _run_file(path: Path, args: list, timeout: int) -> str:
 
 def _build(description, language, output_path, args, timeout, speak=None, player=None) -> str:
     if not description:
-        return "Please describe what you want me to build."
+        return Failed("Please describe what you want me to build.",
+                      guidance="Ask the user what the program should do.")
 
     if player:
         player.write_log("[Code] Build started...")
