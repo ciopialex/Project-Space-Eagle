@@ -122,7 +122,16 @@ def _ready(browser) -> ToolResult | None:
 
 
 def _describe(nodes) -> str:
-    return "\n".join(f"- {n.name} ({n.role})" for n in nodes[:60])
+    def _line(n) -> str:
+        # The text sitting with a control - a price, a stock line - is the
+        # difference between "you can click this" and "this is a P2S and it
+        # costs EUR 519". Without it the eagle web-searched for a price while
+        # standing on the page showing it.
+        context = getattr(n, "context", "")
+        return (f"- {n.name} ({n.role})" if not context
+                else f"- {n.name} ({n.role}) — {context}")
+
+    return "\n".join(_line(n) for n in nodes[:60])
 
 
 def _current_nodes(page) -> tuple:

@@ -22,6 +22,12 @@ from actions.grounding.base import Element
 # hand back a hundred thousand records and stall the eagle either.
 MAX_NODES = 600
 
+#: How much surrounding text a single control may carry. An article page has
+#: thousands of text blocks; unbounded context would push the actual controls
+#: out of the model's attention, which is the failure this is meant to
+#: prevent, not cause.
+MAX_CONTEXT_CHARS = 160
+
 #: The name/role derivation shared by `COLLECT_JS`, `HIT_TEST_JS`, and (via
 #: `tools/web_coverage.py`'s import of this constant) the coverage
 #: instrument's `_MISSED_JS`.
@@ -317,9 +323,69 @@ COLLECT_JS = r"""
       left: c.left, top: c.top,
       width: c.width, height: c.height,
       states: c.states, value: c.value,
+      context: '',
     });
     n += 1;
   }
+  // ── What a person reads, as opposed to what they can click ──────────────
+  //
+  // Everything above collects CONTROLS. Measured on a real product page that
+  // was 69 controls and 68 discarded text blocks - including the price. The
+  // eagle could click "Bambu Lab P2S 3D Printer" and could not say it costs
+  // EUR 519, so in a live session it ran a web search for that price while
+  // sitting on the page displaying it. The search cost 4541ms. Collecting
+  // this costs about 12ms.
+  //
+  // Attached to a control rather than emitted as separate nodes. A flat list
+  // of every text block would double what the grounder has to score, making
+  // matching worse in the act of making reading better.
+  try {
+    const MAX_CONTEXT_CHARS = 160;
+    const owners = out.map(o => ({
+      o: o, cx: o.left + o.width / 2, cy: o.top + o.height / 2,
+      bits: [],
+    }));
+    if (owners.length) {
+      for (const el of document.querySelectorAll('*')) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 8 || r.height < 8) continue;
+        // Only the element's OWN text, so a wrapper does not repeat every
+        // word its children already contributed.
+        let own = '';
+        for (const kid of el.childNodes) {
+          if (kid.nodeType === 3) own += ' ' + kid.textContent;
+        }
+        own = own.replace(/\s+/g, ' ').trim();
+        if (!own || own.length > 120) continue;
+        if (el.hasAttribute('data-ae-ref')) continue;   // already a control
+
+        // Nearest control by centre distance. Spatial, because that is how a
+        // person decides a price belongs to the product above it - the DOM
+        // often puts them in sibling containers with no shared control.
+        let best = null, bestD = Infinity;
+        const tx = r.left + r.width / 2, ty = r.top + r.height / 2;
+        for (const w of owners) {
+          const d = Math.abs(w.cx - tx) + Math.abs(w.cy - ty);
+          if (d < bestD) { bestD = d; best = w; }
+        }
+        if (best && bestD < 400) best.bits.push(own);
+      }
+      for (const w of owners) {
+        if (w.bits.length) {
+          // Prices arrive as separate text nodes - "EUR", "519", ".00" -
+          // so a bullet between every fragment is noise. Join with spaces,
+          // then close up the gaps punctuation leaves behind.
+          w.o.context = w.bits.join(' ')
+            .replace(/\s+([.,:%])/g, '$1')
+            .replace(/([\u20AC$\u00A3])\s+/g, '$1')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, MAX_CONTEXT_CHARS);
+        }
+      }
+    }
+  } catch (e) { /* context is a bonus; never lose the controls over it */ }
+
   // A caller cannot tell "the page really only has this many controls" from
   // "we stopped counting" by looking at the array alone — this sentinel is
   // that difference. `nodes_from_records` drops it for free (it has no
@@ -403,6 +469,11 @@ class WebNode:
     ref: str = ""
     states: frozenset = frozenset()
     value: str = ""
+    #: Text sitting with this control that is not itself clickable - a price,
+    #: a stock line, a heading. Attached HERE rather than returned as separate
+    #: nodes: a flat list of every text block would double what the grounder
+    #: must score, making matching worse while trying to make reading better.
+    context: str = ""
 
     def has(self, state: str) -> bool:
         return state in self.states
@@ -439,7 +510,8 @@ def nodes_from_records(records: Iterable[object]) -> tuple[WebNode, ...]:
                 height=int(float(record.get("height") or 0)), # type: ignore[union-attr]
                 ref=str(record.get("ref") or ""),          # type: ignore[union-attr]
                 states=frozenset(record.get("states") or ()),  # type: ignore[union-attr]
-                value=str(record.get("value") or ""),      # type: ignore[union-attr]
+                value=str(record.get("value") or ""),
+                context=str(record.get("context") or ""),  # type: ignore[union-attr]
             ))
         except Exception:
             continue
