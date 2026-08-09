@@ -198,6 +198,38 @@ class PagePort:
         except Exception:
             pass
 
+    #: A leftover modal backdrop. Live on youtube.com and olx.ro these sat
+    #: over the whole page and every click was refused as "covered by
+    #: something else" - correctly, but a person presses Escape without
+    #: thinking and carries on.
+    _BACKDROP_JS = """(() => {
+      const el = [...document.querySelectorAll('*')].find(e => {
+        const s = getComputedStyle(e), r = e.getBoundingClientRect();
+        return (s.position === 'fixed' || s.position === 'absolute')
+          && r.width > innerWidth * 0.5 && r.height > innerHeight * 0.5
+          && s.display !== 'none' && +s.opacity > 0.05
+          && /backdrop|overlay|modal|scrim/i.test(e.tagName + ' ' + e.className);
+      });
+      return !!el;
+    })()"""
+
+    def dismiss_overlay(self) -> bool:
+        """Press Escape if a full-page backdrop is covering things.
+
+        Called BEFORE the actionability poll, not inside the click - the poll
+        hit-tests first and refuses, so anything done later never runs. Escape
+        only: it is the universal "close this" and cannot submit, buy or
+        delete, unlike clicking whatever is on top.
+        """
+        try:
+            if not self._call(lambda: self._page.evaluate(self._BACKDROP_JS)):
+                return False
+            self._call(lambda: self._page.keyboard.press("Escape"))
+            self._call(lambda: self._page.wait_for_timeout(150))
+            return True
+        except Exception:
+            return False
+
     def click(self, ref: str) -> None:
         selector = f'[data-ae-ref="{ref}"]'
 
@@ -208,11 +240,26 @@ class PagePort:
                 pass                      # centring is help, not a requirement
             try:
                 self._page.click(selector, timeout=_REF_TIMEOUT_MS)
+                return
             except Exception:
-                # Still intercepted after centring - a cookie bar, a chat
-                # widget, an overlay that will not move. Deliver it directly
-                # rather than reporting failure on a control we located.
-                self._page.eval_on_selector(selector, self._DIRECT_JS)
+                pass
+
+            # Still intercepted after centring. Usually a modal backdrop left
+            # over from a drawer - live on youtube.com the Home link was under
+            # TP-YT-IRON-OVERLAY-BACKDROP. A person presses Escape without
+            # thinking and carries on, so do that: it is the universal "close
+            # this" gesture and it cannot submit, buy or delete anything,
+            # unlike clicking at whatever happens to be on top.
+            try:
+                self._page.keyboard.press("Escape")
+                self._page.click(selector, timeout=_REF_TIMEOUT_MS)
+                return
+            except Exception:
+                pass
+
+            # Nothing moved. Deliver the click to the element itself rather
+            # than failing on a control we located and centred.
+            self._page.eval_on_selector(selector, self._DIRECT_JS)
 
         self._call(_do)
 

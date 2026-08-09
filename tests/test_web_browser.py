@@ -700,3 +700,51 @@ def test_the_fallback_is_not_used_when_the_normal_click_works():
     page = _ClickPage()
     PagePort(page, call=lambda fn: fn()).click("e7")
     assert page.js_clicked == 0
+
+
+def test_a_click_blocked_by_a_backdrop_dismisses_it_and_retries():
+    """Live on youtube.com: the Home link was covered by
+    TP-YT-IRON-OVERLAY-BACKDROP — a modal backdrop left over from a drawer.
+    The refusal was correct; stopping there was not. A person presses Escape
+    without thinking about it and carries on.
+
+    Escape only, and only once. It is the universal "close this" gesture and
+    it cannot submit, buy or delete anything — unlike clicking at whatever
+    happens to be on top, which is how an automated retry causes damage."""
+    events = []
+
+    class Page:
+        def __init__(self):
+            self.attempts = 0
+
+        def eval_on_selector(self, selector, script):
+            events.append("centre" if "scrollIntoView" in script else "direct")
+
+        def click(self, selector, timeout=0):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("intercepts pointer events")
+
+        class keyboard:
+            @staticmethod
+            def press(key):
+                events.append(f"key:{key}")
+
+    page = Page()
+    PagePort(page, call=lambda fn: fn()).click("e9")
+    assert "key:Escape" in events, "never tried the human move"
+    assert page.attempts >= 2, "did not retry after dismissing"
+
+
+def test_escape_is_not_pressed_when_the_click_works():
+    events = []
+
+    class Page:
+        def eval_on_selector(self, selector, script): pass
+        def click(self, selector, timeout=0): pass
+        class keyboard:
+            @staticmethod
+            def press(key): events.append(key)
+
+    PagePort(Page(), call=lambda fn: fn()).click("e9")
+    assert events == [], "pressed keys on a page that was working fine"

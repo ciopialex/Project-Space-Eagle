@@ -1056,6 +1056,11 @@ def _click(browser, grounder: WebGrounder, description: str) -> ToolResult:
     try:
         _node, _ = grounder.resolve(description)
         if _node is not None:
+            # Order matters: clear any leftover modal backdrop FIRST, then
+            # centre. Both must happen before act_and_verify starts polling,
+            # because that poll hit-tests and refuses - anything attempted
+            # after it is never reached.
+            page.dismiss_overlay()
             page.centre(ref_of(_node))
     except Exception:
         pass

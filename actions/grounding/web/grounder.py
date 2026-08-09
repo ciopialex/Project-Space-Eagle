@@ -15,6 +15,60 @@ from actions.grounding.web.page import (PageLike, WebNode, element_from,
                                         nodes_from_records)
 
 
+#: Roles that WRAP controls rather than being one. Their accessible name is
+#: every child's text concatenated, so they match any query their contents
+#: would match - and being bigger, they often win. Live on youtube.com,
+#: "Acasă" resolved to the navigation bar whose name began "Acasă Shorts
+#: Abonamente Tu Istoric…" instead of the link named exactly "Acasă", and the
+#: click landed on a wrapper and did nothing. Every site has these.
+_CONTAINER_ROLES = frozenset({
+    "navigation", "banner", "main", "region", "group", "contentinfo",
+    "complementary", "list", "listitem", "article", "section", "form",
+    "table", "grid", "tablist", "menubar", "toolbar", "document",
+})
+
+
+def prefer_visible(node) -> int:
+    """Rank a control that can be seen above one that cannot.
+
+    First, ahead of every other preference. Preferring an exact name without
+    this pulled hidden controls named exactly "Search" ahead of the visible
+    buttons that had been working, and click reliability across the benchmark
+    fell from 66% to 33% in a single commit. Nothing about a name matters if
+    the thing cannot be clicked.
+    """
+    try:
+        return 1 if "VISIBLE" in (getattr(node, "states", None) or ()) else 0
+    except Exception:
+        return 1          # unknown: do not demote it
+
+
+def prefer_actionable(node) -> int:
+    """Rank a real control above a region that merely contains one.
+
+    Breaks ties only - it deliberately returns the same value for every
+    genuine control, because which link or button is meant is the name
+    match's job, not this one's.
+    """
+    role = str(getattr(node, "role", "") or "").lower()
+    return 0 if role in _CONTAINER_ROLES else 1
+
+
+def prefer_exact(description: str, node) -> int:
+    """Rank an exact name above one that merely contains the words.
+
+    The other half of the same problem: a container is not the only thing
+    that swallows a query - a long link can too.
+    """
+    wanted = " ".join((description or "").lower().split())
+    name = " ".join(str(getattr(node, "name", "") or "").lower().split())
+    if not wanted or not name:
+        return 0
+    if name == wanted:
+        return 2
+    return 1 if wanted in name else 0
+
+
 class WebGrounder:
     """Structural grounding inside a browser page.
 
@@ -77,7 +131,12 @@ class WebGrounder:
             # the top scorers, never to promote a worse textual match.
             match = best_match(nodes, description,
                                threshold=self._threshold, platform=WEB)
-            if match is not None and prefer is not None:
+            # Structural tie-breaks apply ALWAYS, not only when the caller
+            # supplies a preference. A click passes none, which is exactly the
+            # path where "Acasă" resolved to the navigation bar containing it
+            # — all three candidates scored 0.8000, and the container happened
+            # to come first.
+            if match is not None:
                 match = self._prefer_among_ties(nodes, description, match,
                                                 prefer)
             return match, nodes
@@ -90,7 +149,40 @@ class WebGrounder:
         try:
             top = match_score(description, match.name,
                               normalize(match.role, WEB))
-            if prefer(match):
+
+            # Before the caller's own preference: a control beats a container,
+            # and an exact name beats one that merely contains the words. Both
+            # only ever break a TIE in the name score, so a better-matching
+            # node is never displaced by a role.
+            def rank(n):
+                # Visible first: a name is irrelevant on something unclickable.
+                return (prefer_visible(n), prefer_actionable(n),
+                        prefer_exact(description, n))
+
+            # Skip the scan entirely when the match is already ideal. The
+            # scan re-scores every node, which on a 2000-node tree blew the
+            # 50ms structural-lookup budget - and it can only ever IMPROVE a
+            # match, so there is nothing to look for once it is perfect.
+            if rank(match) == (1, 1, 2):
+                return match
+
+            best = match
+            for node in nodes:
+                if node is match:
+                    continue
+                try:
+                    tied = abs(match_score(description, node.name,
+                                           normalize(node.role, WEB)) - top) < 1e-9
+                except Exception:
+                    continue
+                if tied and rank(node) > rank(best):
+                    best = node
+            if best is not match:
+                match = best
+
+            if prefer is not None and prefer(match):
+                return match
+            if prefer is None:
                 return match
             for node in nodes:
                 if node is match or not prefer(node):
