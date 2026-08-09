@@ -47,6 +47,7 @@ from memory.memory_manager import (
 from core.tool_result import ToolResult, normalize
 from core.tool_fallback import with_fallback_guidance
 from core import diag
+from core.vision_guard import VisionGuard
 from core import proc_registry
 from core.turn_trace import TraceLog, TurnTrace, _enabled_by_default as _trace_enabled
 from core.mic_vad import SpeechDetector
@@ -996,6 +997,11 @@ class AethelarkLive:
         self._vision_close_pending = False   # True after vision injected; next turn_complete closes camera
         self._vision_last_time     = 0.0     # monotonic time of last screen_process call (cooldown guard)
         self._vision_busy          = False   # True while a vision capture/inject cycle is in flight
+        # Refuses a repeat of the SAME question about the SAME surface. The
+        # old 4s cooldown was cleared at every turn_complete, so a model
+        # asking once per turn walked straight through it - five times in one
+        # session, after it had already answered correctly.
+        self._vision_guard         = VisionGuard()
         self._interrupted          = False   # True while draining audio after user interrupt
         self._interrupt_ts         = 0.0     # monotonic time the latch was set — see _discard_stragglers()
         # Straggler audio from a cancelled turn arrives within milliseconds;
@@ -1431,13 +1437,18 @@ class AethelarkLive:
                 import time as _t_mod
                 _now = _t_mod.monotonic()
                 _cooldown = 4.0  # seconds — covers echo window after speaking ends
-                if self._vision_busy or (_now - self._vision_last_time) < _cooldown:
-                    _wait = max(0, _cooldown - (_now - self._vision_last_time))
-                    print(f"[Vision] ⏳ Cooldown active ({_wait:.1f}s remaining) — ignoring duplicate call")
-                    result = "Vision is still processing the previous request. I will not call this again."
+                _angle_req = str(args.get("angle", "screen")).lower()
+                _text_req = str(args.get("text", "What do you see?"))
+                _refusal = self._vision_guard.allow(_angle_req, _text_req)
+                if self._vision_busy or _refusal:
+                    _why = _refusal or ("A capture is already in flight. Wait for "
+                                        "the image and answer from it.")
+                    print(f"[Vision] ⏳ refused a repeat look — {_why[:70]}")
+                    result = ToolResult.failure(_why, guidance=_why)
                 else:
                     self._vision_busy      = True
                     self._vision_last_time = _now
+                    self._vision_guard.mark_in_flight()
                     angle     = args.get("angle", "screen").lower()
                     user_text = args.get("text", "What do you see?")
                     if angle == "camera":
@@ -1953,6 +1964,7 @@ class AethelarkLive:
                                 img_b, mime_t, question, angle = self._pending_vision
                                 self._pending_vision = None
                                 print(f"[Vision] 📤 {len(img_b):,} bytes (angle={angle}) → main session via send_realtime_input")
+                                self._vision_guard.mark_delivered()
                                 await session.send_realtime_input(
                                     media=types.Blob(data=img_b, mime_type=mime_t)
                                 )
