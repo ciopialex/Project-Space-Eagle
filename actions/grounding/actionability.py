@@ -71,7 +71,40 @@ def receives_events(el: Element,
         hit = hit_test(el.x, el.y)
     except Exception:
         return False
-    return hit is not None and _identity(hit) == _identity(el)
+    if hit is None:
+        return False
+    if _identity(hit) == _identity(el):
+        return True
+    # A hit on the element's OWN CHILD still reaches it - that is how event
+    # bubbling works, and it is the commonest shape on the web: a product
+    # card is a link wrapping an image, and the collector stamps both. Live
+    # on a shop page the image won this comparison and a perfectly clickable
+    # product was declared "covered by something else" for 5009ms across 76
+    # tries. Geometric containment rather than identity, so it holds for
+    # AT-SPI and UIA too, where there is no DOM to ask about ancestry.
+    return _contains(el.bounds, hit.bounds)
+
+
+def _contains(outer, inner) -> bool:
+    """Is `inner` wholly within `outer`? A child, not a cover.
+
+    Something genuinely on top - a modal, a chat widget - is either larger
+    than the target or offset from it, so it fails this and still blocks.
+    """
+    try:
+        ox, oy, ow, oh = outer
+        ix, iy, iw, ih = inner
+    except Exception:
+        return False
+    if (ix, iy, iw, ih) == (ox, oy, ow, oh):
+        # Same box, different element. A child that exactly fills its parent
+        # and an overlay sized to cover it are geometrically identical, and
+        # of the two, the overlay is the one worth refusing - blocking a
+        # click that would have worked costs a retry, allowing one that lands
+        # on a modal costs whatever the modal does.
+        return False
+    return (ix >= ox and iy >= oy
+            and ix + iw <= ox + ow and iy + ih <= oy + oh)
 
 
 def check(action: str, el: Element, *,

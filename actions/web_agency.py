@@ -443,6 +443,45 @@ def _remedy_for(url: str) -> str:
             "and never say their data is private.")
 
 
+def _no_such_control(description: str, page) -> ToolResult:
+    """Why a click could not find its target — the real reason, not a shrug.
+
+    The distinction that cost a whole live session: the eagle has its OWN
+    browser, separate from the user's Chrome on purpose. When the model opens
+    a page with browser_control and then asks web_agency to click on it, the
+    eagle is still sitting on about:blank and every click fails with "no
+    control matches". Advising "call look to see the page" is useless there,
+    because looking shows a blank page too - which is exactly what happened,
+    and the model spent the rest of the session on screenshots instead.
+    """
+    url = ""
+    nodes = []
+    try:
+        url = _current_url(page) or ""
+        nodes = _current_nodes(page) or []
+    except Exception:
+        pass
+
+    blank = (not url) or url.startswith("about:") or not nodes
+    if blank:
+        return ToolResult.failure(
+            "The eagle's own browser is not on any page "
+            f"({url or 'no page'}), so there is nothing to click.",
+            guidance=("The eagle browses in its OWN browser, separate from the "
+                      "user's Chrome. browser_control opens a DIFFERENT browser "
+                      "and web_agency cannot see or click anything in it. Call "
+                      "web_agency action='open' with the url first, then click."))
+
+    names = [str(getattr(n, "name", "")).strip() for n in nodes]
+    names = [n for n in names if n][:8]
+    hint = ("The page has: " + "; ".join(names) + ". Use one of those names."
+            if names else
+            "Call action='look' to see what is actually on the page.")
+    return ToolResult.failure(
+        f"No control on this page matches '{description}'.",
+        guidance=hint)
+
+
 def _open_and_settle(browser, url: str) -> list:
     """Navigate to `url` and get to the page the user actually asked for.
 
@@ -961,10 +1000,8 @@ def _click(browser, grounder: WebGrounder, description: str) -> ToolResult:
     node = grounder.find_node(description)
     if node is None:
         _SENSE.note_failure()
-        return ToolResult.failure(
-            f"No control on this page matches '{description}'.",
-            guidance=("Call web_agency action='look' to see what is actually "
-                      "on the page, then use one of those names."))
+        return _no_such_control(description, page)
+
 
     # Checked BEFORE anything is sent to the browser — fast-fail UX only.
     # This is NOT the safety boundary: `node` here can be stale by the time
@@ -980,6 +1017,18 @@ def _click(browser, grounder: WebGrounder, description: str) -> ToolResult:
         return ToolResult.failure(e.message, guidance=e.guidance)
 
     page = browser.page()
+    # Bring it out from under any sticky header BEFORE the actionability poll
+    # starts. That poll hit-tests the element's centre point, and a control
+    # under a fixed navigation bar fails it for the entire timeout - measured
+    # live at 5009ms across 76 tries on a control that had been resolved
+    # perfectly. This is what a person does without thinking: scroll so the
+    # thing is not under the bar.
+    try:
+        _node, _ = grounder.resolve(description)
+        if _node is not None:
+            page.centre(ref_of(_node))
+    except Exception:
+        pass
     outcome = act_and_verify(
         description,
         _safe_act(lambda _el: _act_with_reresolve(

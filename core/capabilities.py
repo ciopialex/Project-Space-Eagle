@@ -86,7 +86,7 @@ CATALOGUE: tuple[Capability, ...] = (
     # ── Inside a website ───────────────────────────────────────────────────
     Capability(
         id="web.open", tool="web_agency", action="open",
-        says=("go to", "open the site", "open the website", ".com", ".ro",
+        says=("go to", "open the site", "open the website",
               "on the website", "browse to", "pull up"),
         effect=READ_ONLY, slots=("url",), needs=("the browser",),
         speculative=True),
@@ -282,6 +282,23 @@ def speculatable() -> tuple[Capability, ...]:
     return tuple(c for c in CATALOGUE if c.speculative)
 
 
+#: A real domain, on the UNNORMALISED text. Bare TLDs used to be trigger
+#: phrases (".ro", ".com"), and `_normalise` strips the dot - so "ro" matched
+#: inside "euro", "from", "printer", "store". Live, the pre-warm fired on
+#: nearly every utterance in a session. A predictor that always fires is not a
+#: predictor; it is a browser starting for no reason on every turn.
+_DOMAIN = re.compile(
+    r"\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*"
+    r"\.(?:com|ro|net|org|io|dev|app|co|uk|de|fr|es|it|eu|shop|store)\b",
+    re.IGNORECASE)
+
+
+def mentions_a_site(text: str) -> bool:
+    """Does this actually name a website, as opposed to containing a TLD's
+    letters somewhere inside an ordinary word?"""
+    return bool(_DOMAIN.search(text or ""))
+
+
 def _normalise(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())
 
@@ -299,6 +316,10 @@ def find_by_phrase(utterance: str) -> Capability | None:
     if not text.strip():
         return None
     best: tuple[int, Capability] | None = None
+    if mentions_a_site(utterance):
+        opener = next((c for c in CATALOGUE if c.id == "web.open"), None)
+        if opener is not None:
+            best = (len("go to"), opener)
     for cap in CATALOGUE:
         for phrase in cap.says:
             needle = _normalise(phrase).strip()
@@ -328,7 +349,13 @@ def prewarm_for(utterance: str) -> tuple[Capability, ...]:
     if not text.strip():
         return ()
     hits = []
+    if mentions_a_site(utterance):
+        opener = next((c for c in CATALOGUE if c.id == "web.open"), None)
+        if opener is not None:
+            hits.append(opener)
     for cap in CATALOGUE:
+        if cap in hits:
+            continue
         if not cap.speculative or cap.effect != READ_ONLY:
             continue
         if any(_normalise(p).strip() and _normalise(p).strip() in text

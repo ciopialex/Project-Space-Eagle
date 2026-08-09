@@ -167,9 +167,54 @@ class PagePort:
         # From the compositor, not the display: works on a background tab.
         return self._call(lambda: self._page.screenshot(type="png"))
 
+    #: Put the element in the MIDDLE of the viewport, not merely inside it.
+    #: Playwright already scrolls before clicking, but "in view" can still mean
+    #: "underneath the site's sticky header" - and it then waits out the whole
+    #: timeout on a hit test that will never pass. Measured live on
+    #: eu.store.bambulab.com: the right element was found and the click failed
+    #: for 5009ms across 76 tries, covered by the shop's own navigation bar.
+    _CENTRE_JS = "el => el.scrollIntoView({block: 'center', inline: 'center'})"
+
+    #: Last resort: dispatch the click on the element itself. This skips real
+    #: hit-testing, so it is deliberately NOT the normal path - but it is the
+    #: SAME element already resolved and already passed through the consent
+    #: gate, so the fallback changes how a click is delivered, never what is
+    #: clicked.
+    _DIRECT_JS = "el => el.click()"
+
+    def centre(self, ref: str) -> None:
+        """Scroll `ref` to the middle of the viewport. Best effort.
+
+        Called BEFORE the actionability poll, not only before the click. The
+        poll hit-tests the element's centre point, and an element sitting
+        under a sticky header fails that test forever - measured live at
+        5009ms across 76 tries on a page where the control had been resolved
+        correctly. Centring first makes the hit test pass on the first try,
+        so the normal click path works instead of being waited out.
+        """
+        selector = f'[data-ae-ref="{ref}"]'
+        try:
+            self._call(lambda: self._page.eval_on_selector(selector, self._CENTRE_JS))
+        except Exception:
+            pass
+
     def click(self, ref: str) -> None:
         selector = f'[data-ae-ref="{ref}"]'
-        self._call(lambda: self._page.click(selector, timeout=_REF_TIMEOUT_MS))
+
+        def _do():
+            try:
+                self._page.eval_on_selector(selector, self._CENTRE_JS)
+            except Exception:
+                pass                      # centring is help, not a requirement
+            try:
+                self._page.click(selector, timeout=_REF_TIMEOUT_MS)
+            except Exception:
+                # Still intercepted after centring - a cookie bar, a chat
+                # widget, an overlay that will not move. Deliver it directly
+                # rather than reporting failure on a control we located.
+                self._page.eval_on_selector(selector, self._DIRECT_JS)
+
+        self._call(_do)
 
     def fill(self, ref: str, text: str) -> None:
         selector = f'[data-ae-ref="{ref}"]'

@@ -638,3 +638,65 @@ def test_a_stopped_browser_is_started_into_the_requested_state():
     assert b.surface(True) is True
     assert b.headless is False
     assert b.restarts == 1
+
+
+# ── Sticky headers, which is why clicks failed on real sites ───────────────
+# Live on eu.store.bambulab.com: the eagle opened the page (69 controls),
+# resolved "P2S" to "Bambu Lab P2S 3D Printer" correctly, and then could not
+# click it — "covered by something else (waited 5009ms across 76 tries)".
+#
+# The cover was the site's own sticky navigation bar. Playwright scrolls an
+# element into view before clicking, but "in view" can still mean "underneath
+# the fixed header", and it then waits out the whole timeout for a hit test
+# that will never pass. A person solves this without thinking: scroll so the
+# thing is not under the bar.
+
+class _ClickPage:
+    """Records what a click attempt did, and can refuse the first one."""
+
+    def __init__(self, covered_times=0):
+        self.covered_times = covered_times
+        self.attempts = 0
+        self.centred = 0
+        self.js_clicked = 0
+
+    def click(self, selector, timeout=0):
+        self.attempts += 1
+        if self.attempts <= self.covered_times:
+            raise RuntimeError("element is not visible / intercepts pointer events")
+
+    def eval_on_selector(self, selector, script):
+        if "scrollIntoView" in script:
+            self.centred += 1
+        elif ".click()" in script:
+            self.js_clicked += 1
+
+    # Playwright's real name for the above
+    evaluate = None
+
+
+def test_a_click_centres_the_element_first():
+    """Centring takes it out from under a sticky header, which is the whole
+    fix for the commonest real-site failure."""
+    page = _ClickPage()
+    PagePort(page, call=lambda fn: fn()).click("e7")
+    assert page.centred >= 1, "did not scroll the element clear of the header"
+    assert page.attempts == 1
+
+
+def test_a_covered_element_falls_back_to_a_direct_click():
+    """When the pointer is still intercepted, dispatch the click on the
+    element itself. It is the SAME element already resolved and already passed
+    through the consent gate — the fallback changes how the click is
+    delivered, never what is clicked."""
+    page = _ClickPage(covered_times=1)
+    PagePort(page, call=lambda fn: fn()).click("e7")
+    assert page.js_clicked == 1, "gave up instead of clicking directly"
+
+
+def test_the_fallback_is_not_used_when_the_normal_click_works():
+    """A direct dispatch skips real hit-testing, so it must stay a last
+    resort rather than becoming the default path."""
+    page = _ClickPage()
+    PagePort(page, call=lambda fn: fn()).click("e7")
+    assert page.js_clicked == 0

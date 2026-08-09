@@ -349,7 +349,28 @@ HIT_TEST_JS = r"""
   return (pt) => {
     const hit = document.elementFromPoint(pt[0], pt[1]);
     if (!hit) return null;
-    const owner = hit.closest('[data-ae-ref]');
+    // Report the control a click here would ACTIVATE, not the innermost thing
+    // under the cursor. A product card is a link wrapping an image, and the
+    // collector stamps both - so `closest()` alone returned the IMAGE, whose
+    // identity never matches the LINK the caller resolved. Live, that made a
+    // perfectly clickable product unreachable: 5009ms across 76 tries,
+    // reported as "covered by something else" with nothing covering it.
+    //
+    // Walk up and prefer the nearest ancestor-or-self that is genuinely
+    // clickable. A modal over a button is NOT an ancestor of that button, so
+    // it still wins the hit test and still blocks - which is the case this
+    // check exists for.
+    let owner = null;
+    for (let node = hit; node; node = node.parentElement) {
+      if (!node.getAttribute || !node.getAttribute('data-ae-ref')) continue;
+      if (owner === null) owner = node;          // innermost, as a fallback
+      const tag = node.tagName;
+      const role = (node.getAttribute('role') || '').toLowerCase();
+      if (tag === 'A' || tag === 'BUTTON' || role === 'link' || role === 'button') {
+        owner = node;
+        break;
+      }
+    }
     if (!owner) return null;
     const rect = owner.getBoundingClientRect();
     return {

@@ -129,3 +129,27 @@ def test_prewarm_never_offers_anything_that_changes_the_world():
 def test_prewarm_is_empty_when_nothing_is_recognised():
     from core.capabilities import prewarm_for
     assert prewarm_for("tell me a joke about penguins") == ()
+
+
+# ── Bare TLDs matched inside ordinary words ────────────────────────────────
+# ".ro" was a trigger phrase for web.open. `_normalise` strips punctuation, so
+# it became "ro" — which matches inside "euro", "from", "printer", "store".
+# In a live session the pre-warm fired on nearly every utterance:
+#     [Intent] web.open (conf=0.8, matched='ro') → pre-warming: web.open
+# on "tell me about euro prices". A predictor that fires constantly is not a
+# predictor, and it started a browser nobody asked for on almost every turn.
+
+def test_a_tld_does_not_match_inside_an_ordinary_word():
+    from core.capabilities import find_by_phrase
+    for said in ("tell me about euro prices", "from the store",
+                 "the printer is broken", "european weather"):
+        got = find_by_phrase(said)
+        assert got is None or got.id != "web.open", f"{said!r} matched web.open"
+
+
+def test_a_real_domain_is_still_recognised():
+    from core.capabilities import find_by_phrase, prewarm_for
+    for said in ("go to emag.ro and search", "open bambulab.com",
+                 "check us.store.bambulab.com", "pull up olx.ro"):
+        ids = {c.id for c in prewarm_for(said)}
+        assert "web.open" in ids, f"{said!r} did not look web-shaped"
