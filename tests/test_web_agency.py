@@ -161,7 +161,11 @@ def test_clicking_something_that_is_not_there_fails_with_guidance():
     result = _call("click", FakeBrowser(), description="the parachute")
     assert result.ok is False
     assert result.guidance      # a concrete next step, not just an apology
-    assert "look" in result.guidance.lower()
+    # It used to say "call action='look'". It now hands back the control names
+    # already in hand, which saves the round trip that advice cost. Either is
+    # a concrete next step; naming them is the better one.
+    low = result.guidance.lower()
+    assert "look" in low or "use one of those names" in low
 
 
 def test_a_committing_control_is_refused_and_the_reason_is_returned():
