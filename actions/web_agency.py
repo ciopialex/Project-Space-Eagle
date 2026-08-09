@@ -1017,7 +1017,11 @@ def _click(browser, grounder: WebGrounder, description: str) -> ToolResult:
     node = grounder.find_node(description)
     if node is None:
         _SENSE.note_failure()
-        return _no_such_control(description, page)
+        # `page` is fetched HERE. Referencing it before this line raised
+        # UnboundLocalError on every failed click, which the outer guard
+        # turned into "the web tool hit an unexpected error" - throwing away
+        # the guidance this path exists to give.
+        return _no_such_control(description, browser.page())
 
 
     # Checked BEFORE anything is sent to the browser — fast-fail UX only.

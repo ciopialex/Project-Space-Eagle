@@ -79,3 +79,27 @@ def test_a_real_page_offers_the_names_it_actually_has(monkeypatch):
            nodes=(N("Bambu Lab P1S 3D Printer"), N("Bambu Lab P2S 3D Printer")))
     result = W._no_such_control("P1S link", object())
     assert "P2S" in result.guidance or "P1S 3D Printer" in result.guidance
+
+
+def test_a_failed_click_returns_guidance_instead_of_crashing():
+    """`page` was referenced before it was assigned, so EVERY failed click
+    raised UnboundLocalError and surfaced as "The web tool hit an unexpected
+    error" — losing the guidance the whole fix exists to deliver. Caught by
+    running a click that finds nothing, which is the commonest failure there
+    is."""
+    import actions.grounding.web.browser as B
+    import actions.web_agency as WA
+
+    class Grounder:
+        def available(self): return True
+        def find_node(self, description): return None
+        def resolve(self, description, prefer=None): return None, ()
+        def hit_test(self, x, y): return None
+
+    class Browser:
+        def page(self): return None
+
+    result = WA._click(Browser(), Grounder(), "something that is not there")
+    assert result is not None
+    assert "unexpected error" not in result.message.lower()
+    assert result.guidance, "the failure carried no next step"
