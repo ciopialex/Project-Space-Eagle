@@ -160,6 +160,116 @@ CATALOGUE: tuple[Capability, ...] = (
         id="memory.save", tool="save_memory", action="save",
         says=("remember that", "keep in mind", "note that i"),
         effect=REVERSIBLE, slots=("key", "value")),
+    # ── Asking the world ───────────────────────────────────────────────────
+    Capability(
+        id="search.web", tool="web_search", action="search",
+        says=("search the web", "look up", "google", "what is the", "who is",
+              "how much does", "what does it cost", "find out"),
+        effect=READ_ONLY, slots=("query",), speculative=True),
+    Capability(
+        id="weather.report", tool="weather_report", action="report",
+        says=("weather", "is it going to rain", "how hot", "how cold",
+              "forecast", "temperature outside"),
+        effect=READ_ONLY, speculative=True),
+    Capability(
+        id="flights.find", tool="flight_finder", action="search",
+        says=("flight", "fly to", "plane ticket", "cheapest flight"),
+        effect=READ_ONLY, speculative=True),
+
+    # ── The machine's own state ────────────────────────────────────────────
+    Capability(
+        id="system.status", tool="system_status", action="status",
+        says=("cpu", "ram", "memory usage", "how hot is", "system status",
+              "how is my computer", "temperature", "uptime"),
+        effect=READ_ONLY, speculative=True),
+    Capability(
+        id="app.open", tool="open_app", action="open",
+        says=("open ", "launch ", "start up ", "fire up"),
+        effect=REVERSIBLE, slots=("app_name",)),
+    Capability(
+        id="desktop.manage", tool="desktop_control", action="organize",
+        says=("wallpaper", "tidy my desktop", "organise my desktop",
+              "organize my desktop", "clean my desktop"),
+        effect=REVERSIBLE),
+    Capability(
+        id="autostart.set", tool="autostart", action="status",
+        says=("start on boot", "launch on startup", "start automatically",
+              "auto start"),
+        effect=REVERSIBLE),
+
+    # ── Messages ───────────────────────────────────────────────────────────
+    Capability(
+        id="messages.brief", tool="messages_brief", action="brief",
+        says=("what did i miss", "any new messages", "catch me up",
+              "unread", "check my email", "anything important", "my inbox"),
+        effect=READ_ONLY, speculative=True),
+    Capability(
+        id="messages.mark_read", tool="mark_emails_read", action="mark",
+        says=("mark them read", "mark as read", "clear my unread"),
+        effect=REVERSIBLE),
+
+    # ── YouTube, the public half ───────────────────────────────────────────
+    Capability(
+        id="youtube.play", tool="youtube_video", action="play",
+        says=("play the song", "play a video", "put on ", "play me"),
+        effect=REVERSIBLE, slots=("query",)),
+    Capability(
+        id="youtube.history", tool="web_agency", action="open",
+        says=("watch history", "my history", "what was i watching"),
+        effect=READ_ONLY, needs=("a signed-in browser",), speculative=True),
+
+    # ── The user's own browser ─────────────────────────────────────────────
+    Capability(
+        id="browser.open_for_user", tool="browser_control", action="go_to",
+        says=("open it in my browser", "in my own browser", "open chrome"),
+        effect=REVERSIBLE, slots=("url",)),
+
+    # ── Building, in its three sizes ───────────────────────────────────────
+    Capability(
+        id="code.one_file", tool="code_helper", action="edit",
+        says=("fix this script", "edit this file", "explain this code",
+              "run this script"),
+        effect=REVERSIBLE, slots=("path",)),
+    Capability(
+        id="code.small_change", tool="developer_mode", action="start",
+        says=("small change", "quick script", "one off script"),
+        effect=REVERSIBLE),
+    Capability(
+        id="build.multi_file", tool="dev_agent", action="build",
+        says=("build a project", "scaffold", "set up a project"),
+        effect=REVERSIBLE, slots=("description",)),
+    Capability(
+        id="swarm.status", tool="swarm_status", action="status",
+        says=("what are you building", "how is it going", "swarm status",
+              "what are the agents doing", "are you done"),
+        effect=READ_ONLY, speculative=True),
+    Capability(
+        id="swarm.interject", tool="agent_interject", action="interject",
+        says=("stop claude", "tell it to", "interrupt the agent",
+              "change the plan"),
+        effect=REVERSIBLE, slots=("message",)),
+
+    # ── Games ──────────────────────────────────────────────────────────────
+    Capability(
+        id="games.manage", tool="game_updater", action="list",
+        says=("my games", "update my games", "steam", "epic games",
+              "download status"),
+        effect=REVERSIBLE),
+
+    # ── Session ────────────────────────────────────────────────────────────
+    Capability(
+        id="camera.close", tool="close_camera", action="close",
+        says=("close the camera", "stop the camera", "turn off the camera"),
+        effect=REVERSIBLE),
+    Capability(
+        id="session.reminder", tool="reminder", action="set",
+        says=("remind me", "set a reminder", "wake me", "in an hour"),
+        effect=REVERSIBLE, slots=("date", "time")),
+    Capability(
+        id="session.shutdown", tool="shutdown_aethelark", action="shutdown",
+        says=("shut down aethelark", "goodbye for now", "that is all for today",
+              "power down", "go to sleep"),
+        effect=IRREVERSIBLE),
 )
 
 

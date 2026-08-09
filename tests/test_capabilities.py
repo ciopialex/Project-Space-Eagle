@@ -78,10 +78,18 @@ def test_a_plain_utterance_finds_the_right_capability():
     assert find_by_phrase("what is on my screen").tool == "screen_process"
 
 
-def test_an_unknown_utterance_returns_nothing_rather_than_guessing():
+def test_a_general_question_routes_to_search():
+    """This used to assert None, back when web_search was not catalogued.
+    "What is the airspeed velocity of a swallow" IS a search — the old
+    assertion was describing a gap, not a requirement."""
+    assert find_by_phrase("what is the airspeed velocity of a swallow").tool == "web_search"
+
+
+def test_an_unrecognised_utterance_returns_nothing_rather_than_guessing():
     """A decoder that always answers is a decoder that is often wrong. No
     match means "let the model decide", which is today's behaviour and safe."""
-    assert find_by_phrase("what is the airspeed velocity of a swallow") is None
+    for said in ("mhm", "yeah okay sure", "hold on a second", "thanks pal"):
+        assert find_by_phrase(said) is None, said
 
 
 def test_the_catalogue_states_how_complete_it_is():
