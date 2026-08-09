@@ -64,9 +64,9 @@ Worth doing eventually; not worth doing hastily.
 |---|---|
 | tests, start of session | 1652 passing |
 | tests, end of session | 1699 passing (+ the other session's web work) |
-| branch | `feat/tool-contract-rollout`, 3 commits, rebased on `main` |
+| branch | `feat/tool-contract-rollout`, 4 commits, rebased on `main` |
 | tool contract coverage | 6 of 20 tools → **9 of 20** |
-| unmarked failure returns | 128 → **82** |
+| unmarked failure returns (AST-counted, `actions/`) | 115 → **80** |
 
 ---
 
@@ -135,7 +135,7 @@ at all.
 
 ## 4. What is left, ranked by what it costs the user
 
-### P1 — finish the rollout (82 unmarked returns, 11 tools)
+### P1 — finish the rollout (80 unmarked returns, 11 tools)
 
 Measured per tool, by AST rather than by eye:
 
