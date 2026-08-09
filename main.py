@@ -462,6 +462,7 @@ TOOL_DECLARATIONS = [
             "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, "
             "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
             "Use for ANY single computer control command."
+            "It presses keys and toggles settings; to SEE what is on screen use screen_process."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -486,6 +487,7 @@ TOOL_DECLARATIONS = [
             "automation browser. "
             "Always pass the 'browser' parameter when the user specifies a browser (e.g. 'open in Edge', "
             "'use Firefox', 'open Chrome'). Multiple browsers can run simultaneously."
+            "It opens the USER'S own browser and cannot read or click inside a page: for that use web_agency. For files on disk use file_controller."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -601,7 +603,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "code_helper",
-        "description": "Writes, edits, explains, runs, or builds code files.",
+        "description": "Writes, edits, explains, runs, or builds code files. ONE file at a time. For reading or writing files generally use file_controller; for a whole project built and verified use swarm_mode.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -619,7 +621,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "dev_agent",
-        "description": "Builds complete multi-file projects from scratch: plans, writes files, installs deps, opens VSCode, runs and fixes errors.",
+        "description": "Builds complete multi-file projects from scratch: plans, writes files, installs deps, opens VSCode, runs and fixes errors. For plain file reads and writes use file_controller; for a full build with verification and review use swarm_mode.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -633,7 +635,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "developer_mode",
-        "description": "Single-agent coding session. Use ONLY for a small self-contained change, a one-off script, or a follow-up instruction to an ALREADY-RUNNING developer session. For a new project or product the user wants built ('build me a booking website', 'make a landing page for my shop'), do NOT use this — use swarm_mode with action='plan', which sizes the team and may still choose one agent.",
+        "description": "Single-agent coding session. Use ONLY for a small self-contained change, a one-off script, or a follow-up instruction to an ALREADY-RUNNING developer session. For a new project or product the user wants built ('build me a booking website', 'make a landing page for my shop'), do NOT use this — use swarm_mode with action='plan', which sizes the team and may still choose one agent. This is a MODE switch, not a way to browse: for anything on a website use web_agency.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -646,7 +648,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "swarm_mode",
-        "description": "THE FRONT DOOR for building software. Use whenever the user asks for any project, product, app, website, or tool to be built — 'build a booking website for my dental clinic', 'make me a landing page', 'I need an inventory system'. The user does NOT need to mention agents, teams, or a swarm; they never say 'use two agents', they just describe what they want. Flow: action='plan' → a Chief Architect decomposes the mission, sizes the team (possibly to one agent) and returns a spoken plan summary; SPEAK it and ASK the user to approve; then action='execute' to spin up the team in isolated git worktrees. `directory` is OPTIONAL — omit it and a project folder is created automatically under ~/Projects; never ask the user for a file path. While agents work, action='inject' relays new ideas. Also: status | review (verify+merge) | stop | broadcast | launch.",
+        "description": "THE FRONT DOOR for building software. Use whenever the user asks for any project, product, app, website, or tool to be built — 'build a booking website for my dental clinic', 'make me a landing page', 'I need an inventory system'. The user does NOT need to mention agents, teams, or a swarm; they never say 'use two agents', they just describe what they want. Flow: action='plan' → a Chief Architect decomposes the mission, sizes the team (possibly to one agent) and returns a spoken plan summary; SPEAK it and ASK the user to approve; then action='execute' to spin up the team in isolated git worktrees. `directory` is OPTIONAL — omit it and a project folder is created automatically under ~/Projects; never ask the user for a file path. While agents work, action='inject' relays new ideas. Also: status | review (verify+merge) | stop | broadcast | launch. It BUILDS; it does not fetch. For one website use web_agency, for one file use file_controller.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -687,7 +689,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "computer_control",
-        "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen.",
+        "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen. It saves a screenshot as a FILE. To have the screen looked at and described, use screen_process.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
