@@ -134,37 +134,60 @@ def _ask_for_url(prompt_text: str = "YouTube video URL:") -> str | None:
         return None
 
 
+#: Tried in order. English first because most captioned content has it, then
+#: the languages this user actually speaks, then anything at all - a Romanian
+#: video with only Romanian captions is still summarisable.
+_TRANSCRIPT_LANGS = ("en", "ro", "es", "de", "fr", "it", "pt", "tr",
+                     "ru", "ja", "ko", "ar", "zh")
+
+
 def _get_transcript(video_id: str) -> str | None:
+    """The video's captions as plain text, or None if it genuinely has none.
+
+    This was calling `YouTubeTranscriptApi.list_transcripts`, which the library
+    removed. Every fetch raised AttributeError, was caught, logged as a
+    non-fatal error and returned None - so the eagle reported "no transcript
+    available" for every video on YouTube, including ones with perfectly good
+    captions, while its own tool description advertised summarising them.
+
+    A dead capability that is still declared is the mirror of reporting a
+    limit you have not hit, and it costs the user more, because they ask for
+    something the tool said it could do.
+    """
     if not _TRANSCRIPT_OK:
         return None
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        transcript      = None
-
-        lang_priority = ["en", "tr", "de", "fr", "es", "it", "pt", "ru", "ja", "ko", "ar", "zh"]
-
-        try:
-            transcript = transcript_list.find_manually_created_transcript(lang_priority)
-        except Exception as _e:
-            print(f"[youtube_video.py] Non-fatal error at line 147: {_e}")
-
-        if transcript is None:
-            try:
-                transcript = transcript_list.find_generated_transcript(lang_priority)
-            except Exception:
-                for t in transcript_list:
-                    transcript = t
-                    break
-
-        if transcript is None:
-            return None
-
-        fetched = transcript.fetch()
-        return " ".join(entry["text"] for entry in fetched)
-
+        api = YouTubeTranscriptApi()
     except Exception as e:
-        print(f"[YouTube] ⚠️ Transcript fetch failed: {e}")
+        print(f"[YouTube] transcript API unavailable: {e}")
         return None
+
+    # One language at a time rather than one call with the whole list: the
+    # library returns the FIRST match for a list, and asking separately keeps
+    # the preference order meaningful when a video carries several tracks.
+    last_error = None
+    for lang in _TRANSCRIPT_LANGS:
+        try:
+            fetched = api.fetch(video_id, languages=[lang])
+        except Exception as e:
+            last_error = e
+            continue
+        text = " ".join(
+            (getattr(snippet, "text", "") or "") for snippet in fetched).strip()
+        if text:
+            return text
+
+    try:                       # last resort: whatever track exists
+        fetched = api.fetch(video_id)
+        text = " ".join(
+            (getattr(snippet, "text", "") or "") for snippet in fetched).strip()
+        if text:
+            return text
+    except Exception as e:
+        last_error = e
+
+    print(f"[YouTube] no transcript for {video_id}: {last_error}")
+    return None
 
 
 def _summarize_with_gemini(transcript: str, video_url: str) -> str:
@@ -309,11 +332,19 @@ def _handle_summarize(parameters: dict, player, speak) -> str:
     if not _TRANSCRIPT_OK:
         return "youtube-transcript-api is not installed. Run: pip install youtube-transcript-api"
 
-    url = _ask_for_url("Please paste the YouTube video URL:")
+    # Use what the model was given. This used to go straight to a GUI box and
+    # wait for a paste, ignoring `url` entirely - so "summarise this video"
+    # by voice was impossible, and whatever the user happened to paste is what
+    # got summarised. Live, that produced a confident summary of a completely
+    # different video. A voice assistant that opens a dialog and waits is not
+    # a voice assistant.
+    url = str(parameters.get("url") or parameters.get("query") or "").strip()
     if not url:
-        return "No URL provided. Summary cancelled."
+        return ("I need to know which video. Ask the user for the link, or for "
+                "the title so it can be found first — do not guess one.")
     if not _is_valid_youtube_url(url):
-        return "That doesn't appear to be a valid YouTube URL."
+        return (f"That does not look like a YouTube link: {url}. Ask the user "
+                "to say or paste the video link.")
 
     video_id = _extract_video_id(url)
     if not video_id:
@@ -334,7 +365,13 @@ def _handle_summarize(parameters: dict, player, speak) -> str:
     try:
         summary = _summarize_with_gemini(transcript, url)
     except Exception as e:
-        return f"Summary generation failed: {e}"
+        detail = str(e)
+        if "429" in detail or "RESOURCE_EXHAUSTED" in detail or "quota" in detail.lower():
+            return ("Got the transcript, but the summary could not be generated: "
+                    "the Gemini API quota is exhausted. Tell the user that "
+                    "plainly - the video and its captions were fine, this is a "
+                    "billing limit on the API key, and it resets.")
+        return f"Got the transcript, but summarising it failed: {detail}"
 
     if speak:
         speak(summary)
