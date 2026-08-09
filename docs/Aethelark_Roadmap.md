@@ -27,8 +27,20 @@ two others were built and deleted (see §4).
 
 ## 2. Open work, in priority order
 
+### DONE since this was written (2026-08-09)
+- **Intent layer built and measured.** `core/capabilities.py` (40 capabilities,
+  100% tool coverage) + `core/intent.py`, wired to `input_transcription` so it
+  predicts while the user is still speaking. Measured: **231ms off the critical
+  path** of a web request. Trace gained `speculated` / `headstart`.
+- **Routing collisions eliminated.** Nine tools once claimed "open a website";
+  every contest now names its winner, enforced by a test.
+- **64 hidden capabilities exposed.** `computer_settings` advertised none of
+  its 66 actions; declarations are now generated from the implementation.
+- **LICENSE added** — all rights reserved.
+- 1589 tests, zero dead code, entrypoints verified.
+
 ### P1 — Finish the tool contract rollout
-**5 of 20 tools** use `ToolResult`. The rest return bare strings.
+**6 of 20 tools** use `ToolResult`. The rest return bare strings.
 
 `normalize()` no longer invents `ok=True` for them, so nothing lies any more —
 but they also give the model no status and no guidance. Migrating the rest is
