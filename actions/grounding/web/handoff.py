@@ -362,4 +362,63 @@ def auth_domains_for(url: str) -> list[str]:
             domains.append(companion)
     return domains
 
+# --- Bot challenges -------------------------------------------------------
+#
+# A site refusing automated browsers is not a page with one control on it, and
+# reporting it as a successful read is how the eagle ended up clicking at
+# things that were not there. Live: bambulab.com returned
+# "Enable JavaScript and cookies to continue" as ok=True with 1 control, and
+# the model spent two turns acting on it.
+#
+# Measured: the challenge does not clear. Sixteen seconds of waiting, still
+# blocked - while the same site's store subdomain served 69 controls. So this
+# is a real wall, not a slow page, and saying so is more useful than waiting.
 
+#: Phrases challenge pages use. Matched against control NAMES, which is where
+#: they land - these pages have almost no other content.
+_BOT_WALL_PHRASES = (
+    "enable javascript and cookies",
+    "performing security verification",
+    "checking your browser",
+    "just a moment",
+    "verify you are human",
+    "verifying you are human",
+    "ddos protection by",
+    "attention required",
+    "unusual traffic from your computer",
+)
+
+#: Query parameters and paths only a challenge issues. Conclusive on their own,
+#: because the page frequently renders nothing for the phrases to match.
+_BOT_WALL_URL_MARKS = ("__cf_chl", "cdn-cgi/challenge", "/challenge-platform")
+
+#: Above this many controls the page is plainly working, whatever words are on
+#: it. A shop selling security cameras must not read as a security check.
+_BOT_WALL_MAX_CONTROLS = 6
+
+
+def bot_wall_reason(nodes, url: str = "") -> str:
+    """Why this page cannot be read at all, or "" if it can.
+
+    Keyed on the challenge's SHAPE - a near-empty page plus challenge wording,
+    or a challenge URL - rather than on a scary word appearing somewhere. An
+    article about verification is not a wall.
+    """
+    lowered = (url or "").lower()
+    if any(mark in lowered for mark in _BOT_WALL_URL_MARKS):
+        return _BOT_WALL_REASON
+
+    items = list(nodes or ())
+    if len(items) > _BOT_WALL_MAX_CONTROLS:
+        return ""
+    for node in items:
+        name = str(getattr(node, "name", "") or "").lower()
+        if any(phrase in name for phrase in _BOT_WALL_PHRASES):
+            return _BOT_WALL_REASON
+    return ""
+
+
+_BOT_WALL_REASON = (
+    "this site is blocking automated browsers - it served a security check "
+    "instead of the page, and it does not clear on its own"
+)

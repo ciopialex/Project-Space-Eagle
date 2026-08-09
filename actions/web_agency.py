@@ -66,7 +66,7 @@ from actions.grounding.actionability import is_editable
 from actions.grounding.verify import act_and_verify
 from actions.grounding.web.consent import irreversible_reason
 from actions.grounding.web.grounder import WebGrounder
-from actions.grounding.web.handoff import (auth_domains_for,auth_domains_for, await_human,
+from actions.grounding.web.handoff import (auth_domains_for, bot_wall_reason,auth_domains_for, await_human,
                                            cookie_wall_choice,
                                            signed_out_reason, wall_reason)
 from actions.grounding.web.page import element_from, nodes_from_records, ref_of
@@ -562,6 +562,23 @@ def _look(browser, want_pixels: bool) -> ToolResult:
 
     sense = _SENSE.look(page, want_pixels=want_pixels)
     current_url = _current_url(page)
+
+    # A site refusing automated browsers is not a page with one control on it.
+    # Reporting it as a successful read is how the eagle ended up clicking at
+    # things that were not there, then falling back to the user's own screen.
+    blocked = bot_wall_reason(sense.nodes, current_url)
+    if blocked:
+        host = (current_url.split("/")[2] if "://" in current_url else current_url)
+        return ToolResult.failure(
+            f"Could not read {host} — {blocked}.",
+            guidance=("Do NOT retry this url or try to click on it; the page "
+                      "the eagle can see has nothing on it. A different part "
+                      "of the same site often works (a shop or store "
+                      "subdomain usually does). Otherwise tell the user this "
+                      "site will not let the eagle browse it, and offer to "
+                      "open it in their own browser with browser_control so "
+                      "they can look themselves."),
+            bot_wall=True, url=current_url)
     needs_human = (wall_reason(sense.nodes, current_url)
                    or signed_out_reason(sense.nodes))
     # A cookie/consent wall is not a "needs a human" wall: it can be cleared
