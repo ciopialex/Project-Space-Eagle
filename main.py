@@ -43,6 +43,7 @@ from core.tool_fallback import with_fallback_guidance
 from core import proc_registry
 from core.turn_trace import TraceLog, TurnTrace, _enabled_by_default as _trace_enabled
 from core.mic_vad import SpeechDetector
+from core.intent import decode as _decode_intent
 
 from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
@@ -1042,6 +1043,8 @@ class AethelarkLive:
         # mark is an attribute read that returns immediately. On, it answers the
         # only question that matters here — where the time between "I stopped
         # talking" and "I heard something" actually goes.
+        # Speculation: one prediction per turn, reset at turn_complete.
+        self._speculated = False
         self._trace_on = _trace_enabled()
         self._trace: TurnTrace | None = None
         self._trace_log = TraceLog(emit=lambda line: print(f"[Aethelark] {line}"))
@@ -1071,6 +1074,44 @@ class AethelarkLive:
         t, self._trace = self._trace, None
         if t is not None:
             self._trace_log.finish(t)
+
+    def _warm_browser(self) -> None:
+        """Start the eagle's browser in the background. Read-only, no page."""
+        def _run():
+            try:
+                from actions.grounding.web.browser import default_browser
+                default_browser().start()
+            except Exception:
+                pass          # a warm-up that fails costs only the warm-up
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _speculate(self, partial: str) -> None:
+        """Begin the safe half of a request while the user is still speaking.
+
+        The only moment early enough to matter: by the time the model emits a
+        tool call, the 350ms silence window and the round trip are already
+        spent. Browser cold start was measured at ~310ms, and the first `open`
+        on a fresh profile at 7165ms.
+
+        Strictly READ_ONLY, and strictly one thing for now - warming the
+        browser. It has no side effects at all, and if `to_action` does not
+        move on web requests then the whole idea is wrong and nothing else
+        should be built on it.
+
+        Never raises. It runs on the receive loop, and a speculative
+        optimisation that can break a turn is worse than no optimisation.
+        """
+        if self._speculated:
+            return                      # transcription streams in many chunks
+        try:
+            intent = _decode_intent(partial)
+            if not any(c.id == "web.open" for c in intent.prewarm):
+                return
+            self._speculated = True
+            self._trace_mark("speculated")
+            self._warm_browser()
+        except Exception:
+            pass
 
     def _trace_mic_frame(self, data) -> None:
         """Timestamp the user's speech from a single outgoing mic frame.
@@ -1830,8 +1871,13 @@ class AethelarkLive:
                             if txt:
                                 in_buf.append(txt)
                                 self._last_user_speech = time.monotonic()
+                                # While they are STILL TALKING. This is the
+                                # only point early enough for a prediction to
+                                # buy anything.
+                                self._speculate(" ".join(in_buf))
 
                         if sc.turn_complete:
+                            self._speculated = False
                             self._trace_mark("complete")
                             self._trace_finish()
                             self._turn_epoch += 1

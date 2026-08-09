@@ -44,6 +44,9 @@ from typing import Callable
 #: documentation, not enforcement — a turn that skips marks (a conversational
 #: reply never reaches `first_tool`) is normal and must not distort the report.
 MARKS = (
+    # Set BEFORE speech_end when it fires: the hypothesis is formed while the
+    # user is still talking, which is the only point early enough to matter.
+    "speculated",        # safe work began on a prediction
     "speech_start",      # user began speaking (client-side VAD onset)
     "speech_end",        # user stopped speaking (client-side VAD offset)
     "first_token",       # first byte of any kind back from the server
@@ -68,6 +71,9 @@ SEGMENTS = (
     ("response", "speech_end",   "first_token"),  # VAD window + network + prefill
     ("audio",    "first_token",  "first_audio"),  # our own playback path
     ("tool",     "speech_end",   "first_tool"),
+    # Negative on purpose when speculation worked: the browser started BEFORE
+    # the user stopped talking. That number is the whole point of the layer.
+    ("headstart", "speculated",  "speech_end"),
     ("spoken",   "first_audio",  "complete"),     # how long the reply talked FOR
 )
 
