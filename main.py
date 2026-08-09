@@ -40,6 +40,7 @@ from memory.memory_manager import (
 )
 from core.tool_result import ToolResult, normalize
 from core.tool_fallback import with_fallback_guidance
+from core import diag
 from core import proc_registry
 from core.turn_trace import TraceLog, TurnTrace, _enabled_by_default as _trace_enabled
 from core.mic_vad import SpeechDetector
@@ -1109,6 +1110,7 @@ class AethelarkLive:
                 return
             self._speculated = True
             self._trace_mark("speculated")
+            print(diag.intent_line(intent))
             self._warm_browser()
         except Exception:
             pass
@@ -1362,7 +1364,7 @@ class AethelarkLive:
             call_epoch = self._turn_epoch
 
         _t0 = time.monotonic()
-        print(f"[Aethelark] 🔧 {name} (epoch={call_epoch})  {args}")
+        print(diag.tool_call(name, args, call_epoch))
         self.ui.set_state("THINKING")
 
         if name == "save_memory":
@@ -1611,10 +1613,12 @@ class AethelarkLive:
         _elapsed_ms = (time.monotonic() - _t0) * 1000
         # Check for stale result — epoch may have advanced during execution
         if call_epoch != self._turn_epoch:
-            print(f"[Aethelark] ⚠️ {name} result STALE (epoch {call_epoch} → {self._turn_epoch}, {_elapsed_ms:.0f}ms) — returning anyway for protocol")
+            print(f"[Tool] ⚠ {name} STALE (epoch {call_epoch} → "
+                  f"{self._turn_epoch}) — the turn moved on; returned anyway "
+                  f"for protocol")
+            print(diag.tool_result(name, tr, _elapsed_ms))
         else:
-            _flag = "✓" if tr.ok else "✗"
-            print(f"[Aethelark] 📤 {name} {_flag} → {tr.message[:80]} ({_elapsed_ms:.0f}ms)")
+            print(diag.tool_result(name, tr, _elapsed_ms))
         return types.FunctionResponse(
             id=fc.id, name=name,
             response=tr.to_response()
@@ -1688,7 +1692,10 @@ class AethelarkLive:
                             timeout=f_spec.timeout_s
                         )
                     except asyncio.TimeoutError:
-                        print(f"[Aethelark] ⚠️ Tool {f_call.name} TIMED OUT after {f_spec.timeout_s}s")
+                        print(f"[Tool] ✗ {f_call.name} TIMED OUT after "
+                          f"{f_spec.timeout_s}s — it was still running when the "
+                          f"budget ran out; nothing it did is guaranteed to "
+                          f"have finished")
                         return types.FunctionResponse(
                             id=f_call.id, name=f_call.name,
                             response=ToolResult.failure(
