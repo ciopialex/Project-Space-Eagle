@@ -5,6 +5,7 @@ import re
 import time
 from pathlib import Path
 from core import user_paths
+from core.tool_result import Failed, ToolResult, normalize
 
 
 def get_base_dir():
@@ -61,14 +62,17 @@ def _resolve_save_path(output_path: str, language: str) -> Path:
 
 def _read_file(file_path: str) -> tuple[str, str]:
     if not file_path:
-        return "", "No file path provided."
+        return "", Failed("No file path provided.",
+                          guidance="Ask the user which file they mean.")
     p = Path(file_path)
     if not p.exists():
-        return "", f"File not found: {file_path}"
+        return "", Failed(f"File not found: {file_path}",
+                          guidance="Ask the user to confirm the path — it may have been misheard.")
     try:
         return p.read_text(encoding="utf-8"), ""
     except Exception as e:
-        return "", f"Could not read file: {e}"
+        return "", Failed(f"Could not read file: {e}",
+                          guidance="Tell the user the file could not be read.")
 
 
 def _save_file(path: Path, content: str) -> str:
@@ -77,7 +81,8 @@ def _save_file(path: Path, content: str) -> str:
         path.write_text(content, encoding="utf-8")
         return f"Saved to: {path}"
     except Exception as e:
-        return f"Could not save: {e}"
+        return Failed(f"Could not save: {e}",
+                      guidance="Nothing was written. Do NOT tell the user where the file is — there is no file.")
 
 
 def _preview(code: str, lines: int = 10) -> str:
@@ -180,7 +185,12 @@ Code:"""
     response = model.generate_content(prompt)
     code     = _clean_code(response.text)
     path     = _resolve_save_path(output_path, lang)
-    _save_file(path, code)
+    saved    = _save_file(path, code)
+    if isinstance(saved, Failed):
+        # The return value used to be discarded, so a save that failed still
+        # produced "Code written. Saved to: <path>" — the model then told the
+        # user exactly where to find a file that does not exist.
+        raise OSError(str(saved))
     return code, path
 
 
@@ -216,7 +226,8 @@ def _run_file(path: Path, args: list, timeout: int) -> str:
     }
     interp = interpreters.get(path.suffix.lower())
     if not interp:
-        return f"No interpreter for {path.suffix}."
+        return Failed(f"No interpreter for {path.suffix}.",
+                      guidance="Tell the user this file type cannot be run here. Do not guess an interpreter.")
 
     try:
         result = subprocess.run(
@@ -295,7 +306,8 @@ def _build(description, language, output_path, args, timeout, speak=None, player
 
 def _write_action(description, language, output_path, player) -> str:
     if not description:
-        return "Please describe what you want me to write."
+        return Failed("Please describe what you want me to write.",
+                      guidance="Ask the user what the code should do.")
     if player:
         player.write_log("[Code] Writing code...")
     try:
@@ -303,14 +315,17 @@ def _write_action(description, language, output_path, player) -> str:
         print(f"[Code] ✅ Written: {path}")
         return f"Code written. Saved to: {path}\n\nPreview:\n{_preview(code)}"
     except Exception as e:
-        return f"Could not generate code: {e}"
+        return Failed(f"Could not generate code: {e}",
+                      guidance="No file was written. Do NOT name a save path. If it mentions a quota, say it will work again shortly.")
 
 
 def _edit_action(file_path, instruction, player) -> str:
     if not file_path:
-        return "Please provide a file path to edit."
+        return Failed("Please provide a file path to edit.",
+                      guidance="Ask the user which file to change.")
     if not instruction:
-        return "Please describe what change to make."
+        return Failed("Please describe what change to make.",
+                      guidance="Ask the user what should change.")
 
     content, err = _read_file(file_path)
     if err:
@@ -335,7 +350,8 @@ Updated code:"""
         response = model.generate_content(prompt)
         edited   = _clean_code(response.text)
     except Exception as e:
-        return f"Could not edit code: {e}"
+        return Failed(f"Could not edit code: {e}",
+                      guidance="The file was NOT changed. Do not describe the edit as applied.")
 
     status = _save_file(Path(file_path), edited)
     print(f"[Code] ✅ Edited: {file_path}")
@@ -348,7 +364,8 @@ def _explain_action(file_path, code, player) -> str:
         if err:
             return err
     if not code:
-        return "Please provide code or a file path to explain."
+        return Failed("Please provide code or a file path to explain.",
+                      guidance="Ask the user which file or snippet they mean.")
 
     if player:
         player.write_log("[Code] Analyzing code...")
@@ -367,15 +384,18 @@ Explanation:"""
         response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
-        return f"Could not explain code: {e}"
+        return Failed(f"Could not explain code: {e}",
+                      guidance="Tell the user the explanation failed.")
 
 
 def _run_action(file_path, args, timeout, player) -> str:
     if not file_path:
-        return "Please provide a file path to run."
+        return Failed("Please provide a file path to run.",
+                      guidance="Ask the user which file to run.")
     p = Path(file_path)
     if not p.exists():
-        return f"File not found: {file_path}"
+        return Failed(f"File not found: {file_path}",
+                      guidance="Ask the user to confirm the path. Nothing was run.")
     if player:
         player.write_log(f"[Code] Running {p.name}...")
     return _run_file(p, args, timeout)
@@ -388,7 +408,8 @@ def _optimize_action(file_path, code, language, output_path, player) -> str:
         if err:
             return err
     if not code:
-        return "Please provide code or a file path to optimize."
+        return Failed("Please provide code or a file path to optimize.",
+                      guidance="Ask the user which file or snippet they mean.")
 
     if player:
         player.write_log("[Code] Optimizing code...")
@@ -414,7 +435,8 @@ Optimized code:"""
         response  = model.generate_content(prompt)
         optimized = _clean_code(response.text)
     except Exception as e:
-        return f"Could not optimize code: {e}"
+        return Failed(f"Could not optimize code: {e}",
+                      guidance="The file was NOT changed.")
 
     # Kaydet
     if file_path:
@@ -447,7 +469,9 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
 
     screenshot_path = _take_screenshot()
     if not screenshot_path:
-        return "Could not take screenshot. Please make sure PyAutoGUI is installed."
+        return Failed(
+            "Could not take screenshot. Please make sure PyAutoGUI is installed.",
+            guidance="Tell the user the screen could not be captured; nothing was analysed.")
 
 
     file_content = ""
@@ -528,9 +552,10 @@ def code_helper(
     player=None,
     session_memory=None,
     speak=None
-) -> str:
+) -> ToolResult:
     """
-    Called from main.py.
+    Called from main.py. Returns a ToolResult; the action helpers still return
+    prose, with refusals marked `Failed` where they are decided.
 
     parameters:
         action      : write | edit | explain | run | build | screen_debug | optimize | auto
@@ -557,29 +582,35 @@ def code_helper(
         print(f"[Code] 🤖 Auto-detected: {action}")
 
     if action == "write":
-        return _write_action(description, language, output_path, player)
+        return normalize(_write_action(description, language, output_path, player))
 
     elif action == "edit":
-        return _edit_action(
+        return normalize(_edit_action(
             file_path,
             description or p.get("instruction", ""),
             player
-        )
+        ))
 
     elif action == "explain":
-        return _explain_action(file_path, code, player)
+        return normalize(_explain_action(file_path, code, player))
 
     elif action == "run":
-        return _run_action(file_path, args, timeout, player)
+        return normalize(_run_action(file_path, args, timeout, player))
 
     elif action == "build":
-        return _build(description, language, output_path, args, timeout, speak, player)
+        return normalize(_build(description, language, output_path, args,
+                                timeout, speak, player))
 
     elif action == "optimize":
-        return _optimize_action(file_path, code, language, output_path, player)
+        return normalize(_optimize_action(file_path, code, language,
+                                          output_path, player))
 
     elif action == "screen_debug":
-        return _screen_debug_action(description, file_path, player, speak)
+        return normalize(_screen_debug_action(description, file_path, player, speak))
 
     else:
-        return f"Unknown action: '{action}'. Use write, edit, explain, run, build, optimize, or screen_debug."
+        return ToolResult.failure(
+            f"Unknown action: '{action}'. Use write, edit, explain, run, "
+            "build, optimize, or screen_debug.",
+            guidance="Nothing ran. Call this again with one of the listed "
+                     "actions.")
