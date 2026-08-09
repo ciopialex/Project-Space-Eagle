@@ -26,11 +26,29 @@ class SlowVision:
         return None
 
 
+def _fastest(fn, runs=5):
+    """The best of a few runs, in milliseconds, with the result.
+
+    These budgets guard ALGORITHMIC cost — that structure stays orders of
+    magnitude cheaper than vision, and that nobody reintroduces a quadratic
+    walk. Wall-clock on a busy machine measures the scheduler as well, and
+    that noise is unbounded: this suite goes red when a second test run (or a
+    second agent) shares the CPU, at 8.6ms against a 50ms budget — 6x
+    headroom. The best run is the one least contaminated by other processes,
+    and a genuine complexity regression is slower in EVERY run, so taking the
+    minimum costs the guard nothing.
+    """
+    best, result = float("inf"), None
+    for _ in range(runs):
+        start = time.perf_counter()
+        result = fn()
+        best = min(best, (time.perf_counter() - start) * 1000)
+    return best, result
+
+
 def test_structural_lookup_is_under_50ms_on_a_2000_node_tree():
     g = AtspiGrounder(walker=_big_tree)
-    start = time.perf_counter()
-    el = g.find("the Save button")
-    elapsed = (time.perf_counter() - start) * 1000
+    elapsed, el = _fastest(lambda: g.find("the Save button"))
     assert el is not None
     assert el.center == (540, 615)
     assert elapsed < 50, f"structural grounding took {elapsed:.1f}ms"
@@ -39,6 +57,9 @@ def test_structural_lookup_is_under_50ms_on_a_2000_node_tree():
 def test_structural_hit_never_pays_the_vision_cost():
     r = GroundingResolver([AtspiGrounder(walker=_big_tree), SlowVision()],
                           cache=ElementCache(), context_fn=lambda: "test|win")
+    # No cache here between runs would defeat the point, so one run only: the
+    # budget is 100ms against a 150ms sleep, so this fails on MECHANISM (vision
+    # ran at all), not on timing margin.
     start = time.perf_counter()
     el = r.find("the Save button")
     elapsed = (time.perf_counter() - start) * 1000

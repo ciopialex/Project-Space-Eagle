@@ -36,13 +36,25 @@ conflicts**, and the combined state passes **1699 tests**.
 Before any future autonomous run here: `ps aux | grep [c]laude`, then
 `ls -l /proc/<pid>/cwd`. Sample CPU twice to tell live from idle.
 
-One side effect worth knowing: `test_structural_lookup_is_under_50ms_on_a_2000
-_node_tree` asserts wall-clock time, and it **fails when two test suites run
-concurrently**. It is not a regression — measured in isolation it sits at
-8.6ms median against a 50ms budget, 6× headroom, identical on both branches.
-But a red suite on a loaded machine now has an innocent explanation, and that
-is exactly the kind of signal that gets "fixed" by raising a budget it did not
-need.
+### Two tests that go red for reasons that are not bugs
+
+Both surfaced by running suites concurrently, which is now a real condition.
+
+**`test_structural_lookup_is_under_50ms_on_a_2000_node_tree`** asserted
+wall-clock time on a busy machine. Not a regression — 8.6ms median against a
+50ms budget, 6× headroom, identical on both branches — but red is red, and this
+is exactly the signal that gets "fixed" by raising a budget that was never the
+problem. **Fixed properly:** the budget guards *algorithmic* cost, so it now
+takes the fastest of five runs. A genuine complexity regression is slower in
+every run, so the guard loses nothing — verified by injecting a 60ms delay and
+confirming it still fails. Verified green under two concurrent full suites.
+
+**`tests/test_run_cmd.py`** fails when run concurrently *with a second copy of
+itself*: it inspects the process tree for leaked grandchildren, and the other
+copy's leaks are indistinguishable from its own. Left alone deliberately —
+nobody runs two copies of one suite, and making its process discovery
+instance-scoped means touching a test that guards process-group semantics.
+Worth doing eventually; not worth doing hastily.
 
 ---
 
