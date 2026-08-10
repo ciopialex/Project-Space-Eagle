@@ -1,6 +1,6 @@
 # Aethelark — state of play and what's next
 
-Written 2026-08-07, at the end of a long session. Everything here is either
+Written 2026-08-07; §1 and §2 updated 2026-08-10. Everything here is either
 measured or verified live; where something is unproven it says so. The point
 of this document is that the next session should not have to rediscover any
 of it.
@@ -31,7 +31,9 @@ built yet.
 | **Web action** (click, type, forms) | working | consent walls auto-declined, refuses irreversible clicks |
 | **Sign-in to any site** | working, unproven end-to-end | window opens, session sticks; never watched a human complete it |
 | **Voice** | working | −250ms/turn from the VAD window |
-| **Tests** | 1546 passing | from 622 at the start of the week |
+| **Tests** | 1781 passing | from 622 two weeks ago |
+| **Downloads** | working | allow-listed; refuses executables and double extensions |
+| **Generated desktop code** | contained | 8 escapes measured and closed; see `core/safe_exec.py` |
 
 ### The one thing a user must do once
 Ask for something on a site → the eagle opens a window → they sign in →
@@ -42,86 +44,130 @@ two others were built and deleted (see §4).
 
 ## 2. Open work, in priority order
 
-### DONE 2026-08-09 (second pass — all found by running real sentences)
-- **web_agency clicks.** `receives_events` compared identity, so a product
-  card (a LINK wrapping an IMAGE, most of the web) failed its own hit test:
-  5009ms, 76 tries, "covered by something else" with nothing covering it. The
-  hit test now reports the control a click would *activate*. Verified live:
-  opens the page, resolves "Bambu Lab P2S 3D Printer", clicks, lands on
-  /products/p2s.
-- **Bot walls are honest.** Cloudflare's "Enable JavaScript and cookies" was
-  reported as `ok=True, 1 control`. Measured: it never clears (16s, both
-  Chromium and Chrome) while the store subdomain serves 69 controls.
-- **Video summarising works.** TWO dead bugs: the transcript API had been
-  renamed (every fetch returned None → "no transcript available" for every
-  video on YouTube), and `_handle_summarize` **ignored the url and opened a
-  GUI paste box** — so it summarised whatever the user pasted. Live: a
-  confident summary of a completely different video.
-- **The vision loop is closed.** Five `screen_process` calls in a row, after
-  it had already answered. The old guard was a 4s timer cleared at every
-  turn_complete, so one call per turn sailed through.
-- **Quota is not a broken tool.** Nine tools call Gemini internally; two
-  explained a 429. Relabelled at the single choke point.
-- **Detailed terminal logs** — `[Tool] ✓/✗/?` with the reason, the next step,
-  and secrets redacted by key name. `?` means the tool reported no status.
-- **Logs survive a crash.** Redirected output was block-buffered: a 40s boot
-  captured ONE line.
+### DONE 2026-08-10 (third pass — an audit, then the logs)
 
-### DONE 2026-08-09 (first pass)
-- **Intent layer built and measured.** `core/capabilities.py` (40 capabilities,
-  100% tool coverage) + `core/intent.py`, wired to `input_transcription` so it
-  predicts while the user is still speaking. Measured: **231ms off the critical
-  path** of a web request. Trace gained `speculated` / `headstart`.
-- **Routing collisions eliminated.** Nine tools once claimed "open a website";
-  every contest now names its winner, enforced by a test.
-- **64 hidden capabilities exposed.** `computer_settings` advertised none of
-  its 66 actions; declarations are now generated from the implementation.
-- **LICENSE added** — all rights reserved.
-- 1589 tests, zero dead code, entrypoints verified.
+Two things ran the session: an audit that ran the software instead of reading
+it, and the user's own session logs. Almost every defect came from one of
+those, not from the queue.
 
-### P1 — Finish the tool contract rollout
-**6 of 20 tools** use `ToolResult`. The rest return bare strings.
+- **The exec sandbox did not contain.** `desktop_control(action="task")`
+  generates Python and runs it; the rules against deleting files and calling
+  subprocess lived in the PROMPT. Measured against the real sandbox, six
+  escapes worked, including invoking `subprocess.Popen(['id'])` reached
+  through `().__class__.__bases__[0].__subclasses__()`. `core/safe_exec.py`
+  enforces it now — containment through the same gate `file_controller` uses,
+  plus an AST check refusing private attributes. All eight exploits re-run
+  through the real entrypoint are refused, files on disk verified untouched.
+  `pyautogui` is still handed in and that is stated, not hidden.
+- **Downloads did not exist.** `accept_downloads` was never set, so Playwright
+  cancelled every one — the eagle clicked Download, the DOM reported success,
+  no file arrived. "Download a laptop stand from makerworld" could not
+  complete. Now a distinct `download` action: a click succeeds when the page
+  reacts, a download only when a file is on disk.
+- **Page text is now fenced as untrusted.** `5a273af` fed page content to a
+  model that can call every tool. Not solvable by detection; solved by
+  provenance, plus a download allow-list that refuses executables by default
+  and checks every extension component (`laptop_stand.stl.exe`).
+- **Bot walls were English-only.** bambulab and makerworld served Cloudflare
+  challenges in Romanian — the user's own locale — and both came back
+  `ok=True`. The phrase list held the same sentence in English. Keys on
+  markers that do not translate now (Ray ID, `cf-chl`, turnstile).
+- **The YouTube chain was broken end to end.** `youtube_api` returned titles,
+  `summarize` demanded URLs, and the video id was being discarded from the
+  API payload that already contained it. Fixed at the source.
+- **The intent layer was eating fragments.** `input_transcription` streams
+  mid-word; each fragment was stripped then joined with a space, so "Say the
+  word ready" became "Sa ve word rea dy" — and that is what `_speculate`
+  matched against. The 231ms head start had never once started.
+- **The trace was lying.** `first_token` fired on any `server_content`, which
+  is also how the USER's transcription arrives — so `response` came out
+  negative on 3 of 13 turns and the model's thinking time was being credited
+  to our playback path. Fixed, and tracing now defaults ON: it was opt-in for
+  weeks and never once switched on.
+- Also: `code_helper` reported files it never wrote; a rate-limited brain was
+  compiled as Python; the latency test flaked under load; `eagle` /
+  `eagle-dev` now separate merged from unmerged.
 
-`normalize()` no longer invents `ok=True` for them, so nothing lies any more —
-but they also give the model no status and no guidance. Migrating the rest is
-the highest-value systematic work left.
+**Tests 1652 → 1781.**
 
-Queue, by failure-shaped returns that still reach the model with no status:
-`game_updater` (15), `computer_control` (15), `browser_control` (15),
-`file_controller` (15), `swarm_orchestrator` (14), `code_helper` (11),
-`desktop` (10), `dev_agent` (10).
+### P1 — Finish the tool contract rollout  *(advanced, not done)*
 
-**Migrate at the boundary**, as done for `file_processor`: the entrypoint knows
-what it decided, internal helpers keep their prose. 123 call sites is churn;
-the boundary is where the value is.
+**11 of 20** tools now on the contract, up from 6. Unmarked failure returns
+across `actions/`: **115 → 76**, AST-counted both sides.
 
-### P2 — Live voice baseline (blocked on the user)
-The trace is wired and inert behind `AETHELARK_TRACE=1`. **Nobody has ever
-spoken to it with tracing on**, so there is no baseline. The user reported a
-regression from ~0.8s to ~4s; three real causes were found and fixed by
-inspection (Chrome left running, +23% prompt/tool context, the 550ms VAD
-window) and none of them plausibly accounts for 5×.
+`core/tool_result.py` gained two pieces that made the rest reachable:
+`Failed`, a `str` subclass carrying guidance so a refusal can be marked where
+it is DECIDED rather than at a boundary eleven frames up; and `settled()`,
+because ending a migrated entrypoint with `normalize()` produced a silent
+half-migration — failures carried `ok=False` and successes carried nothing at
+all. That shipped once before being caught by running the tools.
 
-One `[Trace]` line settles it: `to_voice` / `response` / `audio` / `spoken`
-splits model time from playback time from reply length.
+Remaining, worst first: `swarm_orchestrator` (12), `file_processor` (11 — its
+BOUNDARY migrated, its helpers never did), `browser_control` (10),
+`game_updater` (9), `youtube_video` (5).
 
-Also worth checking with zero instrumentation: **does a `🔧` line appear in the
-terminal when the user says "how are you doing"?** If a tool fires on a
-greeting, that is seconds right there and it is a routing bug.
+### P2 — Live voice baseline  *(no longer blocked — first numbers exist)*
 
-### P3 — Video summarising: WORKS, blocked only by quota
-Transcript fetch and summarising both verified end to end. The remaining
-failure is a Gemini 429 on the free tier, which resets. Nothing to build.
+Thirteen real turns measured. `to_voice` (speech_end → first_audio) has a
+**median of 4.1s and a worst of 6.7s**. `spoken` (how long the reply talks
+FOR) has a **median of 4.9s and a worst of 15.4s**.
 
-### P4 — Spotify, then GitHub
-Both have clean APIs and the same OAuth shape as Google. Spotify covers
-playlists, saved tracks, recently-played *and playback control*. GitHub
-unlocks the "update my CV from my repos" task. Neither started.
+Two separate problems, and the second was invisible before: even at zero
+latency, a 4.9s reply means five seconds before the user can speak again. The
+length instruction existed but sat at line 15 of a 19KB prompt; it is now
+first and last, and `max_output_tokens` is wired as the dispatch-layer
+backstop, left OFF until a value has been measured rather than guessed.
 
-### P5 — `computer_control` / `computer_settings` timing
-`_type`'s 300ms and `_clear_field`'s 100ms remain. Unlike focus and clipboard
-they have **no observable condition**, so they need a measurement harness
-before anyone touches them. Changing them blind is guessing.
+The `response` / `audio` split is not yet trustworthy — see the `first_token`
+fix above. One more traced run settles whether the 4.1s is Google's or ours.
+
+**Context measured:** ~13k tokens shipped per session — tool declarations
+**60%**, prompt 37%, memory **1%**. Memory is not the problem. Whether that
+context costs per-turn latency or only per-connection is answered by the next
+traced run: compare turn 0's `response` against later turns.
+
+### P3 — Video summarising  *(fixed, was never only quota)*
+
+The roadmap said this worked and was blocked by quota. It was not: the CHAIN
+was broken. `youtube_api` hands back titles and `summarize` refused anything
+that was not a URL, while `_scrape_first_video_url` sat 250 lines up in the
+same file doing exactly that job for `play`. The id is now carried from the
+API payload, so no search is needed at all.
+
+### P4 — Spotify, then GitHub  *(unchanged — blocked on the user)*
+
+Neither started, and neither can be by an agent alone: each needs an OAuth app
+created under the user's own identity, with the client id/secret placed in
+`config/`. Fifteen minutes of his time unblocks both.
+
+### P5 — `computer_control` / `computer_settings` timing  *(unchanged)*
+
+`_type`'s 300ms and `_clear_field`'s 100ms remain, deliberately. Still no
+observable condition to measure against.
+
+Worth recording from this session's research: an accessibility-first actuator
+would make part of this moot — measured on the user's own desktop, 45% of live
+controls expose an AT-SPI action, and `do_action` runs in **0.2ms against
+pyautogui's 103ms** without touching the cursor or needing window focus. That
+is not primarily a speed argument: it is what lets the eagle work while the
+user is using the machine. Web already works this way (headless, CDP clicks,
+verified not to move the mouse); the desktop path throws the accessible handle
+away and moves a physical mouse instead.
+
+### P6 — Known-broken, reproduced, not yet fixed
+
+- **WhatsApp: the first send after a web_agency session always fails** with
+  `Target page, context or browser has been closed`, then relaunches and
+  succeeds. ~12s per message, 6.5s of it re-doing navigate+login every time.
+- **Core dump on exit**: `Failed to restore OpenGL context after clean-up.`
+- **The eagle answers itself** — a spurious second turn with no user input.
+  No mic gate during playback was found.
+- **Page truncation is still positional.** `_spread` spends the 60-line budget
+  across the page instead of taking the top, which helped Wikipedia (0 → 2
+  subject nodes) and Python docs (4 → 10) but cost Hacker News (23 → 22). The
+  real fix is ranking against the GOAL, not the layout.
+- **Dependencies are unpinned** — all 30 of them, and the transcript-API
+  rename already cost a silently dead feature once.
 
 ---
 
