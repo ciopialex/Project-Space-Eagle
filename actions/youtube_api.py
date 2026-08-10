@@ -182,6 +182,22 @@ def _get(url: str, params: dict, token: str) -> dict:
 
 
 def _titles(payload: dict) -> list[str]:
+    """One line per item: the spoken title, then the exact link.
+
+    The id used to be dropped. The API hands back `resourceId.videoId` in the
+    same snippet as the title, and returning only the title meant the next
+    tool had to SEARCH YouTube to re-find a video this call had already
+    identified — a round-trip that can also land on the wrong video, because
+    titles collide (covers, re-uploads, "(Official Video)", lyric versions).
+    Live, that chain simply failed: `youtube_api` returned "Put Yourself First
+    & Success Will Follow… — Napoleon Hill" and `youtube_video summarize`
+    refused it as "not a YouTube link".
+
+    The link rides in the message rather than `ToolResult.data` because `data`
+    never reaches the model — `to_response()` emits result/ok/guidance only.
+    It is bracketed and labelled so it reads as a reference rather than part
+    of the sentence; `core/prompt.txt` already forbids reading URLs aloud.
+    """
     out = []
     for item in (payload.get("items") or []):
         snippet = item.get("snippet") or {}
@@ -190,7 +206,20 @@ def _titles(payload: dict) -> list[str]:
             continue
         channel = (snippet.get("videoOwnerChannelTitle")
                    or snippet.get("channelTitle") or "").strip()
-        out.append(f"{title} — {channel}" if channel else title)
+        line = f"{title} — {channel}" if channel else title
+
+        # playlistItems put it in snippet.resourceId; a plain videos/search
+        # response puts it at item.id (sometimes as a dict).
+        vid = (snippet.get("resourceId") or {}).get("videoId")
+        if not vid:
+            raw_id = item.get("id")
+            if isinstance(raw_id, str):
+                vid = raw_id
+            elif isinstance(raw_id, dict):
+                vid = raw_id.get("videoId")
+        if isinstance(vid, str) and vid.strip():
+            line += f"  [link, do not read aloud: https://www.youtube.com/watch?v={vid.strip()}]"
+        out.append(line)
     return out
 
 
