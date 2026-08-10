@@ -67,6 +67,12 @@ class VisionGrounder:
         self._grab_fn = grab_fn or _default_grab
         self._max_edge = max_edge
         self._model = model
+        #: Why the last look produced nothing, or "" if it produced nothing
+        #: because the thing genuinely was not there. `find` returns None for
+        #: both, and callers reported that as "no such control" — so a quota
+        #: error read to the model as a determinate absence and the eagle gave
+        #: up on a task that would have worked a minute later.
+        self.last_error: str = ""
 
     def available(self) -> bool:
         try:
@@ -76,6 +82,7 @@ class VisionGrounder:
             return False
 
     def find(self, description: str) -> Element | None:
+        self.last_error = ""
         try:
             from google.genai import types as gtypes
 
@@ -96,9 +103,12 @@ class VisionGrounder:
             )
             text = (getattr(response, "text", "") or "").strip()
             if "NOT_FOUND" in text.upper():
-                return None
+                return None                      # a real, clean "not there"
             match = re.search(r"(\d+)\s*,\s*(\d+)", text)
             if not match:
+                # A reply with no coordinates is a look that did not work, not
+                # a screen without the control on it.
+                self.last_error = f"vision returned no coordinates: {text[:120]!r}"
                 return None
 
             x = int(int(match.group(1)) * scale)
@@ -106,5 +116,12 @@ class VisionGrounder:
             # A point, not a region — a 1px box centres on exactly that point.
             return Element.from_bounds(description, "unknown", x, y, 1, 1,
                                        "vision")
-        except Exception:
+        except Exception as e:
+            # NOT the same as "not on screen". Measured live: two of three
+            # lookups came back in ~700ms — far too fast for a vision call,
+            # which took 5808ms when it worked — because they raised on a rate
+            # limit and the exception was discarded here.
+            self.last_error = f"{type(e).__name__}: {e}"
+            print(f"[Vision] ⚠ look failed ({self.last_error[:110]}) — "
+                  f"this is NOT evidence the control is absent")
             return None

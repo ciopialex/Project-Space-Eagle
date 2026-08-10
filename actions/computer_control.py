@@ -618,17 +618,51 @@ def computer_control(
                       "same way."))
 
 
+
+#: Names the model reaches for that this tool does not use. `type_text` is
+#: what several other computer-use APIs call `type`, so the prior is strong —
+#: live, the model called it twice, was told the correct list both times, and
+#: called it again. Arguing with that prior is a decision that depends on how
+#: clever the model is; §0 of the roadmap says to move those into code.
+_ACTION_ALIASES = {
+    "type_text": "type", "write": "type", "write_text": "type",
+    "enter_text": "type", "input_text": "type", "keyboard_type": "type",
+    "send_keys": "type", "typetext": "type",
+    "leftclick": "left_click", "rightclick": "right_click",
+    "doubleclick": "double_click", "mouse_move": "move", "move_mouse": "move",
+    "key_press": "press", "keypress": "press", "hot_key": "hotkey",
+    "screengrab": "screenshot", "capture": "screenshot",
+}
+
+#: Keys the model puts the text under. `type` reads `text`; the live call sent
+#: `{"action": "type_text", "value": "laptop stand"}` — so even with the action
+#: name corrected it would have typed an EMPTY STRING and reported success.
+_TEXT_KEYS = ("text", "value", "content", "string", "input")
+
+
+def _text_of(params: dict) -> str:
+    for key in _TEXT_KEYS:
+        got = params.get(key)
+        if isinstance(got, str) and got:
+            return got
+    return ""
+
+
 def _dispatch_action(action: str, params: dict, player=None):
     try:
+        action = _ACTION_ALIASES.get(action, action)
 
-        if action == "type":
-            return _type(params.get("text", ""))
-
-        if action == "smart_type":
-            return _smart_type(
-                params.get("text", ""),
-                clear_first=params.get("clear_first", True),
-            )
+        if action in ("type", "smart_type"):
+            text = _text_of(params)
+            if not text:
+                # Typing nothing is not a successful type. This used to call
+                # _type("") and report "Typed: " as a success.
+                return ToolResult.failure(
+                    f"'{action}' was given no text to type.",
+                    guidance="Call it again with the text under 'text'.")
+            if action == "type":
+                return _type(text)
+            return _smart_type(text, clear_first=params.get("clear_first", True))
 
         if action in ("click", "left_click"):
             return _click(params.get("x"), params.get("y"), "left", 1)

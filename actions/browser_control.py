@@ -713,6 +713,18 @@ class _BrowserSession:
             "timeout":     25_000,
             "args": [
                 "--start-maximized",
+                # Chrome publishes NOTHING of a page to the accessibility bus
+                # unless this is on. Measured on the user's own machine: the
+                # Chrome he was driving exposed ONE named node (the window
+                # frame) and zero page content, so `screen_find "search bar"`
+                # correctly returned NOT_FOUND — the search bar genuinely was
+                # not in the tree it was searching. With this flag the same
+                # page exposed 889 named nodes including
+                # ('entry', 'Address and search bar').
+                #
+                # That is the difference between a ~19ms exact structural
+                # lookup and a 5.8s vision guess that landed 650px away.
+                "--force-renderer-accessibility",
                 "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
                 "--disable-default-apps",
