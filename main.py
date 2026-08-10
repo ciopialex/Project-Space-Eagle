@@ -1850,10 +1850,26 @@ class AethelarkLive:
 
                     self._last_server_activity = time.monotonic()
 
-                    # First byte of the ANSWER, not of the connection. Session
-                    # resumption handles arrive on their own schedule and would
-                    # otherwise stamp first_token during the user's sentence.
-                    if response.data or response.server_content or response.tool_call:
+                    # First byte of the ANSWER, not of the connection, and not
+                    # of the user's own transcription.
+                    #
+                    # This used to accept ANY `server_content` — but that is
+                    # also how `input_transcription` arrives, and that streams
+                    # WHILE the user is still speaking. So `first_token` was
+                    # being stamped mid-sentence, which made `response`
+                    # (speech_end → first_token) come out NEGATIVE on three of
+                    # thirteen measured turns, and quietly moved the model's
+                    # real thinking time into `audio`, which is labelled "our
+                    # own playback path". The one number the whole latency
+                    # question turns on was attributing Google's time to us.
+                    _sc = response.server_content
+                    _answered = bool(
+                        response.data                       # audio payload
+                        or response.tool_call               # a tool call
+                        or (_sc and (getattr(_sc, "model_turn", None)
+                                     or getattr(_sc, "output_transcription", None)
+                                     or getattr(_sc, "turn_complete", None))))
+                    if _answered:
                         self._trace_mark("first_token")
 
                     if response.data:
