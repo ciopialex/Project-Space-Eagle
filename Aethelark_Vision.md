@@ -8,6 +8,12 @@
 
 This is the philosophical backbone of Aethelark, written down so the vision survives contact with a thousand implementation details. It captures a single long conversation in which the product's true shape came into focus. Read it before writing legislation, before adding a capability, before a redesign. Everything else — the UI, the swarm, the constitution — hangs off the ideas here.
 
+> **On provenance — read this before quoting any line here as doctrine.** This document was *distilled by a model* from a conversation; it is not a transcript. That means a sentence here may be the founder's conviction, or may be a reasonable-sounding caveat the model added on its way past. Those two look identical on the page and are not identical in authority.
+>
+> One was caught on 2026‑08‑10. Guardrail 1 in §2 had been written as *"human‑emulation is the universal **fallback**"* — which contradicts §2's own thesis ("the GUI is the universal API") and the pull‑quote three lines below it ("Emulating the user isn't a workaround for missing APIs"). The founder's position is the thesis: **human emulation is the goal.** Preferring an API where one exists is routing, not a demotion. Corrected in place.
+>
+> When a line here decides an implementation, check it against §2's thesis and against what the code already does. Where they disagree, suspect the distillation before suspecting the founder — and settle it with him rather than in a commit message.
+
 ---
 
 ## 1. The Thesis — an abstraction layer over the *operator*, not the *model*
@@ -42,7 +48,9 @@ The deepest insight of the conversation: **the GUI is the universal API.**
 
 **Two guardrails on this principle (must be honored, not admired):**
 
-1. **The universal channel is low‑bandwidth and lossy.** An API hands you structured truth with guarantees; the screen hands you pixels you must re‑derive meaning from — slower, with a nonzero misread rate. So human‑emulation is the universal **fallback**, not always the **optimal** path. Strongest form: use the clean channel where a tool offers one; drop to human‑emulation only where it doesn't. **Pixels are the floor everyone stands on; APIs are the express lane where they exist.**
+1. **The universal channel is low‑bandwidth and lossy — so route around it where you can, and never depend on being able to.** An API hands you structured truth with guarantees; the screen hands you pixels and structure you must re‑derive meaning from — slower, with a nonzero misread rate. So where a system offers a cleaner channel, take it: **API → structured channel (DOM, accessibility tree, PTY) → the human channel.**
+   That ordering is **routing, not rank.** Human‑emulation is not the fallback; it is *the capability this product is*, and the only reason coverage is unconditional and nobody has to say yes. The express lanes are shortcuts a general operator is free to take precisely *because* it never needed them — a driver who takes the motorway when there is one does not call driving their fallback. Design every capability so the human channel **can** serve it; then let a cheaper transport win when one happens to exist. If a capability only works through an API, it is not built yet.
+   **Pixels are the floor everyone stands on; APIs are the express lane where they exist — and the floor is the thing being sold.**
 2. **Be precise about *whose* seat.** Driving *your* tools on *your* machine is unambiguously your seat and the entire core value — nobody can object to you automating your own keyboard. Acting *as you* toward third‑party services is a separate, spicier capability (ToS, detection, consent live there). Keep the two framings separate in product and in marketing. Personal admin — taxes, spreadsheets, files, email — is squarely the good zone.
 
 > Emulating the user isn't a workaround for missing APIs. It's the realization that **the human interface was the universal API the entire time**, and everyone was waiting for permission to use it programmatically. Permission was never required — you just needed something smart enough to sit in the chair.

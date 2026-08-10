@@ -343,8 +343,20 @@ def _handle_summarize(parameters: dict, player, speak) -> str:
         return ("I need to know which video. Ask the user for the link, or for "
                 "the title so it can be found first — do not guess one.")
     if not _is_valid_youtube_url(url):
-        return (f"That does not look like a YouTube link: {url}. Ask the user "
-                "to say or paste the video link.")
+        # Not a link — treat it as a title and look it up, which is exactly
+        # what `play` already does with the same input. Straight from a real
+        # session: `youtube_api` returned "Put Yourself First & Success Will
+        # Follow Relentlessly | Napoleon Hill", the model passed that title
+        # here, and this refused it — while `_scrape_first_video_url` sat 250
+        # lines up in this same file, doing precisely this job for `play`.
+        # Two actions of one tool disagreeing about what an argument means is
+        # the model's fault only in the sense that we gave it the trap.
+        found = _scrape_first_video_url(url)
+        if not found:
+            return (f"Could not find a video called {url!r} on YouTube. Ask "
+                    "the user for the link, or for a more exact title.")
+        print(f"[YouTube] 🔎 Resolved title → {found}")
+        url = found
 
     video_id = _extract_video_id(url)
     if not video_id:

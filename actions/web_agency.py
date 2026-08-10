@@ -121,17 +121,74 @@ def _ready(browser) -> ToolResult | None:
     return None
 
 
+#: How many lines of page the model is given. A budget, not a prefix.
+_DESCRIBE_BUDGET = 60
+
+#: How many neighbours are kept together when the budget is spread. Sampling
+#: every Nth node would shred the page - a price separated from the thing it
+#: prices is worse than not sending it at all.
+_RUN = 10
+
+
+def _spread(nodes, budget: int = _DESCRIBE_BUDGET, run: int = _RUN):
+    """`budget` nodes drawn from across `nodes`, in document order.
+
+    This used to be `nodes[:budget]`, which is a positional accident rather
+    than a relevance decision. Measured live: Wikipedia's "Motherboard" page
+    collects 600 nodes, 8 of which carry the article's subject matter, the
+    first at index 206 - so the model was handed sixty lines of sidebar and
+    told nothing about motherboards. Python's pathlib docs got 4 of 100.
+    Hacker News scored well only because its content happens to come first,
+    which is luck rather than perception.
+
+    Deliberately geometry-free and keyword-free. A left-hand sidebar IS
+    strongly separable on Wikipedia (chrome median left=53 against content's
+    342), but that encodes one site's layout; a right-hand sidebar, a
+    single-column page or an RTL locale each break it differently. Position
+    in the document is the one thing every page has.
+    """
+    nodes = list(nodes)
+    if len(nodes) <= budget:
+        return nodes
+
+    # Walk the page in `budget/run` evenly spaced windows, each `run` long.
+    windows = max(1, budget // run)
+    step = len(nodes) / windows
+    picked: list = []
+    seen: set[int] = set()
+    for w in range(windows):
+        start = int(w * step)
+        for i in range(start, min(start + run, len(nodes))):
+            if i not in seen:
+                seen.add(i)
+                picked.append(i)
+    # Top up from the front if rounding left the budget unspent - the first
+    # controls are still the likeliest way OFF the page.
+    for i in range(len(nodes)):
+        if len(picked) >= budget:
+            break
+        if i not in seen:
+            seen.add(i)
+            picked.append(i)
+    return [nodes[i] for i in sorted(picked)[:budget]]
+
+
 def _describe(nodes) -> str:
     def _line(n) -> str:
         # The text sitting with a control - a price, a stock line - is the
         # difference between "you can click this" and "this is a P2S and it
         # costs EUR 519". Without it the eagle web-searched for a price while
         # standing on the page showing it.
-        context = getattr(n, "context", "")
-        return (f"- {n.name} ({n.role})" if not context
-                else f"- {n.name} ({n.role}) — {context}")
+        context = str(getattr(n, "context", "") or "").strip()
+        name = str(n.name or "").strip()
+        # Chrome routinely reports context identical to its own name
+        # ("Random article" / ctx "Random article"). Printing both spends
+        # budget to say the same word twice.
+        if not context or context == name:
+            return f"- {n.name} ({n.role})"
+        return f"- {n.name} ({n.role}) — {context}"
 
-    return "\n".join(_line(n) for n in nodes[:60])
+    return "\n".join(_line(n) for n in _spread(nodes))
 
 
 def _current_nodes(page) -> tuple:

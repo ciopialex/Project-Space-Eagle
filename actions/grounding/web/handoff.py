@@ -394,7 +394,26 @@ _BOT_WALL_URL_MARKS = ("__cf_chl", "cdn-cgi/challenge", "/challenge-platform")
 
 #: Above this many controls the page is plainly working, whatever words are on
 #: it. A shop selling security cameras must not read as a security check.
-_BOT_WALL_MAX_CONTROLS = 6
+#:
+#: Raised from 6 after a real miss: the Romanian Cloudflare interstitial renders
+#: EIGHT nodes (title, favicon, two headings, a status line, the Ray ID footer
+#: and two footer links), so the shape gate gave up one node before it would
+#: have looked. A challenge page is still tiny — a working page has dozens.
+_BOT_WALL_MAX_CONTROLS = 12
+
+#: Signals a challenge page carries in EVERY language, which is the point.
+#: `_BOT_WALL_PHRASES` is English, so on a Romanian-locale browser — the
+#: user's default — it matched nothing while the page plainly said
+#: "Efectuarea verificării de securitate". Adding Romanian to the word list
+#: would only move the failure to the next language; these do not translate.
+#:
+#: "ray id" is Cloudflare's own footer on every interstitial. "cf-" covers the
+#: turnstile/challenge widgets. They are paired with the small-page ceiling
+#: above, so Cloudflare's *documentation* — which says "Ray ID" constantly —
+#: never trips it.
+_BOT_WALL_MARKERS = ("ray id", "cf-chl", "cf_chl", "turnstile",
+                     "challenge-platform", "cf-browser-verification",
+                     "__cf_bm", "cloudflare ray")
 
 
 def bot_wall_reason(nodes, url: str = "") -> str:
@@ -409,10 +428,16 @@ def bot_wall_reason(nodes, url: str = "") -> str:
         return _BOT_WALL_REASON
 
     items = list(nodes or ())
-    if len(items) > _BOT_WALL_MAX_CONTROLS:
+    if not items or len(items) > _BOT_WALL_MAX_CONTROLS:
+        # An empty read is "could not see", not "was blocked" — a different
+        # message with a different next step. Do not collapse the two.
         return ""
     for node in items:
         name = str(getattr(node, "name", "") or "").lower()
+        # Language-independent markers first: the English phrase list cannot
+        # see a Romanian challenge, and the user's browser is Romanian.
+        if any(mark in name for mark in _BOT_WALL_MARKERS):
+            return _BOT_WALL_REASON
         if any(phrase in name for phrase in _BOT_WALL_PHRASES):
             return _BOT_WALL_REASON
     return ""
