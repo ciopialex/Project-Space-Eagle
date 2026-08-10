@@ -77,15 +77,20 @@ def test_the_navigation_is_not_thrown_away_either():
 
 # ── it must stay within budget and stay readable ────────────────────────────
 
+def _content(out):
+    """Only the page lines. The untrusted-content fence around them is
+    framing, not budget — see test_page_is_untrusted.py."""
+    return [l for l in out.splitlines() if l.startswith("- ")]
+
+
 def test_the_budget_is_still_respected():
-    out = _describe(_page())
-    assert len(out.splitlines()) <= 60
+    assert len(_content(_describe(_page()))) <= 60
 
 
 def test_a_short_page_is_shown_whole():
     nodes = [_node(f"Only {i}") for i in range(12)]
     out = _describe(nodes)
-    assert len(out.splitlines()) == 12
+    assert len(_content(out)) == 12
     for i in range(12):
         assert f"Only {i}" in out
 

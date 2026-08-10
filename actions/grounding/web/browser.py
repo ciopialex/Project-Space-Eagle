@@ -132,6 +132,10 @@ def _default_launcher(playwright, profile: Path, headless: bool):
         headless=headless,
         **launch_kwargs,
         viewport={"width": 1440, "height": 900},
+        # Without this Playwright CANCELS every download, so a click on a
+        # Download button succeeded from the DOM's point of view and no file
+        # ever arrived. See PagePort.download.
+        accept_downloads=True,
         args=(["--disable-blink-features=AutomationControlled"]
               + (["--password-store=gnome-libsecret"]
                  if launch_kwargs.get("ignore_default_args") else [])),
@@ -142,6 +146,57 @@ def _default_launcher(playwright, profile: Path, headless: bool):
     # A persistent context already opens a tab. Adopt it rather than adding a
     # second, empty one.
     return pages[0] if pages else context.new_page()
+
+
+
+#: What the eagle may write to disk from a web page. An ALLOW-list, so a new
+#: executable format is refused by default rather than permitted until someone
+#: notices - the page chooses this filename, and a voice request about a 3D
+#: model must not be able to land `setup.exe` in Downloads.
+#:
+#: Every component is checked, not just the last one: "laptop_stand.stl.exe"
+#: is the oldest trick there is, and it reads as the file you asked for.
+#:
+#: Nothing in this codebase executes a downloaded file, and nothing should be
+#: added that does. This list is about what arrives, not what runs.
+_DOWNLOAD_ALLOWED = frozenset({
+    # documents
+    "pdf", "txt", "md", "rtf", "odt", "doc", "docx", "ods", "xls", "xlsx",
+    "odp", "ppt", "pptx", "csv", "tsv", "json", "xml", "yaml", "yml", "ics",
+    # images / media
+    "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "tiff", "heic",
+    "mp3", "wav", "flac", "ogg", "m4a", "mp4", "webm", "mov", "mkv",
+    # 3D printing and CAD - the whole point of the MakerWorld case
+    "stl", "3mf", "obj", "step", "stp", "gcode", "bgcode", "amf", "ply",
+    "f3d", "dxf", "svg",
+    # archives (inert until opened, and nothing here opens them)
+    "zip", "tar", "gz", "bz2", "xz", "7z", "rar",
+    # data / fonts
+    "sqlite", "db", "parquet", "ttf", "otf", "woff", "woff2", "epub",
+})
+
+#: Extensions that are refused wherever they appear in the name.
+_DOWNLOAD_NEVER = frozenset({
+    "exe", "msi", "bat", "cmd", "com", "scr", "pif", "cpl", "jar",
+    "sh", "bash", "zsh", "run", "bin", "deb", "rpm", "appimage", "dmg", "pkg",
+    "app", "so", "dll", "dylib", "ps1", "psm1", "vbs", "vbe", "js", "jse",
+    "wsf", "wsh", "hta", "reg", "desktop", "lnk", "apk", "elf",
+})
+
+
+def download_name_ok(name: str) -> tuple[bool, str]:
+    """(allowed, why-not). Fails closed on anything unrecognised."""
+    parts = [p for p in (name or "").lower().split(".") if p]
+    if len(parts) < 2:
+        return False, "it has no file extension"
+    exts = parts[1:]
+    for e in exts:
+        if e in _DOWNLOAD_NEVER:
+            return False, f"'.{e}' is a program, not a document"
+    final = exts[-1]
+    if final not in _DOWNLOAD_ALLOWED:
+        return False, f"'.{final}' is not a recognised document or media type"
+    return True, ""
 
 
 class PagePort:
@@ -262,6 +317,72 @@ class PagePort:
             self._page.eval_on_selector(selector, self._DIRECT_JS)
 
         self._call(_do)
+
+    def download(self, ref: str, to_dir=None, timeout_ms: int = 60_000):
+        """Click `ref` and keep the file. The saved path, or None.
+
+        Clicking a Download button and RECEIVING a file are different events,
+        and only the second one is what the user asked for. Without this the
+        eagle clicked, the DOM reported a successful click, and the file went
+        nowhere — the exact shape of "reported success it never verified".
+
+        None means no file arrived: a sign-in wall behind the button, a
+        paywall, or a control that simply does nothing. The caller must not
+        describe that as a download.
+
+        `suggested_filename` is chosen by the SITE, so it is untrusted: it is
+        reduced to a bare name and the result is proved to sit inside the
+        target directory before anything is written.
+        """
+        from pathlib import Path as _Path
+
+        target = _Path(to_dir) if to_dir else (_Path.home() / "Downloads")
+        selector = f'[data-ae-ref="{ref}"]'
+
+        def _do():
+            try:
+                with self._page.expect_download(timeout=timeout_ms) as info:
+                    try:
+                        self._page.click(selector, timeout=_REF_TIMEOUT_MS)
+                    except Exception:
+                        self._page.eval_on_selector(selector, self._DIRECT_JS)
+                    download = info.value
+            except Exception:
+                return None               # nothing ever started downloading
+
+            try:
+                raw = (getattr(download, "suggested_filename", "") or "").strip()
+                name = _Path(raw).name or "download"
+                if name in (".", ".."):
+                    name = "download"
+
+                # The PAGE chose this name. Refuse anything that is not a
+                # document or media file, checking every extension component:
+                # "laptop_stand.stl.exe" reads as the model you asked for.
+                ok, why = download_name_ok(name)
+                if not ok:
+                    print(f"[Web] ⛔ refused download {name!r}: {why}")
+                    return None
+
+                target.mkdir(parents=True, exist_ok=True)
+                dest = target / name
+                # Never clobber something already there.
+                stem, suffix, n = dest.stem, dest.suffix, 1
+                while dest.exists():
+                    dest = target / f"{stem} ({n}){suffix}"
+                    n += 1
+
+                # Containment, proved rather than assumed — the name came
+                # from the page.
+                if not dest.resolve().is_relative_to(target.resolve()):
+                    return None
+
+                download.save_as(str(dest))
+                return str(dest)
+            except Exception:
+                return None               # a path we cannot vouch for is no path
+
+        return self._call(_do)
 
     def fill(self, ref: str, text: str) -> None:
         selector = f'[data-ae-ref="{ref}"]'

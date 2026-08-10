@@ -568,7 +568,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "open | look | click | type | sign_in | close"},
+                "action":      {"type": "STRING", "description": "open | look | click | download | type | sign_in | close. Use download (not click) for anything that produces a FILE - it only reports success when a file is actually on disk."},
                 "url":         {"type": "STRING", "description": "URL for the open action"},
                 "description": {"type": "STRING", "description": "Which control, in plain words: 'the Sign in button', 'the Email field'. Use a name from the last look."},
                 "text":        {"type": "STRING", "description": "Text to type, for the type action"},
