@@ -598,7 +598,18 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "desktop_control",
-        "description": "Controls the desktop: wallpaper, organize, clean, list, stats.",
+        # `task` was not described at all, so the model chose this tool
+        # believing it only set wallpapers — while that action generates and
+        # runs Python. Say what it does; the model cannot weigh a capability
+        # it has not been told about.
+        "description": ("Controls the desktop: wallpaper, organize, clean, "
+                        "list, stats. The 'task' action additionally writes "
+                        "and RUNS Python for something the other actions do "
+                        "not cover; it is confined to the user's home folder "
+                        "and cannot delete, move or run system commands. "
+                        "For reading or writing a named file or folder, "
+                        "file_controller wins — it is contained the same way "
+                        "and its deletions go to the trash with an undo."),
         "parameters": {
             "type": "OBJECT",
             "properties": {

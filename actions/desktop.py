@@ -10,6 +10,7 @@ import platform
 from pathlib import Path
 from datetime import datetime
 from core import user_paths
+from core.safe_exec import run_sandboxed
 from core.tool_result import Failed, ToolResult, settled
 
 
@@ -33,6 +34,15 @@ except ImportError:
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
 
+def _ALLOWED_ROOTS():
+    """What generated desktop code may address: the user's own tree.
+
+    Same boundary `file_controller` enforces, for the same reason - a
+    desktop task has no business reading /etc or writing outside home.
+    """
+    return (Path.home(),)
+
+
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
@@ -50,74 +60,30 @@ def _get_desktop() -> Path:
             return Path(xdg)
     return Path.home() / "Desktop"
 
-def _build_sandbox() -> dict:
-    import time
+def _execute_generated_code(code: str, player=None):
+    """Run model-written code against the contained sandbox.
 
-    safe_builtins = {
-        "print": print,
-        "len": len, "str": str, "int": int, "float": float,
-        "bool": bool, "list": list, "dict": dict, "tuple": tuple,
-        "range": range, "enumerate": enumerate, "sorted": sorted,
-        "isinstance": isinstance, "hasattr": hasattr, "getattr": getattr,
-        "max": max, "min": min, "sum": sum, "abs": abs,
-        "zip": zip, "map": map, "filter": filter,
-    }
-
-    sandbox = {
-        "__builtins__": safe_builtins,
-        "Path": Path,
-        "time": time,
-        "shutil": type("shutil", (), {
-            "copy2":      shutil.copy2,
-            "copytree":   shutil.copytree,
-            "disk_usage": shutil.disk_usage,
-        })(),
-        "os_path": os.path,  
-    }
-
-    if _PYAUTOGUI:
-        sandbox["pyautogui"] = pyautogui
-
-    if _OS == "Windows":
-        try:
-            import ctypes
-            import winreg
-            sandbox["ctypes"] = ctypes
-            sandbox["winreg"] = type("winreg", (), {
-                # Sadece okuma
-                "OpenKey":      winreg.OpenKey,
-                "QueryValueEx": winreg.QueryValueEx,
-                "HKEY_CURRENT_USER": winreg.HKEY_CURRENT_USER,
-            })()
-        except ImportError:
-            pass
-
-    return sandbox
-
-
-def _execute_generated_code(code: str, player=None) -> str:
-    if not code or code.strip() == "UNSAFE":
+    The old `_build_sandbox()` handed generated code the real `Path` and a
+    restricted `__builtins__`, then relied on the PROMPT to forbid deletion and
+    subprocess. Measured against it, six escapes worked, including invoking
+    `subprocess.Popen` reached through `().__class__.__bases__[0].__subclasses__()`.
+    `core.safe_exec` enforces what the prompt was asking for; see its docstring
+    for what it deliberately still permits.
+    """
+    if not code or str(code).strip() == "UNSAFE":
         return Failed(
             "This action cannot be performed safely.",
-            guidance="The model declined this as unsafe. Tell the user it was not done and why; do not rephrase and retry.")
+            guidance="The model declined this as unsafe. Tell the user it was "
+                     "not done and why; do not rephrase and retry.")
 
-    # Kod temizleme
-    if code.startswith("```"):
-        lines = code.split("\n")
+    if str(code).startswith("```"):
+        lines = str(code).split("\n")
         code  = "\n".join(lines[1:-1]).strip()
 
-    sandbox      = _build_sandbox()
-    output_lines = []
-    sandbox["__builtins__"]["print"] = lambda *a: output_lines.append(" ".join(str(x) for x in a))
-
-    try:
-        exec(compile(code, "<aethelark_desktop>", "exec"), sandbox)
-        return "\n".join(output_lines) if output_lines else "Done."
-    except Exception as e:
-        print(f"[Desktop] Exec error: {e}\nCode:\n{code[:300]}")
-        return Failed(
-            f"Execution error: {e}",
-            guidance="The generated step failed. Tell the user it did not work; do not claim the desktop changed.")
+    result = run_sandboxed(code, roots=_ALLOWED_ROOTS())
+    if not result.ok:
+        print(f"[Desktop] refused/failed: {result.message[:160]}")
+    return result
 
 
 def _ask_gemini_for_desktop_action(task: str) -> str:
@@ -149,17 +115,22 @@ Allowed modules ONLY:
 - pyautogui (mouse, keyboard — if needed)
 - pathlib.Path (file/folder inspection only, no deletion)
 - shutil.copy2, shutil.copytree, shutil.disk_usage (NO move, NO rmtree)
-- os_path (os.path equivalent, read-only)
 - time.sleep
+For file times and sizes use Path(...).stat() — .st_mtime, .st_size. There is
+no os, os.path or os_path; asking for one is the most common way this fails.
 {os_specific}
 
-Hard rules:
-- NO file deletion (no unlink, no rmtree, no remove)
-- NO subprocess calls
-- NO exec() or eval() inside the code
-- NO import statements (modules are pre-injected)
-- NO file write operations except explicitly requested
-- If task cannot be done safely with these tools, output exactly: UNSAFE
+These are ENFORCED, not requested — code breaking them is refused before it
+runs, and the task simply fails. Write within them:
+- Paths outside the user's home directory are refused.
+- No deleting, renaming, moving or chmod. Path has read_text, write_text,
+  mkdir, iterdir, glob, exists, is_dir, is_file, name, stem, suffix, parent
+  and / — nothing else.
+- No imports; the modules above are already available.
+- No exec(), eval(), compile() or open().
+- No attribute or string beginning with an underscore (__class__ and the
+  like are refused outright).
+- If the task needs anything above, output exactly: UNSAFE
 
 Output ONLY the Python code. No explanation, no markdown, no backticks.
 
