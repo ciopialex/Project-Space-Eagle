@@ -1352,8 +1352,23 @@ class AethelarkLive:
         # configurable: 0 is fastest, raise it if planning quality suffers.
         _think_budget = int(_cfg.get("thinking_budget") or 0)
 
+        # ── Verbosity: the hard-law backstop ────────────────────────────────
+        # `core/prompt.txt` asks for one sentence. Measured across 13 real
+        # turns it was not obeyed: `spoken` (first_audio -> complete) had a
+        # median of 4854ms and a worst case of 15373ms. Fifteen seconds of
+        # speech the user cannot skim, skip or interrupt.
+        #
+        # Prompt text is soft law - the model may talk itself out of it. This
+        # is the dispatch-layer version, and it is OFF by default on purpose:
+        # a cap set too low truncates a reply mid-word, which is worse than a
+        # long one. Set `max_reply_tokens` in config once a value has been
+        # measured against real turns rather than guessed at.
+        _max_tokens = _cfg.get("max_reply_tokens")
+        _max_tokens = int(_max_tokens) if _max_tokens else None
+
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
+            **({"max_output_tokens": _max_tokens} if _max_tokens else {}),
             output_audio_transcription={},
             input_audio_transcription={},
             system_instruction="\n".join(parts),

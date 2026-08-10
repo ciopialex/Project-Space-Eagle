@@ -35,6 +35,7 @@ except ImportError:
 
 from config import get_os, is_windows, is_mac, is_linux
 from core import user_paths
+from core.tool_result import Failed, ToolResult, settled
 
 
 def _get_base_dir() -> Path:
@@ -330,7 +331,8 @@ def _handle_play(parameters: dict, player) -> str:
 
 def _handle_summarize(parameters: dict, player, speak) -> str:
     if not _TRANSCRIPT_OK:
-        return "youtube-transcript-api is not installed. Run: pip install youtube-transcript-api"
+        return Failed("youtube-transcript-api is not installed. Run: pip install youtube-transcript-api",
+                      guidance="Tell the user the dependency is missing; nothing was summarised.")
 
     # Use what the model was given. This used to go straight to a GUI box and
     # wait for a paste, ignoring `url` entirely - so "summarise this video"
@@ -340,8 +342,8 @@ def _handle_summarize(parameters: dict, player, speak) -> str:
     # a voice assistant.
     url = str(parameters.get("url") or parameters.get("query") or "").strip()
     if not url:
-        return ("I need to know which video. Ask the user for the link, or for "
-                "the title so it can be found first — do not guess one.")
+        return Failed("I need to know which video.",
+                      guidance="Ask the user for the link or the exact title. Do not guess one.")
     if not _is_valid_youtube_url(url):
         # Not a link — treat it as a title and look it up, which is exactly
         # what `play` already does with the same input. Straight from a real
@@ -360,7 +362,8 @@ def _handle_summarize(parameters: dict, player, speak) -> str:
 
     video_id = _extract_video_id(url)
     if not video_id:
-        return "Could not extract video ID from that URL."
+        return Failed("Could not extract video ID from that URL.",
+                      guidance="Ask the user to paste the link again.")
 
     if player:
         player.write_log(f"[YouTube] Summarizing: {url}")
@@ -369,7 +372,8 @@ def _handle_summarize(parameters: dict, player, speak) -> str:
 
     transcript = _get_transcript(video_id)
     if not transcript:
-        return "I couldn't retrieve a transcript for that video."
+        return Failed("I couldn't retrieve a transcript for that video.",
+                      guidance="The video has no captions. Say so; do not invent a summary.")
 
     if speak:
         speak("Transcript retrieved. Generating summary now.")
@@ -463,7 +467,11 @@ def youtube_video(
     player=None,
     session_memory=None,
     speak=None,
-) -> str:
+) -> ToolResult:
+    """Returns a ToolResult. Handlers keep their prose; refusals decided HERE
+    carry a verdict, because this tool reported `?` no-status on every call in
+    a real session - including a 0ms self-refusal the model could not tell
+    apart from a success."""
     params = parameters or {}
     action = params.get("action", "play").lower().strip()
 
@@ -473,15 +481,18 @@ def youtube_video(
 
     handler = _ACTION_MAP.get(action)
     if handler is None:
-        return (
+        return ToolResult.failure(
             f"Unknown YouTube action: '{action}'. "
-            "Available: play, summarize, get_info, trending."
-        )
+            "Available: play, summarize, get_info, trending.",
+            guidance="Nothing ran. Call this again with a listed action.")
 
     try:
         if action == "play":
-            return handler(params, player) or "Done."
-        return handler(params, player, speak) or "Done."
+            return settled(handler(params, player) or "Done.")
+        return settled(handler(params, player, speak) or "Done.")
     except Exception as e:
         print(f"[YouTube] ❌ Error in {action}: {e}")
-        return f"YouTube {action} failed: {e}"
+        return ToolResult.failure(
+            f"YouTube {action} failed: {e}",
+            guidance="Tell the user it did not work; do not claim the video "
+                     "played or was summarised.")

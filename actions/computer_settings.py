@@ -1,5 +1,6 @@
 #computer_settings.py
 import json
+from core.tool_result import Failed, ToolResult, settled
 import re
 import sys
 import time
@@ -734,9 +735,13 @@ def computer_settings(
     response=None,
     player=None,
     session_memory=None,
-) -> str:
+) -> ToolResult:
+    """Returns a ToolResult. It reported `?` no-status live on a plain
+    volume_up, so the model had no way to know whether the volume moved."""
     if not _PYAUTOGUI:
-        return "pyautogui is not installed. Run: pip install pyautogui"
+        return ToolResult.failure(
+            "pyautogui is not installed. Run: pip install pyautogui",
+            guidance="Nothing changed. Tell the user the dependency is missing.")
 
     params      = parameters or {}
     raw_action  = params.get("action", "").strip()
@@ -752,7 +757,10 @@ def computer_settings(
     action = raw_action.lower().strip().replace(" ", "_").replace("-", "_")
 
     if not action:
-        return "No action could be determined."
+        return ToolResult.failure(
+            "No action could be determined.",
+            guidance="Ask the user what they want changed - volume, brightness, "
+                     "a key press.")
 
     print(f"[Settings] Action: {action}  Value: {value}  OS: {_OS}")
     if player:
@@ -761,17 +769,19 @@ def computer_settings(
     if action in _DANGEROUS_ACTIONS:
         confirmed = str(params.get("confirmed", "")).lower()
         if confirmed not in ("yes", "true", "1", "confirm"):
-            return (
+            return ToolResult.failure(
                 f"This will {action} the computer. "
-                f"Please confirm by calling again with confirmed=yes."
-            )
+                f"Please confirm by calling again with confirmed=yes.",
+                guidance="NOTHING happened yet. Ask the user to confirm out "
+                         "loud before calling again with confirmed=yes.")
 
     if action == "volume_set":
         try:
             volume_set(int(value or 50))
             return f"Volume set to {value}%."
         except Exception as e:
-            return f"Could not set volume: {e}"
+            return Failed(f"Could not set volume: {e}",
+                          guidance="The volume did not change.")
 
     if action in ("type_text", "write_on_screen", "type", "write"):
         text = str(value or params.get("text", "")).strip()
@@ -805,11 +815,18 @@ def computer_settings(
 
     func = ACTION_MAP.get(action)
     if not func:
-        return f"Unknown action: '{raw_action}'."
+        return ToolResult.failure(
+            f"Unknown action: '{raw_action}'.",
+            guidance=f"Nothing changed. Known actions: {', '.join(sorted(ACTION_MAP))}.")
 
     try:
         func()
-        return f"Done: {action}."
+        # `settled`, not a bare string: this exact call reported `?` no-status
+        # live on a plain volume_up, so the model was told nothing about
+        # whether the volume had actually moved.
+        return settled(f"Done: {action}.")
     except Exception as e:
         print(f"[Settings] Action failed ({action}): {e}")
-        return f"Action failed ({action}): {e}"
+        return ToolResult.failure(
+            f"Action failed ({action}): {e}",
+            guidance="Nothing changed. Do not tell the user it worked.")
