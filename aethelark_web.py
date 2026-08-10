@@ -1163,5 +1163,17 @@ def main():
     sys.exit(app.exec() or 0)
 
 
+def _maybe_doctor() -> bool:
+    """`eagle --doctor` / `--fix`. Handled before anything else starts, so a
+    machine that cannot run the app can still be told why."""
+    import sys
+    if "--doctor" in sys.argv or "--fix" in sys.argv:
+        from core.doctor import main as _doctor
+        raise SystemExit(_doctor([a for a in sys.argv[1:]]))
+    return False
+
+
+_maybe_doctor()
+
 if __name__ == "__main__":
     main()
