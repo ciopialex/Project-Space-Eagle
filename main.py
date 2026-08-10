@@ -44,6 +44,7 @@ from ui import AethelarkUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
 )
+from actions.mission import mission
 from core.tool_result import ToolResult, normalize
 from core.tool_fallback import with_fallback_guidance
 from core import diag
@@ -592,6 +593,30 @@ TOOL_DECLARATIONS = [
                 "name":        {"type": "STRING", "description": "File name to search for"},
                 "extension":   {"type": "STRING", "description": "File extension to search (e.g. .pdf)"},
                 "count":       {"type": "INTEGER", "description": "Number of results for largest"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "mission",
+        "description": (
+            "Run a goal that takes MORE THAN ONE action, as a sequence of "
+            "small verified steps: 'download a laptop stand from makerworld', "
+            "'download the form, fill it in and upload it', 'find X and send "
+            "it to Y'. It plans the steps, does one per call, escalates "
+            "through different ways of doing each one, and never repeats an "
+            "approach that already failed. Use it INSTEAD of guessing a "
+            "single tool when the request needs several actions in order. "
+            "For one action, call that tool directly."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description":
+                           "start | next | status | abandon. After start, keep "
+                           "calling next until it says done or blocked."},
+                "goal":   {"type": "STRING", "description":
+                           "For start: what the user asked for, in their own words"},
             },
             "required": ["action"]
         }
@@ -1502,6 +1527,10 @@ class AethelarkLive:
 
             elif name == "computer_settings":
                 r = await loop.run_in_executor(self._tool_executor, lambda: computer_settings(parameters=args, response=None, player=self.ui))
+                result = r or "Done."
+
+            elif name == "mission":
+                r = await loop.run_in_executor(self._tool_executor, lambda: mission(parameters=args, player=self.ui))
                 result = r or "Done."
 
             elif name == "desktop_control":
