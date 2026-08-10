@@ -147,6 +147,75 @@ else on this list.
 
 ---
 
+## 2.5 Powering the board: what running it actually showed
+
+Everything above §2.5 came from reading code and running tests. This section
+comes from driving the real entrypoints against real targets — live browser,
+live pages, real API key. Two findings, and the first one was mine.
+
+### The migration I shipped last night was half-finished
+
+Driving `file_controller` and `desktop_control` for real showed every SUCCESS
+arriving at the model with **no `ok` key at all** — the signal reserved for
+"this tool has not migrated, read the prose." Failures were correct. Successes
+said nothing.
+
+Both entrypoints ended in `normalize()`, which is written for the fourteen
+tools that have *not* migrated: there a bare string carries no verdict, so it
+is marked legacy and `to_response()` withholds `ok`. For a migrated tool the
+same string means the opposite.
+
+The reason it passed review is the part worth keeping. The tests asserted
+`result.ok` — which `normalize` sets `True` on the *object* — while
+`to_response()`, the only thing the model ever sees, withheld it. A seam of my
+own choosing rather than the one that matters. **Fixed** (`settled()`, and
+tests that assert on `to_response()`); the terminal diagnostics went from `?`
+to `✓` on the same operations.
+
+### Page content does not reach the model on content-heavy sites
+
+`_describe()` sends the model `nodes[:60]`. That truncation is by **document
+order** — a positional accident, not a relevance decision. Measured live:
+
+| page | nodes collected | nodes about the subject | reaching the model | first at index |
+|---|---|---|---|---|
+| Wikipedia, "Motherboard" | 600 *(cap)* | 8 | **0** | 206 |
+| Python docs, `pathlib` | 600 *(cap)* | 100 | **4** | 13 |
+| Hacker News front page | 228 | 87 | 23 | 3 |
+
+Hacker News is fine because its content *is* the first thing in the document.
+Wikipedia is a total loss: ask about the article and the model receives
+"Jump to content", "Main menu", "Move Main menu to sidebar", "Hide Main menu",
+"Main page", "Contents", "Current events", "Random article", "About
+Wikipedia", "Contact us" — sixty lines of sidebar, and nothing about
+motherboards.
+
+This is the roadmap's own lesson recurring one commit later. `5a273af` —
+"the eagle reads the page, not just the buttons on it" — added text-block
+collection precisely to fix this, and measured *"69 controls collected, 68
+text blocks"*. Collection did improve. What reaches the model did not,
+because the truncation immediately downstream throws away by position. That
+is measuring at a seam of one's own choosing, exactly as §5 of the roadmap
+warns.
+
+**Not fixed here, deliberately.** Choosing *which* 60 of 600 nodes matter is a
+ranking design (main-region first? drop repeated nav? score against the user's
+actual request?), and it is in `web_agency.py`, which the other live session
+is working in. It wants a decision, not a guess.
+
+### Smaller things the run surfaced
+
+- On a thin page the sense layer takes a screenshot and then reports *"this
+  tool has no way to show it to you yet"* — captured, then discarded. Honestly
+  labelled, and cheap (~30ms on a small page), but it is dead work on every
+  thin page until something consumes pixels.
+- `web_agency` open/look/click/close all behaved correctly end to end: 1120ms
+  cold open, 31-102ms warm look, and a click on a control that does not exist
+  returned `ok=False` *naming the controls that do* — good failure behaviour.
+- All read-only tools returned in under 10ms. No hangs, no crashes.
+
+---
+
 ## 3. Every dependency is unpinned — and it has already cost a bug
 
 `requirements.txt` names 30 packages and pins **none** of them. `pip install -r
