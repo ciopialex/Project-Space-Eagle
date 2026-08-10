@@ -5,7 +5,7 @@ import re
 import time
 from pathlib import Path
 from core import user_paths
-from core.tool_result import Failed, ToolResult, normalize
+from core.tool_result import Failed, ToolResult, settled
 
 
 def get_base_dir():
@@ -583,31 +583,31 @@ def code_helper(
         print(f"[Code] 🤖 Auto-detected: {action}")
 
     if action == "write":
-        return normalize(_write_action(description, language, output_path, player))
+        return settled(_write_action(description, language, output_path, player))
 
     elif action == "edit":
-        return normalize(_edit_action(
+        return settled(_edit_action(
             file_path,
             description or p.get("instruction", ""),
             player
         ))
 
     elif action == "explain":
-        return normalize(_explain_action(file_path, code, player))
+        return settled(_explain_action(file_path, code, player))
 
     elif action == "run":
-        return normalize(_run_action(file_path, args, timeout, player))
+        return settled(_run_action(file_path, args, timeout, player))
 
     elif action == "build":
-        return normalize(_build(description, language, output_path, args,
+        return settled(_build(description, language, output_path, args,
                                 timeout, speak, player))
 
     elif action == "optimize":
-        return normalize(_optimize_action(file_path, code, language,
+        return settled(_optimize_action(file_path, code, language,
                                           output_path, player))
 
     elif action == "screen_debug":
-        return normalize(_screen_debug_action(description, file_path, player, speak))
+        return settled(_screen_debug_action(description, file_path, player, speak))
 
     else:
         return ToolResult.failure(

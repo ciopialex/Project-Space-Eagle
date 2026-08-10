@@ -97,6 +97,31 @@ class Failed(str):
         return obj
 
 
+def settled(raw: Any) -> ToolResult:
+    """A MIGRATED tool's return value, converted to an explicit verdict.
+
+    The difference from `normalize` is what a plain string means. A migrated
+    tool marks every refusal with `Failed` at the point it is decided, so an
+    unmarked string from one is a RESULT — and saying so is the entire point
+    of migrating it. `normalize` must keep reading the same string as "no
+    verdict given", because it is called for the tools that have not migrated,
+    where that is the truth.
+
+    Ending a migrated entrypoint with `normalize` instead of this is a silent
+    half-migration: failures carry `ok=False` and successes carry nothing at
+    all. It survived review because the tests asserted `result.ok`, which
+    `normalize` sets to True on the object — while `to_response()` withholds
+    the key from the wire. Assert on `to_response()`.
+    """
+    if isinstance(raw, ToolResult):
+        return raw
+    if isinstance(raw, Failed):
+        return ToolResult.failure(str(raw), guidance=raw.guidance)
+    if raw is None:
+        return ToolResult.success("Done.")
+    return ToolResult.success(str(raw))
+
+
 def normalize(raw: Any) -> ToolResult:
     """Coerce any tool's return value into a ToolResult.
 

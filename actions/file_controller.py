@@ -32,7 +32,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core import journal
-from core.tool_result import Failed, ToolResult, normalize
+from core.tool_result import Failed, ToolResult, settled
 
 try:
     import send2trash
@@ -681,4 +681,4 @@ def file_controller(parameters: dict | None = None, response=None,
     # `normalize` reads the marker: Failed → ok=False with its guidance,
     # anything else → the success it plainly is, since every refusal in this
     # module is marked at the point it is decided.
-    return normalize(outcome)
+    return settled(outcome)

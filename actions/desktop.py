@@ -10,7 +10,7 @@ import platform
 from pathlib import Path
 from datetime import datetime
 from core import user_paths
-from core.tool_result import Failed, ToolResult, normalize
+from core.tool_result import Failed, ToolResult, settled
 
 
 class GenerationFailed(Failed):
@@ -485,30 +485,30 @@ def desktop_control(
     try:
         if action == "wallpaper":
             path = params.get("path", "")
-            return normalize(set_wallpaper(path) if path else Failed(
+            return settled(set_wallpaper(path) if path else Failed(
                 "No image path provided.",
                 guidance="Ask the user which image they want as the wallpaper."))
 
         elif action == "wallpaper_url":
             url = params.get("url", "")
-            return normalize(set_wallpaper_from_url(url) if url else Failed(
+            return settled(set_wallpaper_from_url(url) if url else Failed(
                 "No URL provided.",
                 guidance="Ask the user for the image address."))
 
         elif action == "current_wallpaper":
-            return normalize(get_current_wallpaper())
+            return settled(get_current_wallpaper())
 
         elif action == "organize":
-            return normalize(organize_desktop(params.get("mode", "by_type")))
+            return settled(organize_desktop(params.get("mode", "by_type")))
 
         elif action == "clean":
-            return normalize(clean_desktop())
+            return settled(clean_desktop())
 
         elif action == "list":
-            return normalize(list_desktop())
+            return settled(list_desktop())
 
         elif action == "stats":
-            return normalize(get_desktop_stats())
+            return settled(get_desktop_stats())
 
         elif action == "task" or task:
             actual_task = task or params.get("description", "")
@@ -525,8 +525,8 @@ def desktop_control(
             # The gate. Generation failing is not code to run — it used to be
             # compiled anyway, turning every rate limit into a syntax error.
             if isinstance(code, GenerationFailed):
-                return normalize(code)
-            return normalize(_execute_generated_code(code, player=player))
+                return settled(code)
+            return settled(_execute_generated_code(code, player=player))
 
         else:
             if action:
