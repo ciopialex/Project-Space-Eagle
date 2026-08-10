@@ -70,7 +70,135 @@ Worth doing eventually; not worth doing hastily.
 
 ---
 
-## 2. The bug class this session went after
+## 2. Highest-severity finding: the exec sandbox does not contain
+
+`desktop_control(action="task", …)` sends the request to Gemini, gets Python
+back, and `exec`s it against `_build_sandbox()`. That dict restricts
+`__builtins__` to 22 harmless names, and the prompt instructs the model:
+*"NO file deletion"*, *"NO subprocess calls"*, *"NO import statements"*.
+
+**Those are instructions to a language model, not enforcement.** Run against
+the real `_build_sandbox()`:
+
+| attempt | result |
+|---|---|
+| read `/etc/passwd` via `Path` | **allowed** |
+| overwrite an arbitrary file via `Path` | **allowed** |
+| delete an arbitrary file via `Path().unlink()` | **allowed** |
+| reach `subprocess.Popen` via `().__class__.__bases__[0].__subclasses__()` | **allowed** |
+| **invoke** `Popen(['id'])` and read its output | **allowed** — returned the real uid |
+| reach `os` through a loaded module's `__globals__` and `popen('id')` | **allowed** |
+
+`Path` is handed in directly, so the entire containment gate in
+`file_controller` — `_SAFE_ROOTS`, `_resolve`, symlink resolution, the
+traversal tests — is simply bypassed. One door is bolted and tested; the
+other is open and next to it.
+
+### Why this is worse than it was last week
+
+Three things compose, and each is individually reasonable:
+
+1. **`desktop_control` has no consent gate.** `web_agency` has a consent wall,
+   `file_controller` has a journal and an undo. The one tool that runs
+   arbitrary code has neither.
+2. **Its declaration to the model understates it**: *"Controls the desktop:
+   wallpaper, organize, clean, list, stats."* The `task` action — the one that
+   generates and executes code — is not described at all. The model is choosing
+   a tool it has been told is benign.
+3. **The eagle now reads arbitrary web pages into the model's context.** That
+   landed hours ago in `5a273af`: 68 text blocks alongside 69 controls, and
+   `_describe()` feeds control names *plus surrounding page text* back as the
+   tool result.
+
+So the path exists end to end: text on a page the user asked about → the
+model's context → a `desktop_control` task → unsandboxed execution as the
+user.
+
+### Stated fairly
+
+This is the user's own machine, running as their own uid, driving their own
+assistant — "arbitrary code execution" here means *the assistant does
+something destructive nobody asked for*, not privilege escalation. And it
+needs the model to be steered, which is not automatic.
+
+But it does not need an attacker. This codebase has **already shipped this
+exact failure by accident**: `desktop_control` once "turned a typo into
+`exec()`" (fixed in `c4c63cf`, and the fix was to stop *routing* unknown
+actions there — the sandbox itself was never the thing that held). A
+hallucinated `rmtree`-equivalent is blocked today by nothing but a sentence in
+a prompt.
+
+### The fix, in order of value
+
+1. **Remove `Path` from the sandbox.** Replace it with a wrapper that calls
+   `file_controller._resolve` — the gate that already exists, is already
+   tested, and already refuses traversal. This alone removes three of the six
+   rows above.
+2. **AST-check generated code before `exec`.** Reject any attribute access to
+   a dunder name (`__class__`, `__bases__`, `__subclasses__`, `__globals__`).
+   That closes the `Popen` route, which is the only reason arbitrary commands
+   are reachable at all. Cheap, well-understood, and testable.
+3. **Describe `task` honestly in the tool declaration**, so the model's choice
+   is informed.
+4. **Consider a consent gate** on `task` specifically, matching `web_agency`'s.
+
+Items 1 and 2 are perhaps an hour together and are worth doing before anything
+else on this list.
+
+---
+
+## 3. Every dependency is unpinned — and it has already cost a bug
+
+`requirements.txt` names 30 packages and pins **none** of them. `pip install -r
+requirements.txt` today and in three months installs different software.
+
+This is not hypothetical here. The roadmap records that video summarising was
+silently dead because *"the transcript API had been renamed (every fetch
+returned None → 'no transcript available' for every video on YouTube)"*. That
+is an unpinned upstream release changing under a running product, and it
+presented as a broken feature rather than a broken dependency — the most
+expensive shape a bug can take.
+
+`playwright`, `google-genai` and `youtube-transcript-api` are the volatile
+ones. Pinning is an afternoon at most: `pip freeze` into a constraints file,
+keep `requirements.txt` readable, and the "why is this suddenly broken"
+category mostly disappears.
+
+---
+
+## 3.5 What the audit found healthy
+
+Worth recording, because it is where the effort has clearly gone and it is
+what makes the rest of this list cheap to act on.
+
+- **Test culture is unusually strong.** 1010 test functions; **6** assert
+  nothing, and all six are honest `does_not_raise` tests whose names say so.
+  **Zero** are `@skip`-marked. Most codebases this size are carrying a dozen
+  quietly disabled tests.
+- **All four entrypoints import cleanly** (`main`, `ui`, `aethelark_web`,
+  `web_shell`) — no broken module-level state.
+- **Zero dead code**, per the repo's own `tools/dead_code.py`. Maintained,
+  not aspirational.
+- **The path-containment gate in `file_controller` is genuinely good**:
+  one choke point, resolution before checking so symlinks cannot step out,
+  and traversal tests pinning a real historical escape. The problem in §2 is
+  precisely that `desktop.py` does not use it.
+
+### One thing in the middle
+
+837 exception handlers, **75% of them catching bare `Exception`**, and **121
+that are `except: pass`** — silent swallows. Many are deliberate and correct
+("a UI that cannot log must not fail the file operation" is a real comment
+here, and it is right). But 121 is past the point where they can all have been
+considered, and this is a codebase whose own hardest-won lesson is *tools that
+report success they never verified*. A silent `pass` is that lesson's
+ancestor. The concentrations worth reading first: `main.py` (10),
+`grounding/web/browser.py` (10), `swarm_orchestrator.py` (9),
+`pty_session.py` (9), `dashboard/server.py` (9).
+
+---
+
+## 4. The bug class this session went after
 
 The roadmap's P1 was "finish the ToolResult rollout." That framing understates
 it. The rollout is not cosmetic tidying — **every tool still returning bare
@@ -103,7 +231,7 @@ claiming a failure it cannot vouch for.
 
 ---
 
-## 3. Bugs found and fixed
+## 5. Bugs found and fixed
 
 All four were found by *migrating* the tool, not by looking for them.
 
@@ -133,7 +261,7 @@ at all.
 
 ---
 
-## 4. What is left, ranked by what it costs the user
+## 6. What is left, ranked by what it costs the user
 
 ### P1 — finish the rollout (80 unmarked returns, 11 tools)
 
@@ -185,7 +313,7 @@ for a measurement" is already this codebase's most common bug.
 
 ---
 
-## 5. On "full autonomy overnight"
+## 7. On "full autonomy overnight"
 
 Worth stating plainly, because the gap matters for planning.
 
