@@ -90,6 +90,31 @@ those, not from the queue.
 
 **Tests 1652 → 1781.**
 
+### P0 — The mission loop  *(built 2026-08-11, live-verified, not yet driven by voice)*
+
+The coordination layer. Every part already worked and the whole did not,
+because nothing held the goal. `core/mission.py` + `mission_ladder` +
+`mission_runners` + `mission_handoff` + `mission_store` + `actions/mission.py`,
+reachable as the `mission` tool.
+
+Verified live: three steps against real Wikipedia, unattended, 2.8s total.
+
+**Not yet done, in order:**
+1. **Drive it by voice.** Say "go to makerworld and download a laptop stand".
+   The tool is wired and the prompt routes to it; nobody has spoken to it yet.
+2. **The planner is rate-limited.** The free tier's 20 requests/day for
+   gemini-2.5-flash was exhausted during the first smoke run. Planning is one
+   extra call per mission — worth the quota, but it means a mission cannot
+   start when the tier is spent. Reported honestly as "the brain is
+   rate-limited", never as "the goal is impossible".
+3. **Blueprint research** plugs into `_plan_locally` and nowhere else: look up
+   the documented path before guessing at it, so the maze is a lookup rather
+   than a search. The highest-value addition, deliberately after the loop.
+4. **Delegated planning.** `context_pack()` is written and tested; nothing
+   calls it yet. It is what turns "I am stuck" into "ask Claude/Antigravity
+   for a different plan, with everything already ruled out attached".
+5. **Native-app rungs.** The ladder is web + screen. The slicer is neither.
+
 ### P1 — Finish the tool contract rollout  *(advanced, not done)*
 
 **11 of 20** tools now on the contract, up from 6. Unmarked failure returns
