@@ -93,8 +93,20 @@ VAD_FLOOR_MS = 550
 
 
 def _enabled_by_default() -> bool:
-    return os.environ.get("AETHELARK_TRACE", "").strip().lower() in (
-        "1", "true", "yes", "on")
+    """On unless explicitly switched off.
+
+    This was opt-in behind `AETHELARK_TRACE=1` for weeks, and in that time it
+    was never once switched on — so every conversation about voice latency was
+    conducted on guesses while the instrument that answers it sat inert. Four
+    separate sessions were reported as "really slow" and not one produced a
+    `[Trace]` line.
+
+    A diagnostic the user must remember to enable is a diagnostic that does not
+    exist. It is one line per turn and a handful of timestamps, so it earns its
+    place permanently; `AETHELARK_TRACE=0` turns it off for a clean demo.
+    """
+    raw = os.environ.get("AETHELARK_TRACE", "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
 
 
 class TurnTrace:

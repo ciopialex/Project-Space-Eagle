@@ -1907,14 +1907,24 @@ class AethelarkLive:
                                 out_buf.append(txt)
 
                         if sc.input_transcription and sc.input_transcription.text:
-                            txt = _clean_transcript(sc.input_transcription.text)
-                            if txt:
-                                in_buf.append(txt)
+                            # RAW, and joined with nothing. The transcription
+                            # streams mid-word ("Sa" then "ve"), and cleaning
+                            # each fragment stripped its spacing before a
+                            # " ".join put a space back in the middle of the
+                            # word. Live, "Say the word ready" was rendered
+                            # "Sa ve word rea dy" — and that mangled string is
+                            # what `_speculate` was matching against, so the
+                            # intent layer that exists to buy a head start was
+                            # being fed nonsense. The API's own chunks already
+                            # carry their leading spaces; clean ONCE, at the end.
+                            raw = sc.input_transcription.text
+                            if raw:
+                                in_buf.append(raw)
                                 self._last_user_speech = time.monotonic()
                                 # While they are STILL TALKING. This is the
                                 # only point early enough for a prediction to
                                 # buy anything.
-                                self._speculate(" ".join(in_buf))
+                                self._speculate(_clean_transcript("".join(in_buf)))
 
                         if sc.turn_complete:
                             self._speculated = False
@@ -1952,7 +1962,8 @@ class AethelarkLive:
                                 out_buf = []          # already surfaced; don't double-log
                             self._turn_had_audio = False
 
-                            full_in = _collapse_repeats(" ".join(in_buf).strip())
+                            full_in = _collapse_repeats(
+                                _clean_transcript("".join(in_buf)))
                             if full_in:
                                 self.ui.write_log(f"You: {full_in}")
                                 if self._dashboard:
