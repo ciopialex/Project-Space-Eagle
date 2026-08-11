@@ -113,6 +113,25 @@ def _start(params: dict) -> ToolResult:
             guidance="Ask the user what they want done, in their own words, "
                      "then call start again with it as 'goal'.")
 
+    # A mission for this same goal that is still RUNNING is resumed, never
+    # restarted. Reported live as "it opens the makerworld page again and
+    # again": a blocked or slow mission makes the model call start again to be
+    # helpful, and every start threw the old one away, reset the cursor to
+    # zero, and re-ran step one. Forever.
+    #
+    # Blocked and done missions DO restart — a stuck mission resumed is just
+    # the same wall again, and a finished goal must stay repeatable.
+    existing = _load()
+    if (existing is not None
+            and existing.status == "running"
+            and existing.goal.strip().lower() == goal.strip().lower()
+            and existing.current() is not None):
+        done, total = existing.progress()
+        return ToolResult.success(
+            f"Already running “{goal}” — {done} of {total} steps done, "
+            f"resuming at: {existing.current().intent}. Call next.",
+            resumed=True)
+
     # The brain is ALREADY thinking about this goal. Steps it hands over cost
     # nothing; a second generate_content call costs one of a DAILY budget of
     # twenty - shared with vision, summarising and code_helper - and measured
@@ -187,8 +206,10 @@ def _next(params: dict) -> ToolResult:
     return ToolResult.failure(
         f"Stuck on: {step.intent}. Tried {tried or 'nothing available'}.",
         guidance=("Every way of doing this step has been tried and none "
-                  "worked. Do NOT retry it. Either ask an outside agent for a "
-                  "new plan using the mission handoff, or tell the user "
+                  "worked. Do NOT retry it, and do NOT call start again with "
+                  "the same goal and the same steps — that re-runs the steps "
+                  "already done and loops. Either call start with a "
+                  "DIFFERENT plan that avoids this step, or tell the user "
                   "exactly which step blocked and why, and ask them to do "
                   "that one thing."))
 

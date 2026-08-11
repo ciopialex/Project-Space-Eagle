@@ -107,6 +107,11 @@ def _browser_open(step: Step) -> tuple[bool, str]:
     why = _needs_url(step)
     if why:
         return False, why
+    # Same guard as _user_open: if a window is already showing this page,
+    # opening it natively again is another tab and another page load.
+    port, _ = _user_window()
+    if port is not None and _same_page(port.url(), step.url):
+        return True, f"already on {step.url}"
     return _verdict(browser_control(
         parameters={"action": "go_to", "url": step.url}))
 
@@ -155,6 +160,18 @@ def _user_type(step: Step) -> tuple[bool, str]:
     return True, f"typed into {node.name!r} in the user's window"
 
 
+def _same_page(a: str, b: str) -> bool:
+    """Close enough that navigating again would only cost a reload."""
+    def norm(u):
+        u = (u or "").strip().lower().rstrip("/")
+        for pfx in ("https://", "http://", "www."):
+            if u.startswith(pfx):
+                u = u[len(pfx):]
+        return u
+    x, y = norm(a), norm(b)
+    return bool(x) and bool(y) and (x == y or x.startswith(y) or y.startswith(x))
+
+
 def _user_open(step: Step) -> tuple[bool, str]:
     port, _ = _user_window()
     why = _needs_url(step)
@@ -162,6 +179,11 @@ def _user_open(step: Step) -> tuple[bool, str]:
         return False, why
     if port is None:
         return False, "no browser window is open for the user"
+    # Already there is DONE, not a reason to load it again. Re-navigating
+    # costs a page load, the scroll position, and anything already typed.
+    here = port.url()
+    if _same_page(here, step.url):
+        return True, f"already on {here}"
     port.goto(step.url)
     return True, f"navigated the user's window to {step.url}"
 
