@@ -80,6 +80,26 @@ _NO_BROWSER_GUIDANCE = (
     "`.venv/bin/python -m playwright install chromium` once, then try again."
 )
 
+#: A LOCKED profile is not a MISSING browser, and they have opposite fixes.
+#: Measured live: eight orphaned Chromes were holding the eagle's profile
+#: directory and the tool told the user to reinstall Playwright — which was
+#: already installed and working. Guidance that names the wrong cause is worse
+#: than none: it sends someone to a place the fix does not live.
+_PROFILE_LOCKED = "processsingleton"
+
+_LOCKED_GUIDANCE = (
+    "Another Chrome is already using the eagle's profile, so a second one "
+    "cannot open it. Playwright is fine and does NOT need reinstalling. Call "
+    "web_agency action='close' and try again; if it persists, orphaned Chrome "
+    "processes are still holding the profile directory."
+)
+
+
+def _start_guidance(detail: str) -> str:
+    """Which of the two failures this actually is."""
+    return (_LOCKED_GUIDANCE if _PROFILE_LOCKED in (detail or "").lower()
+            else _NO_BROWSER_GUIDANCE)
+
 # The eagle's browser defaults to headless (see EagleBrowser in browser.py —
 # a non-exclusive tool that could pop a visible window over the user's own
 # work is the bug this default closes), and nothing today can surface that
@@ -113,11 +133,15 @@ def _ready(browser) -> ToolResult | None:
             browser.start()
         except Exception as e:
             return ToolResult.failure(f"The browser did not start: {e}",
-                                      guidance=_NO_BROWSER_GUIDANCE)
+                                      guidance=_start_guidance(str(e)))
     if not browser.running:
         detail = getattr(browser, "last_error", "") or "no further detail"
+        # `detail`, not `e` — this branch has no exception. The first draft of
+        # this edit reused `e` from the block ABOVE, which is out of scope
+        # here, so a browser that failed to start reported an UnboundLocalError
+        # instead of the reason. Caught by the suite, not by reading it.
         return ToolResult.failure(f"The browser did not start: {detail}",
-                                  guidance=_NO_BROWSER_GUIDANCE)
+                                  guidance=_start_guidance(detail))
     return None
 
 

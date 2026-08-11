@@ -75,6 +75,28 @@ def _describe(m: Mission) -> str:
 
 # ── the tool ────────────────────────────────────────────────────────────────
 
+def _steps_from(raw) -> list[Step]:
+    """Steps the CALLER supplied — a list, or one newline-separated string."""
+    from core.mission_handoff import parse_plan
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        parsed = parse_plan(raw)
+        if parsed:
+            return parsed
+        raw = [ln for ln in raw.splitlines() if ln.strip()]
+    out = []
+    for item in raw:
+        text = str(item).strip()
+        if not text:
+            continue
+        # Reuse the same parser so a supplied step gets its url and quoted
+        # text extracted exactly like a delegated one.
+        parsed = parse_plan(f"1. {text}")
+        out.append(parsed[0] if parsed else Step(intent=text))
+    return out
+
+
 def _start(params: dict) -> ToolResult:
     goal = str(params.get("goal") or "").strip()
     if not goal:
@@ -83,7 +105,14 @@ def _start(params: dict) -> ToolResult:
             guidance="Ask the user what they want done, in their own words, "
                      "then call start again with it as 'goal'.")
 
-    raw = _plan_locally(goal)
+    # The brain is ALREADY thinking about this goal. Steps it hands over cost
+    # nothing; a second generate_content call costs one of a DAILY budget of
+    # twenty - shared with vision, summarising and code_helper - and measured
+    # 10.7 seconds before the tool even began. Planning here is the fallback,
+    # not the path.
+    raw = _steps_from(params.get("steps"))
+    if not raw:
+        raw = _plan_locally(goal)
     steps = [s if isinstance(s, Step) else Step(intent=str(s).strip())
              for s in (raw or []) if s]
     steps = [s for s in steps if s.intent.strip()]
@@ -96,9 +125,12 @@ def _start(params: dict) -> ToolResult:
         if why:
             return ToolResult.failure(
                 f"Could not plan “{goal}” — {why}.",
-                guidance="This is not a limit of the task. Tell the user it "
-                         "will work again shortly and offer to retry; do not "
-                         "say the goal is impossible.")
+                guidance="DO NOT retry this call — it will fail the same way "
+                         "and each attempt costs another request. Instead, "
+                         "work out the steps YOURSELF and call start again "
+                         "with them in 'steps'. That needs no extra request. "
+                         "The goal is not impossible; only the extra planning "
+                         "call is unavailable.")
         return ToolResult.failure(
             f"Could not break “{goal}” into steps.",
             guidance="Nothing has started. Either ask the user for more "

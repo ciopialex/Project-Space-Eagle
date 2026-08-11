@@ -29,6 +29,7 @@ _CONFIG_FILE = user_paths.api_keys_path()
 
 
 from actions.grounding.web.attach import DEBUG_PORT as _DEBUG_PORT
+from core.tool_result import ToolResult, settled
 
 
 def _read_config() -> dict:
@@ -1118,22 +1119,67 @@ class _SessionRegistry:
 
 _registry = _SessionRegistry()
 
+
+#: Prose these branches produce that is a REFUSAL rather than a result. Each
+#: one is a decision the function already made; the string just never said so.
+_FAILED_PREFIXES = (
+    "unknown browser action", "unknown action", "please specify",
+    "browser error", "no url", "could not", "failed", "not found",
+    "no browser",
+)
+
+#: Phrases that mark a refusal from the MIDDLE of a sentence. "Browser action
+#: 'go_to' timed out (60s)" starts with a perfectly ordinary word.
+_FAILED_ANYWHERE = ("timed out", "could not", "did not", "is not installed")
+
+
+def _verdict(result: str):
+    """One place where browser_control's prose becomes a verdict.
+
+    There are eight return points, not one, so the boundary is a function
+    rather than a spot at the bottom - the first attempt at this migration
+    only converted the last return and left seven reporting nothing.
+    """
+    text = str(result or "").strip()
+    low = text.lower()
+    if (not text
+            or any(low.startswith(pfx) for pfx in _FAILED_PREFIXES)
+            or any(mark in low for mark in _FAILED_ANYWHERE)):
+        return ToolResult.failure(
+            text or "The browser did nothing.",
+            guidance=("Nothing happened in the browser. Do not tell the user "
+                      "the page is open. Known actions: go_to, switch, "
+                      "get_url, press, close_tab, screenshot, back, forward, "
+                      "reload."))
+    return settled(text)
+
+
 def browser_control(
     parameters:    dict = None,
     response=None,
     player=None,
     session_memory=None,
-) -> str:
+) -> ToolResult:
+    """Drive the user's own browser. Returns a ToolResult.
+
+    Migrated because a bare string blocked a real mission: it opened
+    youtube.com correctly and reported `? no status`, so the mission runner -
+    which treats "no verdict" as failure on purpose, since a wrong reading
+    advances past a step that never happened - marked the step failed and
+    stopped the goal. A working tool that cannot say so is worse than a slow
+    one.
+    """
     params  = parameters or {}
     action  = params.get("action", "").lower().strip()
     browser = params.get("browser", "").lower().strip() or None
     result  = "Unknown action."
+    failed  = False
 
     if action == "switch":
         target = browser or params.get("target", "").lower().strip()
         result = _registry.switch(target) if target else "Please specify a browser."
         _log(player, result)
-        return result
+        return _verdict(result)
 
     # Persist the user's preferred browser so every later action (navigation,
     # interactive control, WhatsApp Web, etc.) uses it by default.
@@ -1151,23 +1197,23 @@ def browser_control(
             _registry._active_browser = target  # take effect immediately
             result = f"Default browser set to {target}."
         _log(player, result)
-        return result
+        return _verdict(result)
 
     if action == "list_browsers":
         result = _registry.list_sessions()
         _log(player, result)
-        return result
+        return _verdict(result)
 
     if action == "close_all":
         result = _registry.close_all()
         _log(player, result)
-        return result
+        return _verdict(result)
 
     if action == "close":
         target = browser or _registry._active_browser
         result = _registry.close_one(target) if target else "No browser specified."
         _log(player, result)
-        return result
+        return _verdict(result)
 
     # ── Navigation: go_to / search / new_tab ────────────────────────────────
     # Resolution order for target browser:
@@ -1199,7 +1245,7 @@ def browser_control(
             except Exception as e:
                 result = f"Browser error ({action}): {e}"
             _log(player, result)
-            return result
+            return _verdict(result)
 
         if action == "search":
             base    = _SEARCH_ENGINES.get(params.get("engine", "google").lower(),
@@ -1212,7 +1258,7 @@ def browser_control(
         if result.startswith("Opened") and nav_url:
             _registry.note_native_url(_normalize_url(nav_url))
         _log(player, result)
-        return result
+        return _verdict(result)
 
     # ── Etkileşimli aksiyonlar (tıklama/yazma/okuma…) ────────────────────────
     # Bunlar fiziksel olarak kontrol edilebilir bir tarayıcı gerektirir;
@@ -1223,7 +1269,7 @@ def browser_control(
     except Exception as e:
         result = f"Could not start browser session: {e}"
         _log(player, result)
-        return result
+        return _verdict(result)
 
     try:
         last = _registry.pop_native_url()
@@ -1264,14 +1310,36 @@ def browser_control(
             result = sess.run(sess.reload())
         else:
             result = f"Unknown browser action: '{action}'"
+            failed = True
 
     except concurrent.futures.TimeoutError:
         result = f"Browser action '{action}' timed out (60s)."
+        failed = True
     except Exception as e:
         result = f"Browser error ({action}): {e}"
+        failed = True
 
     _log(player, result)
-    return result
+    # `failed` is authoritative here: the timeout and exception handlers KNOW.
+    # Prose matching below is only for the seven early returns, which have no
+    # flag to hand over - "Browser action 'go_to' timed out (60s)" gives itself
+    # away in the middle of the sentence, not at the start, which is exactly
+    # why guessing from prose is the thing this contract exists to replace.
+    if failed:
+        return ToolResult.failure(
+            result,
+            guidance=("Nothing happened in the browser. Do not tell the user "
+                      "the page is open. Known actions: go_to, switch, "
+                      "get_url, press, close_tab, screenshot, back, forward, "
+                      "reload."))
+    if result == "Unknown action.":
+        return ToolResult.failure(
+            result,
+            guidance=("Nothing happened in the browser. Do not tell the user "
+                      "the page is open. Known actions: go_to, switch, "
+                      "get_url, press, close_tab, screenshot, back, forward, "
+                      "reload."))
+    return settled(result)
 
 
 def _log(player, text: str):

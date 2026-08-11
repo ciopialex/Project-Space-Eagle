@@ -617,6 +617,15 @@ TOOL_DECLARATIONS = [
                            "calling next until it says done or blocked."},
                 "goal":   {"type": "STRING", "description":
                            "For start: what the user asked for, in their own words"},
+                "steps":  {"type": "STRING", "description":
+                           "For start: ALWAYS supply this. The numbered steps "
+                           "YOU work out, one per line, one observable action "
+                           "each — 'Go to makerworld.com', 'Click the search "
+                           "box', 'Type laptop stand'. Name controls as they "
+                           "appear on screen; no selectors, no coordinates. "
+                           "You are already thinking about the goal, so this "
+                           "is free; leaving it out forces a slower extra "
+                           "call that is often rate-limited."},
             },
             "required": ["action"]
         }
