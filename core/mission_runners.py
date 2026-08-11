@@ -36,6 +36,10 @@ def _verdict(raw) -> tuple[bool, str]:
 def _web(action: str, **extra) -> Callable[[Step], tuple[bool, str]]:
     def run(step: Step) -> tuple[bool, str]:
         from actions.web_agency import web_agency
+        if action == "open":
+            why = _needs_url(step)
+            if why:
+                return False, why
         params = {"action": action}
         if step.target or step.intent:
             params["description"] = step.target or step.intent
@@ -80,6 +84,17 @@ def _press_keys(step: Step) -> tuple[bool, str]:
     return True, f"typed {len(text)} characters one key at a time"
 
 
+def _needs_url(step: Step) -> str:
+    """Why an open step cannot run, or "".
+
+    "No URL to open" from the browser is a true statement about a false
+    situation: the browser is fine, the STEP is malformed. Naming it here
+    means the mission reports a planning defect instead of blaming the tool.
+    """
+    return "" if step.url else (
+        f"the step {step.intent!r} names no address to open — it needs a url")
+
+
 def _browser_open(step: Step) -> tuple[bool, str]:
     """Opens the USER's browser — which `web_agency` cannot see into.
 
@@ -89,8 +104,9 @@ def _browser_open(step: Step) -> tuple[bool, str]:
     rung means the next steps will be screen-and-vision only.
     """
     from actions.browser_control import browser_control
-    if not step.url:
-        return False, "no url to open"
+    why = _needs_url(step)
+    if why:
+        return False, why
     return _verdict(browser_control(
         parameters={"action": "go_to", "url": step.url}))
 

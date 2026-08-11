@@ -17,7 +17,7 @@ from pathlib import Path
 
 from actions.grounding import find_element
 from core import user_paths
-from core.tool_result import ToolResult, normalize
+from core.tool_result import Failed, ToolResult, normalize, settled
 
 try:
     import pyautogui
@@ -487,11 +487,13 @@ def _screen_click(description: str, intent: str = "click",
     the most common way an agent misleads its operator.
     """
     if not description:
-        return "screen_click needs a 'description' of what to click."
+        return Failed("screen_click needs a 'description' of what to click.",
+                      guidance="Say which control, in the words it shows on screen.")
     try:
         resolver, hit_test, act_and_verify, _ = _grounding_deps()
     except Exception as e:
-        return f"Grounding unavailable: {e}"
+        return Failed(f"Grounding unavailable: {e}",
+                      guidance="Nothing on screen was touched.")
 
     outcome = act_and_verify(
         description,
@@ -501,10 +503,12 @@ def _screen_click(description: str, intent: str = "click",
     )
 
     if not outcome["acted"]:
-        return (f"Did not click '{description}'. {outcome['detail']} "
-                f"Nothing was clicked, so the screen is unchanged. Try "
-                f"scroll_into_view first, or wait_for_element if it is still "
-                f"loading.")
+        return Failed(
+            f"Did not click '{description}'. {outcome['detail']} "
+            f"Nothing was clicked, so the screen is unchanged.",
+            guidance="The screen is UNCHANGED. Do not claim it was clicked. "
+                     "Try scroll_into_view first, or wait_for_element if it "
+                     "may still be loading.")
 
     where = outcome["before"]["bounds"] if outcome["before"] else "?"
     if outcome["changed"]:
@@ -517,11 +521,13 @@ def _wait_for_element(description: str, intent: str = "click",
                       timeout: float = 10.0) -> str:
     """Wait for something to appear and become usable, as a person would."""
     if not description:
-        return "wait_for_element needs a 'description' of what to wait for."
+        return Failed("wait_for_element needs a 'description' of what to wait for.",
+                      guidance="Say which control to wait for.")
     try:
         resolver, hit_test, _, wait_for = _grounding_deps()
     except Exception as e:
-        return f"Grounding unavailable: {e}"
+        return Failed(f"Grounding unavailable: {e}",
+                      guidance="Nothing on screen was touched.")
 
     result = wait_for(description, intent, resolver=resolver,
                       timeout=timeout, hit_test=hit_test)
@@ -608,7 +614,12 @@ def computer_control(
 
     try:
         result = _dispatch_action(action, params, player)
-        return result if isinstance(result, ToolResult) else normalize(result)
+        # `settled`, not `normalize`: normalize withholds `ok` entirely, and
+        # that is what blocked a real mission — computer_control TYPED
+        # "laptop stand" and reported "tool gave no verdict", so the step was
+        # marked failed and the goal stopped. Every refusal in this module is
+        # marked `Failed` above, so an unmarked string here is a result.
+        return result if isinstance(result, ToolResult) else settled(result)
     except Exception as e:
         print(f"[ComputerControl] ❌ {action}: {e}")
         return ToolResult.failure(

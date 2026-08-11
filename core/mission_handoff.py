@@ -97,6 +97,38 @@ def context_pack(goal: str, mission: Mission | None = None) -> str:
 
 _STEP = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+(.{3,200}?)\s*$")
 _URL = re.compile(r"https?://[^\s'\"<>)]+")
+
+#: A person writes "go to makerworld.com", not "https://makerworld.com". The
+#: model does too, and the first mission to reach step 1 died on exactly that:
+#: the scheme-only pattern captured nothing and both rungs got an empty url.
+#:
+#: Restricted to a known suffix list rather than "anything with a dot",
+#: because steps are full of dots that are not domains — "Download the STL
+#: files.", "laptop_stand.stl", "0.2mm". Guessing wrong here does not fail
+#: safely: it sends the browser somewhere real.
+_TLDS = ("com", "org", "net", "io", "dev", "app", "co", "ai", "me", "info",
+         "edu", "gov", "uk", "de", "fr", "ro", "nl", "eu", "ca", "us", "shop",
+         "store", "cloud", "xyz", "tv", "gg", "so", "sh", "to")
+_BARE = re.compile(
+    r"\b((?:www\.)?[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)*\.(?:"
+    + "|".join(_TLDS) + r"))(/[^\s'\"<>)]*)?\b", re.I)
+
+
+def _url_in(text: str) -> str:
+    """The address a step refers to, with a scheme, or "".
+
+    Mirrors `browser_control._normalize_url`, which has done this for months —
+    the mission parser simply never used it.
+    """
+    full = _URL.search(text or "")
+    if full:
+        return full.group(0)
+    bare = _BARE.search(text or "")
+    if not bare:
+        return ""
+    host = bare.group(1)
+    path = bare.group(2) or ""
+    return f"https://{host}{path}"
 _QUOTED = re.compile(r"[\"'“”‘’]([^\"'“”‘’]{1,120})[\"'“”‘’]")
 
 
@@ -113,7 +145,7 @@ def parse_plan(text: str) -> list[Step]:
         if not m:
             continue
         intent = m.group(1).strip()
-        url = (_URL.search(intent) or [""])[0] if _URL.search(intent) else ""
+        url = _url_in(intent)
         quoted = _QUOTED.search(intent)
         # Only treat quoted text as typing input when the step is about typing;
         # "Click the 'Download' button" quotes a control, not a payload.

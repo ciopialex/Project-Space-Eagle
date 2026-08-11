@@ -26,6 +26,14 @@ from core.tool_result import ToolResult
 
 _ACTIONS = ("start", "next", "status", "abandon")
 
+#: Names the model reaches for that mean one of the above. Live, it called
+#: `action='plan'` before `action='start'` — refused correctly, then
+#: self-corrected, at the cost of a full round trip. Same lesson as
+#: `type_text`: cheaper to accept the name than to be right about it.
+_ALIASES = {"plan": "start", "begin": "start", "go": "next", "continue": "next",
+            "step": "next", "resume": "next", "progress": "status",
+            "stop": "abandon", "cancel": "abandon"}
+
 
 # ── seams ───────────────────────────────────────────────────────────────────
 
@@ -217,6 +225,7 @@ def mission(parameters: dict | None = None, player=None,
             session_memory=None, response=None) -> ToolResult:
     params = parameters or {}
     action = str(params.get("action") or "").lower().strip()
+    action = _ALIASES.get(action, action)
 
     handler = _HANDLERS.get(action)
     if handler is None:
