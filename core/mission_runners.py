@@ -111,15 +111,90 @@ def _browser_open(step: Step) -> tuple[bool, str]:
         parameters={"action": "go_to", "url": step.url}))
 
 
+
+
+def _attached_grounder():
+    """The user-facing Chrome, wrapped in the same grounding the eagle uses on
+    its own browser.
+
+    This rung is the one that was missing. The chain that stopped a real
+    mission: makerworld bot-walls the eagle's headless browser, so `web_open`
+    correctly fails and `browser_open` opens the page in the user's real
+    Chrome — and every step after that had no way to touch it. `web_click`
+    looks in the wrong browser, `screen_click` is blind because Chrome
+    publishes nothing to the accessibility bus, and vision guesses.
+
+    A Playwright page is a Playwright page. Wrapping the attached one in
+    PagePort gives WebGrounder exactly what it already knows how to drive.
+    """
+    from actions.grounding.web.attach import attached_page
+    from actions.grounding.web.browser import PagePort
+    from actions.grounding.web.grounder import WebGrounder
+    page = attached_page()
+    if page is None:
+        return None, None
+    port = PagePort(page, call=lambda fn: fn())
+    return port, WebGrounder(lambda: port)
+
+
+def _cdp_click(step: Step) -> tuple[bool, str]:
+    port, grounder = _attached_grounder()
+    if port is None:
+        return False, "no browser window is attached"
+    what = step.target or step.intent
+    node = grounder.find_node(what)
+    if node is None:
+        return False, f"no control matching {what!r} in the attached window"
+    from actions.grounding.web.page import ref_of
+    port.click(ref_of(node))
+    return True, f"clicked {node.name!r} in the attached window"
+
+
+def _cdp_type(step: Step) -> tuple[bool, str]:
+    port, grounder = _attached_grounder()
+    if port is None:
+        return False, "no browser window is attached"
+    if not step.text:
+        return False, "nothing to type"
+    what = step.target or step.intent
+    node = grounder.find_node(what)
+    if node is None:
+        return False, f"no field matching {what!r} in the attached window"
+    from actions.grounding.web.page import ref_of
+    port.fill(ref_of(node), step.text)
+    return True, f"typed into {node.name!r} in the attached window"
+
+
+def _cdp_open(step: Step) -> tuple[bool, str]:
+    port, _ = _attached_grounder()
+    if port is None or not step.url:
+        return False, "no attached window, or no url"
+    port._page.goto(step.url, wait_until="domcontentloaded", timeout=30_000)
+    return True, f"navigated the attached window to {step.url}"
+
+
+def _cdp_look(step: Step) -> tuple[bool, str]:
+    port, _ = _attached_grounder()
+    if port is None:
+        return False, "no browser window is attached"
+    from actions.grounding.web.page import nodes_from_records
+    nodes = nodes_from_records(port.collect())
+    return bool(nodes), f"{len(nodes)} controls in the attached window"
+
+
 def build_runners() -> dict[str, Callable[[Step], tuple[bool, str]]]:
     return {
         "web_open":     _web("open"),
         "browser_open": _browser_open,
+        "cdp_open":     _cdp_open,
+        "cdp_look":     _cdp_look,
         "web_look":     _web("look"),
         "screen_look":  _computer("screen_find"),
+        "cdp_click":    _cdp_click,
         "web_click":    _web("click"),
         "screen_click": _computer("screen_click"),
         "vision_click": _computer("screen_click"),   # resolver falls to vision
+        "cdp_type":     _cdp_type,
         "web_type":     _web("type"),
         "screen_type":  _computer("type"),
         "press_keys":   _press_keys,

@@ -28,20 +28,20 @@ from typing import Callable
 from core.mission import Mission, Step
 
 #: Click: DOM, then the accessibility tree, then pixels.
-_CLICK = ["web_click", "screen_click", "vision_click"]
+_CLICK = ["web_click", "cdp_click", "screen_click", "vision_click"]
 
 #: Type: the same, ending in single keypresses. That last rung is what the
 #: user had to drive by voice, letter by letter — it belongs in the ladder so
 #: nobody has to.
-_TYPE = ["web_type", "screen_type", "press_keys"]
+_TYPE = ["web_type", "cdp_type", "screen_type", "press_keys"]
 
 #: Open: the eagle's OWN browser first. `browser_control` opens the user's
 #: Chrome, which `web_agency` cannot see into — prompt.txt warns about this,
 #: and the MakerWorld run fell into it anyway after the bot wall.
-_OPEN = ["web_open", "browser_open"]
+_OPEN = ["web_open", "browser_open", "cdp_open"]
 
 #: Read: never clicks anything.
-_READ = ["web_look", "screen_look"]
+_READ = ["web_look", "cdp_look", "screen_look"]
 
 _LADDERS = {"click": _CLICK, "type": _TYPE, "open": _OPEN, "read": _READ}
 

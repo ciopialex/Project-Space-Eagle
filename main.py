@@ -618,14 +618,25 @@ TOOL_DECLARATIONS = [
                 "goal":   {"type": "STRING", "description":
                            "For start: what the user asked for, in their own words"},
                 "steps":  {"type": "STRING", "description":
-                           "For start: ALWAYS supply this. The numbered steps "
-                           "YOU work out, one per line, one observable action "
-                           "each — 'Go to makerworld.com', 'Click the search "
-                           "box', 'Type laptop stand'. Name controls as they "
-                           "appear on screen; no selectors, no coordinates. "
-                           "You are already thinking about the goal, so this "
-                           "is free; leaving it out forces a slower extra "
-                           "call that is often rate-limited."},
+                           "For start: ALWAYS supply this, one step per line. "
+                           "You are already thinking about the goal, so it is "
+                           "free; leaving it out forces a slower extra call "
+                           "that is often rate-limited.\n"
+                           "EVERY STEP MUST BE A THING YOU CAN SEE AND DO ON "
+                           "SCREEN. The test: could a stranger do it without "
+                           "deciding anything? 'Click the Download button' "
+                           "passes. 'Select a basic, highly-rated model' FAILS "
+                           "— that is a judgement, not an action; break it "
+                           "into what a person would actually do: 'Click the "
+                           "Trending filter', then 'Click the first result'. "
+                           "Same for 'find a good one', 'pick the best', "
+                           "'prepare the file'.\n"
+                           "Name controls by the words shown on screen ('the "
+                           "search box', 'the Download button'). No CSS "
+                           "selectors, no XPath, no coordinates. Include the "
+                           "address on any step that opens a page. Prefer a "
+                           "direct URL over navigating from a home page. "
+                           "Typically 3-10 steps."},
             },
             "required": ["action"]
         }
