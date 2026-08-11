@@ -28,6 +28,9 @@ _OS = platform.system()   # "Windows" | "Darwin" | "Linux"
 _CONFIG_FILE = user_paths.api_keys_path()
 
 
+from actions.grounding.web.attach import DEBUG_PORT as _DEBUG_PORT
+
+
 def _read_config() -> dict:
     """Read api_keys.json; returns {} on any error."""
     try:
@@ -725,6 +728,19 @@ class _BrowserSession:
                 # That is the difference between a ~19ms exact structural
                 # lookup and a 5.8s vision guess that landed 650px away.
                 "--force-renderer-accessibility",
+                # A debug port makes this window reachable over CDP, so the
+                # eagle can act on it through the DOM instead of squinting at
+                # it. Without this, opening a page here THREW AWAY every
+                # structural tool: the MakerWorld run rendered the page
+                # perfectly and then had to guess at pixels, because
+                # web_agency cannot see into a browser it did not launch.
+                #
+                # Bound to localhost explicitly. A debug port is unrestricted
+                # control of this browser, including its cookies and every
+                # signed-in session in the profile — it must never be
+                # reachable off the machine.
+                f"--remote-debugging-port={_DEBUG_PORT}",
+                "--remote-debugging-address=127.0.0.1",
                 "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
                 "--disable-default-apps",
