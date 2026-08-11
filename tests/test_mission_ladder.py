@@ -55,13 +55,13 @@ def test_a_click_step_ladders_from_dom_to_screen_to_vision():
     the user's Chrome, and without a DOM rung there the eagle could see the
     page and not touch it."""
     assert strategies_for(Step(intent="click the search box", target="x")) == [
-        "web_click", "cdp_click", "screen_click", "vision_click"]
+        "web_click", "user_click", "screen_click", "vision_click"]
 
 
 def test_a_type_step_has_its_own_ladder_ending_in_single_keys():
     s = strategies_for(Step(intent="type laptop stand", target="x",
                             text="laptop stand"))
-    assert s[:2] == ["web_type", "cdp_type"]
+    assert s[:2] == ["web_type", "user_type"]
     assert s[-1] == "press_keys", "no last resort for a page that will not take text"
 
 

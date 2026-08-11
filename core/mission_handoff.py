@@ -131,6 +131,32 @@ def _url_in(text: str) -> str:
     return f"https://{host}{path}"
 _QUOTED = re.compile(r"[\"'“”‘’]([^\"'“”‘’]{1,120})[\"'“”‘’]")
 
+#: Verbs that mean "put this text somewhere", and the words that end the text
+#: and begin the destination. "Type motherboard" has no quotes at all, which
+#: is how a person writes it — and the first mission to reach a typing step
+#: died with "nothing to type" because only quoted text was captured.
+_TYPE_VERB = re.compile(
+    r"^(?:type|write|enter|fill in|fill|search for|input)\s+(.+)$", re.I)
+_DESTINATION = re.compile(
+    r"\s+(?:into|in to|in|on|to|within|inside)\s+the\s+.+$", re.I)
+
+
+def _typed_text(intent: str) -> str:
+    """What this step puts into a field, or "".
+
+    Quotes win when present, because they are unambiguous. Otherwise take what
+    follows the verb, minus any trailing destination — "Type laptop stand into
+    the search box" types "laptop stand", not the whole sentence.
+    """
+    quoted = _QUOTED.search(intent or "")
+    if quoted:
+        return quoted.group(1).strip()
+    m = _TYPE_VERB.match((intent or "").strip())
+    if not m:
+        return ""
+    text = _DESTINATION.sub("", m.group(1)).strip().rstrip(".,;:")
+    return text
+
 
 def parse_plan(text: str) -> list[Step]:
     """Numbered or bulleted lines become steps; everything else is ignored.
@@ -146,15 +172,13 @@ def parse_plan(text: str) -> list[Step]:
             continue
         intent = m.group(1).strip()
         url = _url_in(intent)
-        quoted = _QUOTED.search(intent)
-        # Only treat quoted text as typing input when the step is about typing;
-        # "Click the 'Download' button" quotes a control, not a payload.
-        is_typing = intent.lower().startswith(
-            ("type", "write", "enter", "fill", "search for"))
+        # Only a typing step has a payload; "Click the 'Download' button"
+        # quotes a control, not something to type.
+        is_typing = bool(_TYPE_VERB.match(intent))
         steps.append(Step(
             intent=intent,
             url=url,
-            text=quoted.group(1) if (quoted and is_typing) else "",
+            text=_typed_text(intent) if is_typing else "",
         ))
         if len(steps) >= MAX_STEPS:
             break
