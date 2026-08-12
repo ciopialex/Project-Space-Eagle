@@ -239,8 +239,22 @@ COLLECT_JS = r"""
       const role = roleOf(el);
       if (!role) continue;
 
-      const name = accName(el);
-      if (!name) continue;
+      let name = accName(el);
+      if (!name) {
+        // A control you can TYPE INTO is a control, named or not. Measured on
+        // makerworld.com: the search bar is a visible <input type="text">,
+        // 870px wide, with no placeholder, no aria-label and no <label for> —
+        // so it had no accessible name, so `if (!name) continue` deleted it.
+        // The page reported 269 controls and ZERO editable, and every rung
+        // below then failed honestly about the wrong thing.
+        //
+        // Scoped to typable roles on purpose. Keeping every unnamed element
+        // would flood the model's line budget with things it cannot act on,
+        // which is a different way of being blind.
+        const TYPABLE_ROLES = ['textbox', 'searchbox', 'password', 'spinbutton'];
+        if (TYPABLE_ROLES.indexOf(role) === -1) continue;
+        name = role === 'searchbox' ? 'search field' : 'text field';
+      }
 
       const rect = el.getBoundingClientRect();
       let style;

@@ -202,6 +202,70 @@ def _user_click(step: Step) -> tuple[bool, str]:
     return True, f"clicked {node.name!r} in the user's window"
 
 
+
+#: Roles you can type into. `searchbox` first: typing a search query into a
+#: newsletter signup is the failure this ordering exists to avoid.
+_FIELD_ROLES = ("searchbox", "textbox")
+
+
+def best_text_field(nodes):
+    """The field a person would type in, or None.
+
+    "Search for X" is two actions wearing one step — focus a field, then type
+    — and a person does not need to be told which field. They look for the one
+    you can type in. This is that.
+
+    None is a real answer. Guessing at a control that is not editable is how
+    `Page.fill: Element is not ...` happened on makerworld, and how text ends
+    up somewhere nobody asked for.
+    """
+    best, best_rank = None, ()
+    for n in nodes or ():
+        role = str(getattr(n, "role", "") or "").lower()
+        states = getattr(n, "states", frozenset()) or frozenset()
+        if role not in _FIELD_ROLES:
+            continue
+        # Must be typable NOW. A disabled or off-screen field accepts nothing
+        # and would report success for text that went nowhere.
+        if "EDITABLE" not in states or "VISIBLE" not in states:
+            continue
+        name = str(getattr(n, "name", "") or "")
+        rank = (
+            _FIELD_ROLES.index(role) == 0,          # a searchbox wins
+            "search" in name.lower(),               # then one that says so
+            bool(name),                             # then a named one
+            int(getattr(n, "width", 0) or 0),       # then the widest
+        )
+        if best is None or rank > best_rank:
+            best, best_rank = n, rank
+    return best
+
+
+def _focus_and_type(port, grounder, text: str) -> tuple[bool, str]:
+    """Put the cursor in the page's text field, then type. Exact, not blind."""
+    try:
+        where = port.type_into_focused(text)
+        if where:
+            return True, f"typed into the focused field ({where})"
+    except Exception:
+        pass
+    try:
+        from actions.grounding.web.page import nodes_from_records, ref_of
+        field = best_text_field(nodes_from_records(port.collect()))
+        if field is None:
+            return False, ("no text field on this page to type into — the "
+                           "page may not have loaded, or the field may be "
+                           "behind a button that opens it")
+        port.click(ref_of(field))
+        typed = port.type_into_focused(text)
+        if typed:
+            return True, f"clicked {field.name or 'the search field'!r} and typed"
+        port.fill(ref_of(field), text)
+        return True, f"typed into {field.name or 'the search field'!r}"
+    except Exception as e:
+        return False, f"could not type into the page's text field: {e}"
+
+
 def _web_type(step: Step) -> tuple[bool, str]:
     """Type in the eagle's OWN browser, into the focused field when the step
     names no control. Same reasoning as `_user_type`, other browser."""
@@ -212,11 +276,11 @@ def _web_type(step: Step) -> tuple[bool, str]:
             from actions.grounding.web.browser import default_browser
             page = default_browser().page()
             if page is not None:
-                where = page.type_into_focused(step.text)
-                if where:
-                    return True, f"typed into the focused field ({where})"
+                ok, detail = _focus_and_type(page, None, step.text)
+                if ok:
+                    return ok, detail
         except Exception as e:
-            return False, f"could not type into the focused field: {e}"
+            return False, f"could not type into the page's text field: {e}"
     return _web("type")(step)
 
 
@@ -234,12 +298,9 @@ def _user_type(step: Step) -> tuple[bool, str]:
     # fell through to the OS keyboard, which is how "motherboard" ended up in
     # the user's terminal.
     if not step.target:
-        try:
-            where = port.type_into_focused(step.text)
-            if where:
-                return True, f"typed into the focused field ({where})"
-        except Exception as e:
-            return False, f"could not type into the focused field: {e}"
+        ok, detail = _focus_and_type(port, grounder, step.text)
+        if ok:
+            return ok, detail
 
     what = step.target or step.intent
     node = grounder.find_node(what)
