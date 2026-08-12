@@ -319,6 +319,16 @@ def _computer_settings_actions() -> str:
             "volume_set/type_text/press_key/reload_n take `value`.")
 
 
+#: Tools that only READ. Safe on a turn nobody asked for; everything else is
+#: refused there.
+#: `mission` is deliberately ABSENT. `mission next` runs a step, and running
+#: steps unasked is the exact behaviour being stopped — it is what kept
+#: opening pages a minute at a time after the mission had already failed.
+_READ_ONLY_TOOLS = frozenset({
+    "system_status", "swarm_status", "save_memory", "messages_brief",
+    "weather_report",
+})
+
 TOOL_DECLARATIONS = [
     {
         "name": "open_app",
@@ -1182,6 +1192,13 @@ class AethelarkLive:
             intent = _decode_intent(partial)
             if not any(c.id == "web.open" for c in intent.prewarm):
                 return
+            # A verb is not a destination. Substring matching fired on the word
+            # "click" in "why can't you click", so a browser started, was never
+            # used, and closed again — repeatedly, around a conversation that
+            # was not about the web.
+            from core.intent import worth_warming
+            if not worth_warming(partial):
+                return
             self._speculated = True
             self._trace_mark("speculated")
             print(diag.intent_line(intent))
@@ -1207,6 +1224,7 @@ class AethelarkLive:
         if event == "start":
             self._trace_begin()
             self._trace_mark("speech_start")
+            self._unprompted_turn = False   # he spoke; this turn is his
         elif event == "end":
             # The detector only declares "end" after `hangover_ms` of silence,
             # so this fires that long AFTER the user actually stopped. Marking
@@ -1236,6 +1254,10 @@ class AethelarkLive:
     def _on_text_command(self, text: str):
         if not self._loop or not self.session:
             return
+        # Typed input is a request, same as speech. Without this the text-driven
+        # path (the mission harness, the dashboard box) would inherit whatever
+        # the last background wake-up set and have every tool refused.
+        self._unprompted_turn = False
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
                 turns={"parts": [{"text": text}]},
@@ -1465,6 +1487,25 @@ class AethelarkLive:
         _t0 = time.monotonic()
         print(diag.tool_call(name, args, call_epoch))
         self.ui.set_state("THINKING")
+
+        # A turn the user did not ask for may LOOK but not TOUCH. Background
+        # tasks wake the model on a timer — the system monitor every 10s, the
+        # proactive check every 60 — and a woken model looks at its context,
+        # sees a mission mid-flight, and calls a tool. That is how pages kept
+        # spawning every few tens of seconds long after the mission had died.
+        #
+        # prompt.txt already asks for this. Asking is soft law; this is the
+        # dispatch gate it cannot route around.
+        if getattr(self, "_unprompted_turn", False) and name not in _READ_ONLY_TOOLS:
+            print(f"[Tool] ⛔ {name} refused — nobody asked for this turn")
+            return types.FunctionResponse(
+                id=fc.id, name=name,
+                response=ToolResult.failure(
+                    f"'{name}' was not run: this turn was a background check, "
+                    f"not a request from the user.",
+                    guidance="Say something brief if it is genuinely useful, or "
+                             "nothing at all. Do not take actions the user did "
+                             "not ask for.").to_response())
 
         if name == "save_memory":
             category = args.get("category", "notes")
@@ -2363,6 +2404,7 @@ class AethelarkLive:
             alert = await asyncio.to_thread(self._sys_monitor.check)
             if alert and self.session:
                 try:
+                    self._unprompted_turn = True      # a monitor alert, not a request
                     await self.session.send_client_content(
                         turns={"parts": [{"text": alert}]},
                         turn_complete=True,
@@ -2393,6 +2435,9 @@ class AethelarkLive:
                 continue
 
             self._proactive.mark_triggered()
+            # The user did not ask for this turn, so nothing it decides may
+            # act on the world. Cleared when he next speaks.
+            self._unprompted_turn = True
 
             try:
                 memory = await asyncio.to_thread(load_memory)
