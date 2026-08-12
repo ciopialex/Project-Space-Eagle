@@ -189,6 +189,34 @@ def _user_window(create: bool = False):
     return user_window(create=create)
 
 
+
+def _what_is_here(port, limit: int = 12) -> str:
+    """The names actually on the page, for a step that could not find its own.
+
+    A dead end that only says "no control matches" makes the model guess
+    again. `web_agency` has always answered this way — "The page has: …; use
+    one of those names" — and the mission's own rungs did not, so a step like
+    "Click the first result" blocked with nothing to replan from.
+    """
+    try:
+        from actions.grounding.web.page import nodes_from_records
+        from actions.web_agency import _spread
+        names = []
+        # Spread across the page, not the first N. Taking the front returned
+        # "Home; All Models; Following; MakerLab" on a page of search results —
+        # the sidebar, in document order, which is exactly the positional bias
+        # that hides content from the model everywhere else.
+        for n in _spread(nodes_from_records(port.collect()), budget=60, run=6):
+            nm = str(getattr(n, "name", "") or "").strip()
+            if nm and nm not in names:
+                names.append(nm)
+            if len(names) >= limit:
+                break
+        return "; ".join(names)
+    except Exception:
+        return ""
+
+
 def _user_click(step: Step) -> tuple[bool, str]:
     port, grounder = _user_window()
     if port is None:
@@ -196,7 +224,9 @@ def _user_click(step: Step) -> tuple[bool, str]:
     what = step.target or step.intent
     node = grounder.find_node(what)
     if node is None:
-        return False, f"no control matching {what!r} in the user's window"
+        here = _what_is_here(port)
+        return False, (f"no control matching {what!r}"
+                       + (f" — the page has: {here}" if here else ""))
     from actions.grounding.web.page import ref_of
     port.click(ref_of(node))
     return True, f"clicked {node.name!r} in the user's window"
