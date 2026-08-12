@@ -123,6 +123,27 @@ def _os_permission() -> Check:
                      str(e)[:70])
 
 
+def _hidden_display() -> Check:
+    """Whether the browser can be headed without being seen.
+
+    Headless is what sites fingerprint — measured on makerworld.com, headless
+    got a Cloudflare interstitial every time and the identical browser headed
+    loaded the page. Xvfb gives a display nobody is looking at, so the browser
+    can be accepted AND invisible. Without it the eagle still works; it just
+    loses to the sites that check.
+    """
+    from core import virtual_display
+    if virtual_display.available():
+        return Check("private display (headed but unseen)", OK)
+    if _plat() != "linux":
+        return Check("private display (headed but unseen)", OK,
+                     f"{_plat()}: not applicable")
+    return Check(
+        "private display (headed but unseen)", MISSING,
+        "without it the browser runs headless, which some sites refuse",
+        fix="sudo apt install xvfb")
+
+
 def _browser() -> Check:
     try:
         from playwright.sync_api import sync_playwright  # noqa: F401
@@ -188,6 +209,7 @@ def run_checks() -> list[Check]:
     return [
         _api_key(),
         _browser(),
+        _hidden_display(),
         _structural_grounding(),
         _os_permission(),
         _audio(),

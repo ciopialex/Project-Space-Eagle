@@ -105,10 +105,12 @@ def _remember_channel(profile: Path, channel: str | None) -> None:
         pass          # best-effort; a missing marker just means "chromium"
 
 
-#: Where a browser goes when it should work without being watched. Headed
-#: Chrome parked far off the desktop: it renders, it passes the checks a real
-#: browser passes, and nobody sees it.
-_OFFSCREEN = ["--window-position=-32000,-32000", "--window-size=1440,900"]
+#: Fighting the window manager does not work. `--window-position=-32000,-32000`
+#: was measured at 25 sightings of a Chrome window at (50,22) over 2.5s on
+#: GNOME, and moving it afterwards with xdotool gave 44 sightings across
+#: 2583ms because the compositor put it back. A private display sidesteps the
+#: argument entirely — see core/virtual_display.py.
+_WINDOW = ["--window-size=1440,900"]
 
 
 def _default_launcher(playwright, profile: Path, headless: bool):
@@ -125,8 +127,15 @@ def _default_launcher(playwright, profile: Path, headless: bool):
     screen, and left the user unable to do anything else. The promise was that
     the eagle works while you work.
 
-    So "headless" now means headed-and-off-screen: it defeats the detection
-    that headless triggers, and it is still out of the way.
+    So "headless" now means headed on a PRIVATE DISPLAY: it defeats the
+    detection that headless triggers, and the window is somewhere nobody is
+    looking. Verified: makerworld loaded with 160 controls and two inputs, and
+    zero Chrome windows appeared on the user's display for the whole run.
+
+    Without Xvfb it falls back to genuinely headless, which works everywhere
+    except the sites that fingerprint it. `--doctor` reports that rather than
+    leaving it to be discovered through a page that will not load.
+
     `AETHELARK_BROWSER_HEADLESS=0` still means a window you can actually see,
     which is what finishing a sign-in needs.
     """
@@ -150,10 +159,18 @@ def _default_launcher(playwright, profile: Path, headless: bool):
     # a prompt or a failed launch.
     if channel == "chrome" and sys.platform.startswith("linux"):
         launch_kwargs["ignore_default_args"] = ["--password-store=basic"]
+    # A private display when one is available, so the browser can be headed
+    # (and therefore accepted) without appearing on the user's screen.
+    from core import virtual_display
+    hidden = virtual_display.display() if headless else None
+    if hidden:
+        launch_kwargs["env"] = virtual_display.env_for()
+
     context = playwright.chromium.launch_persistent_context(
         str(profile),
-        # Never truly headless — see the docstring. Off-screen instead.
-        headless=False,
+        # Headed whenever we have somewhere private to put it; genuinely
+        # headless only as the fallback, where the trade-off is bot walls.
+        headless=bool(headless and not hidden),
         **launch_kwargs,
         viewport={"width": 1440, "height": 900},
         # Without this Playwright CANCELS every download, so a click on a
@@ -161,7 +178,7 @@ def _default_launcher(playwright, profile: Path, headless: bool):
         # ever arrived. See PagePort.download.
         accept_downloads=True,
         args=(["--disable-blink-features=AutomationControlled"]
-              + (_OFFSCREEN if headless else [])
+              + (_WINDOW if headless else [])
               + (["--password-store=gnome-libsecret"]
                  if launch_kwargs.get("ignore_default_args") else [])),
     )
