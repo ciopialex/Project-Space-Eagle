@@ -247,6 +247,21 @@ def _next(params: dict) -> ToolResult:
     if m.status == DONE or m.current() is None:
         return ToolResult.success(f"Mission done — “{m.goal}”.")
 
+    # A blocked mission stays blocked. Re-running its ladder costs a turn and,
+    # if any rung opens something, a browser — which is how pages kept
+    # appearing long after the mission had died. Every rung has already been
+    # tried; nothing about calling `next` again makes one work.
+    if m.status == BLOCKED:
+        done, total = m.progress()
+        return ToolResult.failure(
+            f"“{m.goal}” is blocked at step {done + 1} of {total}: "
+            f"{m.blocked_reason}",
+            guidance=("Do NOT call next again — every way of doing that step "
+                      "has been tried. Either call start with a DIFFERENT "
+                      "plan, call abandon to stop cleanly, or tell the user "
+                      "which step is stuck and ask them to do that one "
+                      "thing."))
+
     step = m.current()
     outcome = attempt(step, m, _runners(), observe=_observe)
 

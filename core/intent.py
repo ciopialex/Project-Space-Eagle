@@ -39,10 +39,55 @@ consequence. Pinned by a test at well under a millisecond.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from core.capabilities import (Capability, CATALOGUE, find_by_phrase,
                                prewarm_for, _normalise)
+
+#: Sites common enough that naming one IS naming a destination, even without
+#: a dot. Short and boring on purpose — this is not a directory, it is the
+#: handful of names that carry no other meaning in a sentence.
+_KNOWN_SITES = ("makerworld", "youtube", "wikipedia", "github", "gmail",
+                "amazon", "spotify", "reddit", "linkedin", "whatsapp",
+                "bambulab", "printables", "thingiverse", "google")
+
+#: A domain-looking token. Matches "makerworld.com" and "en.wikipedia.org",
+#: not "0.2mm" or "the file.stl" — the same restraint as the step parser,
+#: for the same reason: guessing wrong sends a browser somewhere real.
+_LOOKS_LIKE_HOST = re.compile(
+    r"\b[a-z0-9][a-z0-9-]*\.(?:com|org|net|io|dev|app|co|ai|me|uk|de|ro|eu)\b",
+    re.I)
+
+_GO_TO_SITE = re.compile(
+    r"\b(?:go(?:ing)? (?:to|on)|open|visit|navigate to|surf to|pull up)\s+"
+    r"(?:the\s+)?([a-z0-9][a-z0-9.\-]{2,})", re.I)
+
+
+def worth_warming(utterance: str | None) -> bool:
+    """Is there a DESTINATION here, or just a verb?
+
+    Starting a browser costs a process; the warm-up saves ~310ms. That trade
+    is worth making when someone is going somewhere, and not worth making
+    because the word "click" appeared in a sentence about clicking — which is
+    what the user watched happen, repeatedly, with pages opening and closing
+    around a conversation that was not about the web at all.
+    """
+    text = (utterance or "").strip().lower()
+    if not text:
+        return False
+    if "http://" in text or "https://" in text:
+        return True
+    if _LOOKS_LIKE_HOST.search(text):
+        return True
+    if any(site in text for site in _KNOWN_SITES):
+        return True
+    m = _GO_TO_SITE.search(text)
+    # "go to makerworld" qualifies; "go to the next thing" does not.
+    return bool(m and m.group(1) not in
+                ("the", "it", "that", "this", "next", "there", "back", "him",
+                 "her", "them", "bed", "sleep", "work"))
+
 
 #: Confidence bands. Deliberately coarse — three meaningful states, not a
 #: false-precision float. Anything finer would imply a calibration this has
