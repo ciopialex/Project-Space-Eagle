@@ -57,6 +57,35 @@ def _plan_locally(goal: str):
     return plan(goal)
 
 
+def _release_browsers() -> None:
+    """Leave nothing running that this mission started.
+
+    Best-effort and never raises: a mission that SUCCEEDED must not be
+    reported as failed because a browser would not close. But it must be
+    attempted every single time a mission ends, however it ends — a leaked
+    Chrome also holds the profile lock, and that is what previously made the
+    eagle's own browser refuse to start and blame Playwright for it.
+    """
+    try:
+        from actions.browser_control import _registry
+        _registry.close_all()
+    except Exception as e:
+        print(f"[Mission] could not release browsers: {e}")
+
+    # Belt and braces: the eagle's own headless browser is a separate process
+    # from the user-facing one and closes through its own door.
+    try:
+        from actions.web_agency import web_agency
+        web_agency(parameters={"action": "close"})
+    except Exception:
+        pass
+    try:
+        from core.session_port import reset_launch_budget
+        reset_launch_budget()
+    except Exception:
+        pass
+
+
 def _observe():
     """Fingerprint whatever the user's window is showing, or None.
 
@@ -210,6 +239,7 @@ def _next(params: dict) -> ToolResult:
         m.block(f"back at the same page for the {m.times_at(here)}rd time "
                 f"with no progress")
         store.save(m, _store_path())
+        _release_browsers()
         return ToolResult.failure(
             f"Going in circles — “{step.intent}” has returned to the same "
             f"page {m.times_at(here)} times without progress.",
@@ -227,6 +257,7 @@ def _next(params: dict) -> ToolResult:
         store.save(m, _store_path())
         done, total = m.progress()
         if m.status == DONE:
+            _release_browsers()
             return ToolResult.success(
                 f"{step.intent} — done. Mission done: all {total} steps of "
                 f"“{m.goal}”.")
@@ -241,6 +272,9 @@ def _next(params: dict) -> ToolResult:
     # or a human. Everything tried is on the step, ready for the handoff.
     m.block(outcome.detail or "every approach failed")
     store.save(m, _store_path())
+    # Blocked is terminal too. Measured: a mission that blocked left EIGHT
+    # browsers running, because release only ran on done and abandon.
+    _release_browsers()
     tried = ", ".join(f"{a.strategy} ({a.detail[:40]})" for a in step.attempts)
     return ToolResult.failure(
         f"Stuck on: {step.intent}. Tried {tried or 'nothing available'}.",
@@ -269,6 +303,7 @@ def _abandon(params: dict) -> ToolResult:
     if m is None:
         return ToolResult.success("No mission was running.")
     m.abandon()
+    _release_browsers()
     report = store.write_stuck_report(m, _report_path())
     store.clear(_store_path())
     done, total = m.progress()

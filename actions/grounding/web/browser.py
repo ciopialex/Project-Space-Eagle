@@ -384,6 +384,30 @@ class PagePort:
 
         return self._call(_do)
 
+    def type_into_focused(self, text: str) -> str:
+        """Type into whatever the PAGE has focused. "" if nothing editable is.
+
+        A step that says "Type motherboard" names no control, because a person
+        does not name one — they have just clicked the field. Asking the
+        grounder for a control called "Type motherboard" finds nothing, and
+        the ladder then fell through to the OS keyboard, which is how that
+        word ended up in the user's terminal.
+        """
+        def _do():
+            what = self._page.evaluate(
+                "() => { const a = document.activeElement;"
+                " if (!a || a === document.body) return '';"
+                " const tag = a.tagName.toLowerCase();"
+                " if (!(tag === 'input' || tag === 'textarea' ||"
+                "       a.isContentEditable)) return '';"
+                " return a.getAttribute('aria-label') || a.getAttribute('name')"
+                "        || a.getAttribute('placeholder') || tag; }")
+            if not what:
+                return ""
+            self._page.keyboard.type(text)
+            return what
+        return self._call(_do) or ""
+
     def fill(self, ref: str, text: str) -> None:
         selector = f'[data-ae-ref="{ref}"]'
         self._call(lambda: self._page.fill(selector, text,

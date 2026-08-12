@@ -32,6 +32,38 @@ from actions.grounding.web.page import COLLECT_JS, HIT_TEST_JS
 
 _TIMEOUT = 20
 
+#: Hard ceiling on browser launches. A runaway is not hypothetical: a loop
+#: that opens a window each pass leaves a pile of Chromes, and those hold the
+#: profile lock, which is what then makes the eagle's OWN browser refuse to
+#: start and blame Playwright for it. Every other guard here is about not
+#: launching WRONGLY. This one is about not launching MANY, whatever the bug
+#: turns out to be — it does not need to know why.
+MAX_LAUNCHES = 4
+_launches = 0
+
+
+def _spend_launch() -> bool:
+    """Take one from the budget. False when it is gone."""
+    global _launches
+    if _launches >= MAX_LAUNCHES:
+        print(f"[SessionPort] refusing to open another browser — {_launches} "
+              f"already opened (cap {MAX_LAUNCHES}). Something is looping.")
+        return False
+    _launches += 1
+    return True
+
+
+def launches_used() -> int:
+    return _launches
+
+
+def reset_launch_budget() -> None:
+    """Cleared when a mission ends and its browsers are released."""
+    global _launches
+    _launches = 0
+
+
+
 
 class SessionPort:
     """`PageLike` over `browser_control`'s live async session."""
@@ -94,6 +126,29 @@ class SessionPort:
             await page.fill(selector, text, timeout=4_000)
         self._sess.run(_do(), timeout=_TIMEOUT)
 
+    def type_into_focused(self, text: str) -> str:
+        """Type into whatever the PAGE has focused. "" if nothing editable is.
+
+        Exact, not blind: the browser knows which element has focus, so this
+        cannot leak into another window the way the OS keyboard does. Returns
+        a description of where the text went, so the caller can say.
+        """
+        async def _do():
+            page = await self._sess._get_page()
+            what = await page.evaluate(
+                "() => { const a = document.activeElement;"
+                " if (!a || a === document.body) return '';"
+                " const tag = a.tagName.toLowerCase();"
+                " if (!(tag === 'input' || tag === 'textarea' ||"
+                "       a.isContentEditable)) return '';"
+                " return a.getAttribute('aria-label') || a.getAttribute('name')"
+                "        || a.getAttribute('placeholder') || tag; }")
+            if not what:
+                return ""
+            await page.keyboard.type(text)
+            return what
+        return self._sess.run(_do(), timeout=_TIMEOUT) or ""
+
     def goto(self, url: str) -> None:
         async def _do():
             page = await self._sess._get_page()
@@ -134,7 +189,7 @@ def peek_window(browser: str | None = None):
         return None, None
 
 
-def user_window(browser: str | None = None):
+def user_window(browser: str | None = None, create: bool = False):
     """`(SessionPort, WebGrounder)` for the user-facing browser, or `(None, None)`.
 
     `browser_control` has TWO ways of opening a page and only one of them can
@@ -155,8 +210,27 @@ def user_window(browser: str | None = None):
     `(None, None)` means there is no window at all — a different thing from
     "the control is not there", and callers must not report it as the latter.
     """
+    # `_registry.get()` CREATES a session — it launches Chrome. Reported live
+    # as "a blank page keeps opening out of nowhere": _user_click, _user_type
+    # and _user_look all came through here, so a CLICK step with no window
+    # open launched an empty browser, did nothing with it, and left it
+    # running. Only a step that MEANS to open a page may create one; for the
+    # rest, "there is no window" is the honest answer.
     try:
         from actions.browser_control import _registry
+        # A NATIVE open leaves no session but there IS a page the user is
+        # looking at; reaching it is the whole reason this function exists.
+        # So "may create" means: asked to, or there is a page waiting to be
+        # followed. Neither is true for a click with nothing open.
+        has = _registry.has(browser)
+        pending = ""
+        if not has:
+            # Consumed, not peeked — if there is one we are about to follow it.
+            pending = _registry.pop_native_url() or ""
+        if not (has or create or pending):
+            return None, None
+        if not has and not _spend_launch():
+            return None, None
         sess = _registry.get(browser)
     except Exception:
         return None, None
@@ -167,9 +241,8 @@ def user_window(browser: str | None = None):
     # exactly once — `pop` clears it so a later step does not get yanked back
     # to the start of the mission.
     try:
-        last = _registry.pop_native_url()
-        if last:
-            sess.run(sess.go_to(last), timeout=45)
+        if pending:
+            sess.run(sess.go_to(pending), timeout=45)
     except Exception as e:
         print(f"[SessionPort] could not follow the last page: {e}")
     try:

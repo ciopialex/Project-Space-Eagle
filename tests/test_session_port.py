@@ -26,6 +26,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pytest
+from core.session_port import reset_launch_budget
 from core.session_port import SessionPort, user_window  # noqa: E402
 
 
@@ -151,3 +153,12 @@ def test_the_port_fills_by_ref():
 
 def test_a_wedged_session_does_not_raise_out_of_url():
     assert SessionPort(_Sess(fail=RuntimeError("wedged"))).url() == ""
+
+
+@pytest.fixture(autouse=True)
+def _fresh_launch_budget():
+    """The launch cap is per PROCESS, and pytest runs one. Without this the
+    tests exhaust each other's budget and fail for the wrong reason."""
+    reset_launch_budget()
+    yield
+    reset_launch_budget()

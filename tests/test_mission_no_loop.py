@@ -99,7 +99,8 @@ def test_opening_a_page_already_open_does_not_navigate_again(monkeypatch):
     class _Port:
         def url(self): return "https://makerworld.com/en"
         def goto(self, u): navigated.append(u)
-    monkeypatch.setattr(R, "_user_window", lambda: (_Port(), None))
+    monkeypatch.setattr(R, "_user_window",
+                        lambda create=False: (_Port(), None))
 
     ok, detail = R._user_open(Step(intent="Go to makerworld.com",
                                    url="https://makerworld.com"))
@@ -117,7 +118,8 @@ def test_a_different_page_does_navigate(monkeypatch):
     class _Port:
         def url(self): return "https://example.test"
         def goto(self, u): navigated.append(u)
-    monkeypatch.setattr(R, "_user_window", lambda: (_Port(), None))
+    monkeypatch.setattr(R, "_user_window",
+                        lambda create=False: (_Port(), None))
 
     ok, _ = R._user_open(Step(intent="go", url="https://makerworld.com"))
     assert ok is True and navigated == ["https://makerworld.com"]
