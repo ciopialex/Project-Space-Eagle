@@ -134,6 +134,18 @@ class TurnTrace:
         with self._lock:
             self._marks.setdefault(name, now)
 
+    def mark_at(self, name: str, when: float) -> None:
+        """Record `name` as having happened at `when`. First write wins.
+
+        For marks whose DETECTION lags the event: the speech detector only
+        declares an end after its hangover window, so stamping at detection
+        time understated the felt delay by exactly that window.
+        """
+        if not self.enabled:
+            return
+        with self._lock:
+            self._marks.setdefault(name, when)
+
     def at(self, name: str) -> float | None:
         with self._lock:
             return self._marks.get(name)

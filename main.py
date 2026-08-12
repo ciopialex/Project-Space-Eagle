@@ -1127,6 +1127,11 @@ class AethelarkLive:
     # conversation. Instrumentation that can throw would make the diagnostic
     # worse than the disease.
 
+    def _trace_mark_at(self, name: str, when: float) -> None:
+        t = self._trace
+        if t is not None:
+            t.mark_at(name, when)
+
     def _trace_mark(self, name: str) -> None:
         t = self._trace
         if t is not None:
@@ -1203,7 +1208,17 @@ class AethelarkLive:
             self._trace_begin()
             self._trace_mark("speech_start")
         elif event == "end":
-            self._trace_mark("speech_end")
+            # The detector only declares "end" after `hangover_ms` of silence,
+            # so this fires that long AFTER the user actually stopped. Marking
+            # it here made `to_voice` (speech_end -> first_audio) UNDERSTATE
+            # the felt delay by the whole hangover — a measured 1.8s was really
+            # ~2.1s. Back-date the mark to when speech really ended.
+            #
+            # The client VAD does not gate sending; audio streams continuously
+            # and the SERVER decides the turn. So this costs nothing at
+            # runtime and only ever affected the honesty of the number.
+            self._trace_mark_at("speech_end",
+                                time.monotonic() - (self._vad.hangover_ms / 1000.0))
 
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""

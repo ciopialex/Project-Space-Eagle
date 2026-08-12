@@ -33,6 +33,9 @@ class Traced:
     """AethelarkLive's tracing, without its constructor's hardware."""
 
     _trace_mark      = main.AethelarkLive._trace_mark
+    # speech_end is back-dated by the detector's hangover, so the stub needs
+    # the same entry point the real class uses.
+    _trace_mark_at   = main.AethelarkLive._trace_mark_at
     _trace_begin     = main.AethelarkLive._trace_begin
     _trace_finish    = main.AethelarkLive._trace_finish
     _trace_mic_frame = main.AethelarkLive._trace_mic_frame
@@ -141,7 +144,11 @@ def test_every_mark_the_code_sets_is_a_known_mark():
     nothing. This pins the call sites against the vocabulary."""
     import re
     source = Path(main.__file__).read_text()
-    used = set(re.findall(r'_trace_mark\(["\'](\w+)["\']\)', source))
+    # Both call forms count. `speech_end` is stamped with `_trace_mark_at`,
+    # back-dated by the detector's hangover — it is detected 300ms after the
+    # user actually stopped, and marking it at detection time understated the
+    # felt delay by exactly that much.
+    used = set(re.findall(r'_trace_mark(?:_at)?\(["\'](\w+)["\']', source))
     assert used, "no _trace_mark call sites found — did the wiring move?"
     unknown = used - set(main.TurnTrace.__module__ and __import__(
         "core.turn_trace", fromlist=["MARKS"]).MARKS)
@@ -153,7 +160,11 @@ def test_the_marks_that_matter_are_actually_wired():
     of these is the sole source of a reported segment."""
     import re
     source = Path(main.__file__).read_text()
-    used = set(re.findall(r'_trace_mark\(["\'](\w+)["\']\)', source))
+    # Both call forms count. `speech_end` is stamped with `_trace_mark_at`,
+    # back-dated by the detector's hangover — it is detected 300ms after the
+    # user actually stopped, and marking it at detection time understated the
+    # felt delay by exactly that much.
+    used = set(re.findall(r'_trace_mark(?:_at)?\(["\'](\w+)["\']', source))
     for required in ("speech_start", "speech_end", "first_token",
                      "first_audio", "first_tool", "complete"):
         assert required in used, f"{required} is no longer marked anywhere"

@@ -71,6 +71,10 @@ class SpeechDetector:
                  warmup_ms: int = 1000, max_utterance_ms: int = 30000) -> None:
         self.rate = rate
         self.frame_ms = 1000.0 * frame_samples / max(rate, 1)
+        #: How long after speech really stops this detector takes to say so.
+        #: Callers timestamping the END of speech must subtract it, or they
+        #: measure from later than the user experienced.
+        self.hangover_ms = hangover_ms
         self.hangover_frames = max(1, round(hangover_ms / self.frame_ms))
         self.min_speech_frames = max(1, round(min_speech_ms / self.frame_ms))
         self.warmup_frames = max(1, round(warmup_ms / self.frame_ms))
