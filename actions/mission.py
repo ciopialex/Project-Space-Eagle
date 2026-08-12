@@ -202,6 +202,22 @@ def _next(params: dict) -> ToolResult:
     step = m.current()
     outcome = attempt(step, m, _runners(), observe=_observe)
 
+    # Where did that leave us? Recorded before the verdict, so a step that
+    # "succeeded" into a place we have been three times is still caught.
+    here = _observe()
+    m.note_place(here)
+    if m.going_in_circles(here):
+        m.block(f"back at the same page for the {m.times_at(here)}rd time "
+                f"with no progress")
+        store.save(m, _store_path())
+        return ToolResult.failure(
+            f"Going in circles — “{step.intent}” has returned to the same "
+            f"page {m.times_at(here)} times without progress.",
+            guidance=("Stop. Repeating this will not work. Either call start "
+                      "with a DIFFERENT plan that reaches the goal another "
+                      "way, or tell the user which step is stuck and what you "
+                      "have already tried."))
+
     if outcome.ok:
         # `ok` means the call worked. `moved is False` means the page did not
         # react to it — the step is still advanced (the rung genuinely did its

@@ -51,6 +51,16 @@ class Signature:
                      self.unknown, self.nonce))
 
     @property
+    def key(self) -> str:
+        """A short, stable, JSON-safe identity for this place.
+
+        Missions are persisted across reconnects, so anything the loop check
+        depends on has to survive a round trip through the store — otherwise a
+        GoAway wipes the memory and the loop simply resumes.
+        """
+        return f"{self.url}|{self.control_count}|{self.controls_hash}"
+
+    @property
     def worth_recording(self) -> bool:
         """A place worth remembering having been. A failed read is not one."""
         return not self.unknown

@@ -67,6 +67,9 @@ def load(path: Path | None = None) -> Mission | None:
         m = Mission(goal=goal, steps=steps, cursor=int(raw.get("cursor", 0)))
         m.status = raw.get("status", m.status)
         m.blocked_reason = raw.get("blocked_reason", "")
+        # Without this a reconnect wipes the loop memory and the loop simply
+        # resumes — and GoAway happens mid-mission routinely.
+        m.places = list(raw.get("places", []) or [])
         return m
     except Exception:
         return None

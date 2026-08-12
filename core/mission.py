@@ -62,6 +62,10 @@ class Mission:
     cursor: int = 0
     status: str = RUNNING
     blocked_reason: str = ""
+    #: Where this mission has been, most recent last. Plain strings so the
+    #: store can round-trip it — a reconnect that wiped this would let the
+    #: loop resume exactly where it left off.
+    places: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.steps:
@@ -115,6 +119,31 @@ class Mission:
             self.cursor += 1
         if self.current() is None:
             self.status = DONE
+
+    #: Two visits to one page is ordinary work — open results, open an item,
+    #: come back. Three is not: that is the shape the user watched, where the
+    #: same page opened again and again with nothing to show for it.
+    CIRCLE_THRESHOLD = 3
+
+    def note_place(self, signature) -> None:
+        """Remember having been somewhere. Unreadable pages are not places.
+
+        Counting a failed read as a visit would make a flaky page look like a
+        loop — the same collapse of "could not look" into "nothing there" that
+        this codebase keeps producing.
+        """
+        if signature is None or not getattr(signature, "worth_recording", False):
+            return
+        self.places.append(signature.key)
+
+    def times_at(self, signature) -> int:
+        if signature is None or not getattr(signature, "worth_recording", False):
+            return 0
+        return self.places.count(signature.key)
+
+    def going_in_circles(self, signature) -> bool:
+        """Been here enough times that arriving again is not progress."""
+        return self.times_at(signature) >= self.CIRCLE_THRESHOLD
 
     def block(self, reason: str) -> None:
         """Out of ways to do the current step. Not a failure of the mission —
