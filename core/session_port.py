@@ -107,6 +107,33 @@ class SessionPort:
         self._sess.run(_do(), timeout=_TIMEOUT)
 
 
+def peek_window(browser: str | None = None):
+    """The user's window WITHOUT touching it.
+
+    `user_window` follows the url a native open left behind — which is a
+    navigation, and therefore a change to the world. Anything that merely
+    OBSERVES must use this instead: an observer with a side effect cannot be
+    used to detect side effects, and the first version of the movement check
+    reported "nothing changed" on every step because looking had already
+    moved things.
+    """
+    try:
+        from actions.browser_control import _registry
+        if not _registry.has(browser):
+            return None, None
+        sess = _registry.get(browser)
+    except Exception:
+        return None, None
+    if sess is None:
+        return None, None
+    try:
+        from actions.grounding.web.grounder import WebGrounder
+        port = SessionPort(sess)
+        return port, WebGrounder(lambda: port)
+    except Exception:
+        return None, None
+
+
 def user_window(browser: str | None = None):
     """`(SessionPort, WebGrounder)` for the user-facing browser, or `(None, None)`.
 

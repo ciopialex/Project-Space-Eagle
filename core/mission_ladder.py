@@ -52,6 +52,11 @@ class Outcome:
     strategy: str = ""
     detail: str = ""
     exhausted: bool = False
+    #: True/False when the world was observed before and after, None when it
+    #: was not looked at. `ok` means the CALL worked; this means something
+    #: actually happened. They are different, and every bug this codebase has
+    #: fought for weeks lives in the gap between them.
+    moved: bool | None = None
 
 
 def kind_of(step: Step) -> str:
@@ -71,14 +76,34 @@ def strategies_for(step: Step) -> list[str]:
 
 
 def attempt(step: Step, mission: Mission,
-            runners: dict[str, Callable[[Step], tuple[bool, str]]]) -> Outcome:
-    """Walk the ladder until a rung works.
+            runners: dict[str, Callable[[Step], tuple[bool, str]]],
+            observe: Callable[[], object] | None = None) -> Outcome:
+    """Walk the ladder until a rung works, and check the world moved.
 
     `runners` is injected so the rules can be tested without a browser, a
     screen or a network. A rung with no runner is SKIPPED rather than counted
     as a failure — an unimplemented strategy must not burn the step's budget
     or pollute the handoff with a failure that never happened.
+
+    `observe` fingerprints the current page. Optional, and absent by default,
+    so every existing caller behaves exactly as before. When present, a rung
+    that reports success while nothing changed is still reported as `ok` — it
+    DID work — but carries `moved=False`, because "the call returned" and
+    "something happened" are different claims and only one of them is what the
+    user asked for.
+
+    Steps that legitimately change nothing (reading a page, opening one
+    already open) are exempt: flagging those would make the signal useless.
     """
+    from core.mission_ladder import kind_of as _kind          # self, for clarity
+    expects_movement = _kind(step) not in ("read",)
+    before = None
+    if observe is not None:
+        try:
+            before = observe()
+        except Exception:
+            before = None
+
     last = ""
     for strategy in strategies_for(step):
         if mission.tried(strategy):
@@ -90,8 +115,41 @@ def attempt(step: Step, mission: Mission,
             ok, detail = runner(step)
         except Exception as e:
             ok, detail = False, f"{type(e).__name__}: {e}"
-        mission.record_attempt(strategy, ok, str(detail))
+        detail = str(detail)
+        moved = None
+        if ok and observe is not None and before is not None:
+            moved, note = _moved(before, observe, expects_movement)
+            if note:
+                detail = f"{detail} — {note}"
+        mission.record_attempt(strategy, ok, detail)
         if ok:
-            return Outcome(True, strategy, str(detail))
-        last = str(detail)
+            return Outcome(True, strategy, detail, moved=moved)
+        last = detail
     return Outcome(False, "", last, exhausted=True)
+
+
+def _moved(before, observe, expects_movement) -> tuple[bool | None, str]:
+    """Did the page change, and is that worth saying?
+
+    Returns `(moved, note)`. `moved` is None when the world could not be read
+    — never False, because a failed look is not a still world.
+    """
+    try:
+        after = observe()
+    except Exception:
+        return None, ""
+    if after is None:
+        return None, ""
+    try:
+        from core.world_state import describe_change
+        if getattr(before, "unknown", False) or getattr(after, "unknown", False):
+            return None, "could not read the page to confirm"
+        same = before.same_as(after)
+    except Exception:
+        return None, ""
+    if not same:
+        return True, ""
+    if not expects_movement:
+        return True, ""          # reading changes nothing, and should not
+    return False, ("the call worked but nothing on the page changed — "
+                   "do not assume it took effect")

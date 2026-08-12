@@ -57,6 +57,22 @@ def _plan_locally(goal: str):
     return plan(goal)
 
 
+def _observe():
+    """Fingerprint whatever the user's window is showing, or None.
+
+    None when there is no window to look at — which is a real answer and NOT
+    "nothing changed". The ladder treats it as unknown for exactly that
+    reason.
+    """
+    try:
+        from core.session_port import peek_window
+        from core.world_state import signature_of
+        port, _ = peek_window()          # peek, never user_window: see its docstring
+        return None if port is None else signature_of(port)
+    except Exception:
+        return None
+
+
 def _runners():
     """strategy name -> callable(step) -> (ok, detail).
 
@@ -184,9 +200,13 @@ def _next(params: dict) -> ToolResult:
         return ToolResult.success(f"Mission done — “{m.goal}”.")
 
     step = m.current()
-    outcome = attempt(step, m, _runners())
+    outcome = attempt(step, m, _runners(), observe=_observe)
 
     if outcome.ok:
+        # `ok` means the call worked. `moved is False` means the page did not
+        # react to it — the step is still advanced (the rung genuinely did its
+        # job, and a step CAN legitimately change nothing), but the doubt
+        # travels with the result instead of being swallowed.
         m.advance()
         store.save(m, _store_path())
         done, total = m.progress()
@@ -194,8 +214,11 @@ def _next(params: dict) -> ToolResult:
             return ToolResult.success(
                 f"{step.intent} — done. Mission done: all {total} steps of "
                 f"“{m.goal}”.")
+        doubt = ("" if outcome.moved is not False
+                 else "  (nothing on the page changed — if the next step "
+                      "fails, this one may not have taken effect)")
         return ToolResult.success(
-            f"{step.intent} — done ({done} of {total}). "
+            f"{step.intent} — done ({done} of {total}).{doubt} "
             f"Next: {m.current().intent}")
 
     # Out of ways. Not a failed mission — a mission that needs a better plan
