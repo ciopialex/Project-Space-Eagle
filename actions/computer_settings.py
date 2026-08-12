@@ -282,13 +282,92 @@ def brightness_down():
             print(f"[Settings] Brightness down failed on Windows: {e}")
 
 
+def _focused_window_name() -> str | None:
+    """The title of the window that currently has focus, or None.
+
+    None means "I do not know what is in front" — never permission. An action
+    that destroys something must name its target and fail CLOSED when it
+    cannot.
+    """
+    try:
+        from actions.grounding.resolver import structural_grounder
+        g = structural_grounder()
+        if g is None:
+            return None
+        for node in (g.nodes() if hasattr(g, "nodes") else []):
+            states = getattr(node, "states", frozenset())
+            role = str(getattr(node, "role", "") or "").lower()
+            if "ACTIVE" in states or (role in ("frame", "window")
+                                      and "FOCUSED" in states):
+                name = str(getattr(node, "name", "") or "").strip()
+                if name:
+                    return name
+    except Exception:
+        return None
+    return None
+
+
+#: Windows the eagle must never close, however clearly it can see them. A
+#: terminal is where the operator lives — closing it kills the session driving
+#: the eagle, which is exactly what happened.
+_NEVER_CLOSE = ("terminal", "konsole", "xterm", "iterm", "tmux", "screen",
+                "@", "bash", "zsh", "powershell", "cmd.exe", "claude")
+
 def close_app():
+    """Quit the focused application — once it is known which.
+
+    Guarded for the same reason as close_window: this chord kills whatever
+    holds focus, and live it went for the user's terminal.
+    """
+    try:
+        where = _focused_window_name()
+    except Exception:
+        where = None
+    if not where:
+        return Failed(
+            "Refusing to quit: nothing identifiable has focus, so it could "
+            "be any window.",
+            guidance="Ask the user which window they mean, or focus it first.")
+    low = where.lower()
+    if any(bad in low for bad in _NEVER_CLOSE):
+        return Failed(
+            f"Refusing to quit {where!r} — that looks like a terminal, and "
+            f"closing it would kill the session running the eagle.",
+            guidance="Tell the user which window it is and let them do it.")
     if _OS == "Darwin": pyautogui.hotkey("command", "q")
     else:               pyautogui.hotkey("alt", "f4")
+    return f"Quit: {where}"
+    return f"Closed: {where}"
+
+
+
 
 def close_window():
+    """Close the focused window — once it is known WHICH window that is.
+
+    Was one line: `pyautogui.hotkey("alt", "f4")`, which closes whatever holds
+    focus. Live, that tried to close the user's terminal — the one running the
+    session driving the eagle. Third instance of the same bug: an OS-level
+    action fired without knowing its target.
+    """
+    try:
+        where = _focused_window_name()
+    except Exception:
+        where = None
+    if not where:
+        return Failed(
+            "Refusing to close: nothing identifiable has focus, so it could "
+            "be any window.",
+            guidance="Ask the user which window to close, or focus it first.")
+    low = where.lower()
+    if any(bad in low for bad in _NEVER_CLOSE):
+        return Failed(
+            f"Refusing to close {where!r} — that looks like a terminal, and "
+            f"closing it would kill the session running the eagle.",
+            guidance="Tell the user which window it is and let them close it.")
     if _OS == "Darwin": pyautogui.hotkey("command", "w")
     else:               pyautogui.hotkey("ctrl", "w")
+    return f"Closed: {where}"
 
 def full_screen():
     if _OS == "Darwin": pyautogui.hotkey("ctrl", "command", "f")

@@ -322,8 +322,41 @@ def _click(x=None, y=None, button: str = "left", clicks: int = 1) -> str:
     return f"Clicked at current position [{button}]"
 
 
+#: Chords that destroy a window or an application. Everything else — copy,
+#: paste, select-all, undo — is harmless and must not be gated, or the tool
+#: becomes useless for the ordinary work it exists to do.
+_DESTRUCTIVE_CHORDS = frozenset({
+    ("alt", "f4"), ("ctrl", "w"), ("ctrl", "q"), ("ctrl", "shift", "w"),
+    ("command", "w"), ("command", "q"), ("cmd", "w"), ("cmd", "q"),
+    ("super", "q"),
+})
+
+
+def _focused_window_name() -> str | None:
+    """The window that has focus, or None. None is never permission."""
+    try:
+        from actions.computer_settings import _focused_window_name as _f
+        return _f()
+    except Exception:
+        return None
+
+
 def _hotkey(*keys) -> str:
     _require_pyautogui()
+    chord = tuple(str(k).lower() for k in keys)
+    if frozenset({chord}) & _DESTRUCTIVE_CHORDS or chord in _DESTRUCTIVE_CHORDS:
+        # Same rule as close_window: an action that destroys something must
+        # name its target. Live, a blind close went for the user's terminal —
+        # the one running the session driving the eagle.
+        try:
+            where = _focused_window_name()
+        except Exception:
+            where = None
+        if not where:
+            return Failed(
+                f"Refusing {'+'.join(chord)}: it closes a window, and nothing "
+                f"identifiable has focus.",
+                guidance="Ask the user which window they mean, or focus it first.")
     pyautogui.hotkey(*keys)
     return f"Hotkey: {'+'.join(keys)}"
 
