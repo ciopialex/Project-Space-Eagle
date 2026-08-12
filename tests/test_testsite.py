@@ -52,17 +52,17 @@ def test_an_empty_upload_is_rejected():
 
 def test_a_partially_filled_form_is_rejected():
     """Three of five is not a completed form."""
-    ok, missing = check("FULL NAME: Shenny Cioponea\nEMAIL: "
-                        "shennyonthebeat@gmail.com\nCITY: Bucharest")
+    ok, missing = check("FULL NAME: Test Testerson\nEMAIL: "
+                        "test.testerson@example.invalid\nCITY: Springfield")
     assert ok is False
     assert set(missing) == {"phone", "reference"}
 
 
 def test_layout_does_not_matter_only_the_values_do():
     """The eagle may format the form differently; that is not a failure."""
-    prose = ("Here are the details: Shenny Cioponea, reachable at "
-             "shennyonthebeat@gmail.com or +40 700 111 222, based in "
-             "Bucharest, ref EAGLE-2026-A.")
+    prose = ("Here are the details: Test Testerson, reachable at "
+             "test.testerson@example.invalid or 555-0100, based in "
+             "Springfield, ref EAGLE-TEST-A1.")
     assert check(prose)[0] is True
 
 
@@ -107,7 +107,7 @@ def test_the_submit_page_has_a_file_input_and_a_button():
 def test_the_desktop_file_is_written_where_it_is_claimed(tmp_path):
     p = prepare(tmp_path)
     assert p.exists() and p.name == "my-details.txt"
-    assert "Bucharest" in p.read_text()
+    assert "Springfield" in p.read_text()
 
 
 def test_submissions_start_empty_after_a_reset():

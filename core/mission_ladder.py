@@ -59,6 +59,32 @@ class Outcome:
     moved: bool | None = None
 
 
+#: Words that join two actions into one sentence. A step containing one is a
+#: plan that was never decomposed — and the ladder will happily run its FIRST
+#: verb and call the whole thing done, which is exactly what happened live.
+_JOINERS = (" then ", " and then ", " after that ", " next ", " followed by ",
+            " , then ")
+
+#: Verbs that start an action. Two of them in one step is two steps.
+_ACTION_WORDS = ("open ", "go to ", "navigate ", "click ", "press ", "type ",
+                 "write ", "enter ", "fill ", "search ", "download ",
+                 "upload ", "submit ", "select ", "read ", "save ")
+
+
+def is_compound(intent: str) -> bool:
+    """Is this several actions wearing one step?
+
+    Two signals, because either alone is wrong. A joining word ("then",
+    "after that") is explicit. Failing that, three or more action verbs in one
+    sentence is not a step — two is tolerated, because "click the Download
+    button" contains "click" and "download" and is perfectly single.
+    """
+    low = f" {(intent or '').lower().strip()} "
+    if any(j in low for j in _JOINERS):
+        return True
+    return sum(1 for v in _ACTION_WORDS if v in low) >= 3
+
+
 def kind_of(step: Step) -> str:
     """Which ladder this step belongs on, from how a person phrased it."""
     intent = (step.intent or "").lower().strip()

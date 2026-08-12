@@ -137,7 +137,13 @@ def _steps_from(raw) -> list[Step]:
         parsed = parse_plan(raw)
         if parsed:
             return parsed
-        raw = [ln for ln in raw.splitlines() if ln.strip()]
+        # Newlines are not the only thing a model reaches for. Live, it sent
+        # four steps separated by PIPES; splitting on newlines alone made them
+        # one blob, the ladder ran its first verb, and the mission announced
+        # the whole goal done having only opened a page.
+        import re as _re
+        raw = [ln for ln in _re.split(r"[\n|;]+|(?<!:)//(?!/)", raw)
+               if ln and ln.strip()]
     out = []
     for item in raw:
         text = str(item).strip()
@@ -188,6 +194,19 @@ def _start(params: dict) -> ToolResult:
     steps = [s if isinstance(s, Step) else Step(intent=str(s).strip())
              for s in (raw or []) if s]
     steps = [s for s in steps if s.intent.strip()]
+
+    # A separator nobody anticipated must degrade to "I cannot plan this",
+    # never to "one step that happens to succeed on its first verb".
+    from core.mission_ladder import is_compound
+    blobs = [s.intent for s in steps if is_compound(s.intent)]
+    if blobs:
+        return ToolResult.failure(
+            f"That is not a step, it is several: {blobs[0][:110]!r}",
+            guidance=("Send the steps again, ONE action per line, each "
+                      "naming one thing you can see and do. 'Open the page', "
+                      "then 'Click the search box', then 'Type watch stand' — "
+                      "not all of them in one line."))
+
     if not steps:
         # A planner that could not REACH the model has not decided the goal is
         # impossible. Saying so is the difference between the user waiting

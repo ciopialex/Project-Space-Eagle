@@ -51,24 +51,28 @@ REFERENCE:
 
 #: Dropped on the Desktop by `prepare()`. The eagle has to go and read it —
 #: it is never given these values in the goal.
+#: Obviously fake. `tests/test_private_data_never_tracked.py` fails the build
+#: if a real name, address or phone number is committed — and it caught this
+#: file the first time, when the fixture used the founder's actual details.
+#: A test rig must not be the thing that leaks them.
 DESKTOP_DATA = """\
 My details for forms
 --------------------
-Full name: Shenny Cioponea
-Email: shennyonthebeat@gmail.com
-Phone: +40 700 111 222
-City: Bucharest
-Reference: EAGLE-2026-A
+Full name: Test Testerson
+Email: test.testerson@example.invalid
+Phone: 555-0100
+City: Springfield
+Reference: EAGLE-TEST-A1
 """
 
 #: The values a correct submission must contain. Checked against what the
 #: SERVER received, never against what the eagle claims.
 EXPECTED = {
-    "name": "Shenny Cioponea",
-    "email": "shennyonthebeat@gmail.com",
-    "phone": "+40 700 111 222",
-    "city": "Bucharest",
-    "reference": "EAGLE-2026-A",
+    "name": "Test Testerson",
+    "email": "test.testerson@example.invalid",
+    "phone": "555-0100",
+    "city": "Springfield",
+    "reference": "EAGLE-TEST-A1",
 }
 
 _LOCK = threading.Lock()
