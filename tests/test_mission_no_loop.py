@@ -129,3 +129,36 @@ def test_a_different_page_does_navigate(monkeypatch):
 
     ok, _ = R._user_open(Step(intent="go", url="https://makerworld.com"))
     assert ok is True and navigated == ["https://makerworld.com"]
+
+
+# ── the type step ───────────────────────────────────────────────────────────
+
+def test_user_type_falls_back_to_the_steps_intent_when_target_is_empty(monkeypatch):
+    """R._user_type's adapter must pass `step.target or step.intent` down to
+    user_actions.user_type, not `step.target or None` alone. A step planned
+    with no target ("type laptop stand" with target="") still carries the
+    description in its intent — dropping that fallback meant the grounder
+    was asked to find "" instead of the intent whenever nothing was focused
+    and target was blank."""
+    from core.mission import Step
+    import core.mission_runners as R
+    import actions.grounding.web.user_actions as UA
+
+    asked = []
+
+    class _Grounder:
+        def find_node(self, description):
+            asked.append(description)
+            return None
+
+    class _Port:
+        def type_into_focused(self, text):
+            return ""   # nothing focused — forces the fallback to find_node
+
+    monkeypatch.setattr(UA, "_user_window",
+                        lambda create=False: (_Port(), _Grounder()))
+
+    R._user_type(Step(intent="type laptop stand", text="laptop stand", target=""))
+
+    assert asked == ["type laptop stand"], \
+        f"grounder was asked to find {asked!r}, not the step's intent"

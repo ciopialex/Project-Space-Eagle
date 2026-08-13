@@ -243,7 +243,13 @@ def _web_type(step: Step) -> tuple[bool, str]:
 
 
 def _user_type(step: Step) -> tuple[bool, str]:
-    r = _ua_type(step.target or None, step.text)
+    # step.target or step.intent: a step's target names the control ("the
+    # search box"); when it is empty, the intent ("type laptop stand") is
+    # the only description left to search the page for. Dropping this
+    # fallback (passing step.target or None) lost it entirely — user_type
+    # would search for "" instead of the intent whenever nothing was
+    # focused and target was blank.
+    r = _ua_type(step.target or step.intent or None, step.text)
     return r.ok, r.message
 
 

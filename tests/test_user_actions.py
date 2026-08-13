@@ -109,6 +109,19 @@ def test_user_look_reports_how_many_controls_are_on_the_page(monkeypatch):
     assert "3" in r.message
 
 
+def test_user_look_reports_failure_when_the_page_has_no_controls(monkeypatch):
+    """`user_look` is a rung on mission_ladder's "read" ladder
+    (web_look, user_look, screen_look); the ladder stops at the first rung
+    that reports ok=True. A window with zero controls (blank/failed-to-load
+    page) must report failure, or the ladder never falls through to
+    screen_look, the visual fallback that exists exactly for this case —
+    matching the pre-refactor `ok=bool(nodes)` behavior."""
+    port = _Port(nodes=[])
+    monkeypatch.setattr(UA, "_user_window", lambda: (port, None))
+    r = UA.user_look()
+    assert r.ok is False
+
+
 def test_user_open_with_no_window_is_an_explicit_failure(monkeypatch):
     monkeypatch.setattr(UA, "_user_window", lambda create=False: (None, None))
     r = UA.user_open("https://example.test")

@@ -195,6 +195,17 @@ def user_look(limit: int = 40) -> ToolResult:
     from actions.grounding.web.page import nodes_from_records
     nodes = nodes_from_records(port.collect())
     names = what_is_here(port, limit=limit)
+    if not nodes:
+        # A window with zero controls is not a look that "worked" — it is
+        # indistinguishable from a blank/failed-to-load page. `user_look` is
+        # a rung on mission_ladder's "read" ladder (web_look, user_look,
+        # screen_look); reporting ok=True here would stop the ladder before
+        # it ever reaches screen_look, the visual fallback that exists
+        # exactly for this case. Matches the pre-refactor `ok=bool(nodes)`.
+        return ToolResult.failure(
+            "0 controls in the user's window",
+            guidance="The page may not have loaded, or may be blank — try "
+                     "browser_control action='screenshot' to see it.")
     return ToolResult.success(
         f"{len(nodes)} controls in the user's window"
         + (f": {names}" if names else ""))
