@@ -73,7 +73,8 @@ from actions.grounding.web.page import element_from, nodes_from_records, ref_of
 from actions.grounding.web.sense import PageSense
 from core.tool_result import ToolResult
 
-_ACTIONS = ("open", "look", "click", "download", "type", "sign_in", "close")
+_ACTIONS = ("open", "look", "click", "download", "upload", "type", "sign_in",
+            "close")
 
 _NO_BROWSER_GUIDANCE = (
     "The eagle's browser could not start. Run "
@@ -433,7 +434,7 @@ def _clear_consent_walls(browser, grounder: WebGrounder) -> list[str]:
         if irreversible_reason(choice):
             break
         try:
-            _act_with_reresolve(grounder, choice, _gate_click,
+            _act_with_reresolve(grounder, choice, _gate_click_for(False),
                                 lambda ref: page.click(ref))
         except Exception:
             break
@@ -1070,23 +1071,35 @@ def _actuation_result(verb_ing: str, verb_past: str, node, outcome: dict,
                               control=acted_node.name)
 
 
-def _gate_click(node, nodes=()) -> None:
-    """The consent check `_act_with_reresolve` re-runs against whatever node
-    it actually resolved, immediately before clicking it. Mirrors the
+def _gate_click_for(confirmed: bool):
+    """Builds the consent check `_act_with_reresolve` re-runs against whatever
+    node it actually resolved, immediately before clicking it. Mirrors the
     up-front check in `_click` exactly — same wording, same guidance — so a
     refusal reads identically regardless of which of the two catches it.
+
+    `confirmed` is the one thing that changes the check: a mission whose
+    human said, once, up front, "yes, go ahead" — `Mission.authorized`,
+    threaded down through `step.authorized` and the `confirmed` request param
+    — is not asked again at every commit-shaped click along the way. That is
+    a repeat of a question already answered, not extra care. An unconfirmed
+    call (every ordinary `web_agency` call, and every mission that never
+    asked) behaves exactly as before.
 
     Takes the node list for signature parity with `_gate_type`'s gate, so
     `_act_with_reresolve` can hand every gate the single collect it made
     (see there). Clicking's own check needs only the node itself.
     """
-    reason = irreversible_reason(node.name, node.role)
-    if reason:
-        raise _ConsentBlocked(
-            f"Refused to click '{node.name}' because {reason}.",
-            "Tell the user exactly what this would do and ask them "
-            "to confirm it themselves. The eagle does not take "
-            "irreversible actions on their behalf.")
+    def gate(node, nodes=()) -> None:
+        if confirmed:
+            return
+        reason = irreversible_reason(node.name, node.role)
+        if reason:
+            raise _ConsentBlocked(
+                f"Refused to click '{node.name}' because {reason}.",
+                "Tell the user exactly what this would do and ask them "
+                "to confirm it themselves. The eagle does not take "
+                "irreversible actions on their behalf.")
+    return gate
 
 
 def _gate_type(page):
@@ -1161,7 +1174,70 @@ def _download(browser, grounder: WebGrounder, description: str) -> ToolResult:
         f"Downloaded to {saved}", path=saved, name=_P(saved).name)
 
 
-def _click(browser, grounder: WebGrounder, description: str) -> ToolResult:
+def _upload(browser, grounder: WebGrounder, description: str,
+            path: str) -> ToolResult:
+    """Hand a local file to a control on the page.
+
+    The mirror image of `_download`: a click succeeds when the page reacts, an
+    upload succeeds only when the CONTROL now holds the file — so this is its
+    own action rather than routed through `click`, for the same reason.
+    """
+    if not path:
+        return ToolResult.failure(
+            "No file to upload.",
+            guidance="Pass path='/absolute/path/to/file' with action='upload'.")
+
+    if not grounder.available():
+        return ToolResult.failure(
+            f"Could not look for '{description}' — the page could not be read.",
+            guidance="Call action='look', or action='open' again.")
+
+    node = grounder.find_node(description)
+    if node is None:
+        # A file input rarely carries a name a description would match — no
+        # aria-label, no wrapping <label>, often not even a `name` attribute.
+        # When there is exactly ONE control of the kind this action could
+        # possibly mean, use it rather than fail on a name that was never
+        # going to exist — the same reasoning `best_text_field` already
+        # applies to an unnamed "type" target. Two or more is ambiguity, not
+        # a match, and stays a failure.
+        page_probe = browser.page()
+        candidates = []
+        if page_probe is not None:
+            try:
+                candidates = [n for n in nodes_from_records(page_probe.collect())
+                             if str(getattr(n, "role", "") or "").lower() == "file"]
+            except Exception:
+                candidates = []
+        if len(candidates) == 1:
+            node = candidates[0]
+    if node is None:
+        _SENSE.note_failure()
+        return _no_such_control(description, browser.page())
+
+    page = browser.page()
+    if page is None:
+        return ToolResult.failure(
+            "The page went away before the upload could start.",
+            guidance="Call action='open' again.")
+
+    ok = page.upload(ref_of(node), path)
+    if not ok:
+        _SENSE.note_failure()
+        return ToolResult.failure(
+            f"Clicked '{node.name}' but it never took the file.",
+            guidance=("The control may not be a file input, or the file may "
+                      "not exist at that path. Call action='look' to see "
+                      "what the page shows now."))
+
+    _SENSE.note_success()
+    from pathlib import Path as _P
+    return ToolResult.success(
+        f"Gave {_P(path).name} to '{node.name}'", path=path)
+
+
+def _click(browser, grounder: WebGrounder, description: str,
+          confirmed: bool = False) -> ToolResult:
     if not grounder.available():
         # `grounder.find_node` swallows a `browser.page()` failure into
         # `None`, which is indistinguishable from "genuinely no match" —
@@ -1192,8 +1268,9 @@ def _click(browser, grounder: WebGrounder, description: str) -> ToolResult:
     # immediately before it is clicked. This early check only saves the
     # ~5s `act_and_verify` would otherwise spend polling for actionability
     # on a control that was always going to be refused.
+    gate = _gate_click_for(confirmed)
     try:
-        _gate_click(node)
+        gate(node)
     except _ConsentBlocked as e:
         return ToolResult.failure(e.message, guidance=e.guidance)
 
@@ -1218,7 +1295,7 @@ def _click(browser, grounder: WebGrounder, description: str) -> ToolResult:
     outcome = act_and_verify(
         description,
         _safe_act(lambda _el: _act_with_reresolve(
-            grounder, description, _gate_click, lambda ref: page.click(ref))),
+            grounder, description, gate, lambda ref: page.click(ref))),
         resolver=grounder,
         action="click",
         hit_test=grounder.hit_test,
@@ -1379,10 +1456,15 @@ def _dispatch(params, browser, action):
             guidance="Pass description='the Sign in button'.")
 
     if action == "click":
-        return _click(browser, grounder, description)
+        return _click(browser, grounder, description,
+                      confirmed=bool(params.get("confirmed")))
 
     if action == "download":
         return _download(browser, grounder, description)
+
+    if action == "upload":
+        return _upload(browser, grounder, description,
+                       str(params.get("path") or "").strip())
 
     return _type(browser, grounder, description,
                  _coerce_text(params.get("text")))

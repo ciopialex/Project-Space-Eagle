@@ -1154,6 +1154,18 @@ def _verdict(result: str):
     return settled(text)
 
 
+#: Every action past this point in `browser_control` needs a real, physically
+#: controllable browser window — this is the set checked BEFORE one is opened,
+#: so an unrecognised action (a typo, a stale name) is refused instead of
+#: silently earning itself a browser window first. Kept in sync with the
+#: elif chain below by `test_browser_control_contract.py`.
+_INTERACTIVE_ACTIONS = frozenset({
+    "click", "type", "scroll", "fill_form", "smart_click", "smart_type",
+    "get_text", "get_url", "press", "close_tab", "screenshot", "back",
+    "forward", "reload",
+})
+
+
 def browser_control(
     parameters:    dict = None,
     response=None,
@@ -1264,6 +1276,23 @@ def browser_control(
     # Bunlar fiziksel olarak kontrol edilebilir bir tarayıcı gerektirir;
     # yalnızca burada otomasyon penceresi açılır ve açılır açılmaz kullanıcının
     # son gezindiği sayfaya gider — boş sayfada beklemez.
+    #
+    # Checked BEFORE the browser is ever touched. `_registry.get()` LAUNCHES a
+    # real, visible Chrome window if none is open yet — so an unrecognised
+    # action fell all the way through to here first, opened one anyway, and
+    # only discovered a page down that nothing matched `action`. A person
+    # watching their screen saw a browser flash open and close for a typo
+    # in an action name, which this function was always going to refuse.
+    if action not in _INTERACTIVE_ACTIONS:
+        result = f"Unknown browser action: '{action}'"
+        _log(player, result)
+        return ToolResult.failure(
+            result,
+            guidance=("Nothing happened in the browser. Do not tell the user "
+                      "the page is open. Known actions: go_to, switch, "
+                      "get_url, press, close_tab, screenshot, back, forward, "
+                      "reload."))
+
     try:
         sess = _registry.get(browser)
     except Exception as e:

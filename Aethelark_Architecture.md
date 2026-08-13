@@ -1,6 +1,6 @@
 # Aethelark — Architecture & Data Flow
 
-*Canonical, current architecture reference. For the **why**, see [`Aethelark_Vision.md`](Aethelark_Vision.md); for the **web-pivot decision detail**, see [`Aethelark_Web_Pivot_Plan.md`](Aethelark_Web_Pivot_Plan.md); for module specs see [`Aethelark_Specifications.md`](Aethelark_Specifications.md); for the journey see [`Aethelark_Roadmap.md`](Aethelark_Roadmap.md). Last updated 2026‑07‑23.*
+*Canonical, current architecture reference. For the **why**, see [`Aethelark_Vision.md`](Aethelark_Vision.md); for module specs see [`Aethelark_Specifications.md`](Aethelark_Specifications.md); for the living state of play see [`docs/Aethelark_Roadmap.md`](docs/Aethelark_Roadmap.md). §1–§7 describe the UI shell (last updated 2026‑07‑23); §8 covers the mission loop, added 2026‑08‑13.*
 
 ---
 
@@ -18,6 +18,8 @@ Aethelark is a voice‑and‑vision desktop **operator**: a native local daemon 
 | **Classic app** | `python main.py` | Pure PyQt6 / QPainter (`ui.py`) | Kept as a lighter fallback |
 
 Both drive the **same backend** (`main.AethelarkLive`). The web app wraps it in a thin adapter (`WebShellUI`) so the backend is unchanged.
+
+**Why QWebEngine, not Electron or Tauri** — decided 2026‑07‑22, executed in Era 2 (see the roadmap). QPainter has a hard ceiling: it cannot reproduce `backdrop-filter: blur()`, CSS blend modes, or exact CSS the way a browser does, and pixel-exact parity with the approved web artifact needed a real browser engine. Electron was rejected outright — heaviest footprint and still leaves PyQt underneath for the OS-access layer, no upside. Tauri (Rust host + OS webview) was deferred, not rejected: the web UI and its message contract are portable, so the host is swappable later without repainting a pixel, only worth doing if the ~130MB Chromium footprint ever costs adoption. `QWebEngineView` embedded in the same PyQt process, bridged in-process via `QWebChannel`, was the option that kept one process, one language, and pixel-exact CSS all at once.
 
 ---
 
@@ -85,7 +87,7 @@ flowchart LR
 - **Daemon → UI (push):** `setState`, `setLog`, `setMemory`, `setMetrics`, `setMode`, `setSwarm(agents/mission/timeline)`.
 - **UI → Daemon (call):** `send_command`, `set_mode`, `interrupt`, `halt_swarm`, `toggle_mute`, `expand`, `collapse`, `begin_drag/drag_to`.
 
-Full schema in [`Aethelark_Specifications.md`](Aethelark_Specifications.md#message-contract) and [`Aethelark_Web_Pivot_Plan.md`](Aethelark_Web_Pivot_Plan.md).
+Full schema in [`Aethelark_Specifications.md`](Aethelark_Specifications.md#message-contract).
 
 ---
 
@@ -149,3 +151,82 @@ Agents run in **isolated git worktrees** (spatial partitioning); the **blackboar
 - **Remote:** `dashboard/server.py` (local HTTPS + SSE swarm telemetry; phone remote via QR).
 
 Full file map with responsibilities: [`Aethelark_Specifications.md`](Aethelark_Specifications.md).
+
+---
+
+## 8. The mission loop — perception and action on the web
+
+*Added 2026‑08‑13. This is the eagle's ability to take a goal in plain words and carry it out as a sequence of verified actions, unrelated to the UI shell above. A rendered, hand-diagrammed version of this section exists as a published reference artifact; the mermaid diagrams below are the git-tracked equivalent, kept in sync by hand.*
+
+### 8.1 One step's journey
+
+Every call to the `mission` tool is the same shape: load the mission, walk the CURRENT step through the ladder, and only advance the cursor once the world has been re-observed. Nothing is marked done because a call returned — only because it was checked.
+
+```mermaid
+flowchart TD
+  A["a goal, in words"] -->|"start(goal[, steps])"| B["MISSION TOOL — actions/mission.py<br/>start · next · status · abandon"]
+  B -->|"_load() → current step"| C["MISSION STATE — core/mission.py<br/>steps[] · cursor · facts{} · authorized"]
+  C <-->|"save()/load() every call"| S["mission_store.py — mission.json<br/>survives a reconnect"]
+  C -->|"current step"| D["LADDER — mission_ladder.py<br/>kind_of(step) picks the rungs"]
+  D -->|"a rung never tried before"| E["RUNNERS — mission_runners.py<br/>web_click · web_download · file_read · web_upload …"]
+  E -->|"acts on"| W["THE WORLD — two browsers, the disk (§8.2)"]
+  E --> F{"ok? did the world move?"}
+  F -->|"yes"| G["advance()"]
+  F -->|"no"| H["block()"]
+  G -.->|"model calls next() again"| B
+```
+
+A rung that already failed on the current step is never offered again — not retried on the next call, not retried after a reconnect. A blocked mission stays blocked; every rung already failed once.
+
+### 8.2 Two browsers, two jobs
+
+There is no one eagle browser. The ladder reaches for a hidden one first, and only escalates to a visible one when the hidden one can't get through — a bot wall, a sign-in.
+
+| | `EagleBrowser` — `actions/grounding/web/browser.py` | `browser_control` — `actions/browser_control.py` |
+|---|---|---|
+| profile | `~/.local/share/aethelark/browser` | `~/.aethelark_profiles/chrome` |
+| visibility | headless requested → tries a private Xvfb display (`:77`) first, headed but on a screen nobody watches; no Xvfb → genuinely headless | deliberately **visible** — `--start-maximized`, CDP port 9222; this is where a sign-in happens |
+| reads via | `COLLECT_JS` — structural, never rendered to you | the same collector, on a real visible tab |
+| rungs served | `web_open · web_click · web_type · web_look · web_download · web_upload` | `user_open · user_click · user_type · user_look` |
+
+Escalates left → right only when the hidden browser can't reach the control. **Fixed 2026-08-13:** `browser_control` used to fetch/launch a real window before validating the requested action, so a bad action name opened a visible browser before being refused — the action is now checked first (`_INTERACTIVE_ACTIONS`, pinned by a regression test).
+
+### 8.3 The ladder never repeats a failure
+
+Ordering is accuracy, not preference — the DOM knows exactly where a control is; vision only guesses (measured live, ~650px off).
+
+| step kind | rungs, in order |
+|---|---|
+| open | `web_open → browser_open → user_open` |
+| click | `web_click → user_click → screen_click → vision_click` |
+| type | `web_type → user_type → screen_type → press_keys` |
+| read | `web_look → user_look → screen_look` |
+| download | `web_download` |
+| upload | `web_upload` |
+| file_read | `file_read` |
+| file_write | `file_fill → file_write` |
+
+### 8.4 One nod covers the whole mission
+
+A step that would commit something irreversible is refused by default. Instead of asking mid-mission — which breaks "no approval prompts between steps" and lands as a surprise after the model already said the mission was under way — the plan is scanned up front: one question, before anything runs, remembered for every step after it.
+
+```mermaid
+flowchart TD
+  A["start(goal, steps)"] --> B{"any CLICK step trips<br/>irreversible_reason()?"}
+  B -->|"no"| C["mission begins — nothing was asked"]
+  B -->|"yes"| D["refuse to start<br/>ok=False · needs_confirmation"]
+  D --> E["ask the human, once:<br/>'are you sure this is a safe site to do this on?'"]
+  E --> F{"human says?"}
+  F -->|"no"| G["nothing runs. done."]
+  F -->|"yes"| H["start(..., confirm=True)"]
+  H --> I["Mission.authorized = True<br/>saved in mission.json"]
+  I --> J["every attempt() copies it: step.authorized"]
+  J --> K["the runner adds confirmed=True to that one call"]
+  K --> L["gate skipped — this mission only<br/>_gate_click_for(confirmed)"]
+```
+
+`confirmed` is never in the model's own tool schema — only mission code, having already gotten the human's yes, can set it.
+
+### 8.5 Where it stands
+
+Proven on the owned test rig (`tools/mission_e2e.py` + `tools/testsite/`): download → read → fill → upload → submit, verified from the server's own record, clean across 4+ runs. Not yet proven on a genuinely unknown site — `tools/mission_smoke.py` (default goal: MakerWorld) plans live with the real model but has no independent check the way the owned rig does. That's the next test. Full detail and priority order: [`docs/Aethelark_Roadmap.md`](docs/Aethelark_Roadmap.md).

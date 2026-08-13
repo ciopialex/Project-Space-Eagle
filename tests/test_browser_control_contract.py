@@ -16,6 +16,7 @@ gap in a log, a task that cannot finish.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -55,6 +56,44 @@ def test_an_unknown_action_is_an_explicit_failure():
 def test_no_action_at_all_is_a_failure():
     r = BC.browser_control({})
     assert isinstance(r, ToolResult) and r.ok is False
+
+
+def test_an_unknown_action_never_opens_a_browser(monkeypatch):
+    """The actual bug, caught live: this test used to call the REAL,
+    unmocked `_registry`, which meant checking that a garbage action name
+    was rejected also popped open a real, visible Chrome window first — a
+    user watching their screen saw it flash open and close for no reason
+    they could connect to anything. `_registry.get()` is what launches a
+    browser; if the fix holds, a call that only ever raises must never be
+    reached for an action nothing recognises.
+    """
+    class _RegistryThatMustNotBeTouched:
+        def get(self, *a, **k):
+            raise AssertionError(
+                "an unknown action reached _registry.get() — this is what "
+                "pops a real browser window open before discovering the "
+                "action was never valid")
+    monkeypatch.setattr(BC, "_registry", _RegistryThatMustNotBeTouched())
+
+    r = BC.browser_control({"action": "teleport"})
+    assert r.ok is False
+
+
+def test_every_dispatched_interactive_action_is_in_the_allowlist():
+    """`_INTERACTIVE_ACTIONS` is checked BEFORE the browser opens; the elif
+    chain after it is checked once the browser is already running. If a new
+    action is added to one and not the other, either it is refused before
+    it can ever run (added to the elif chain but not the allowlist) or it
+    reaches a live browser without having been vetted (added to the elif
+    chain but the allowlist forgot it) — this pins the two together."""
+    import inspect
+    src = inspect.getsource(BC.browser_control)
+    dispatched = set(re.findall(r'action == "(\w+)"', src)) - {
+        "switch", "set_default", "set_default_browser", "list_browsers",
+        "close_all", "close", "go_to", "search", "new_tab"}
+    assert dispatched == set(BC._INTERACTIVE_ACTIONS), (
+        f"the elif chain and the allowlist disagree: "
+        f"{dispatched ^ set(BC._INTERACTIVE_ACTIONS)}")
 
 
 def test_a_successful_open_says_ok_on_the_wire(monkeypatch):

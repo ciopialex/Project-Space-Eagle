@@ -12,6 +12,9 @@ and a mission is exactly the place where that matters most.
 """
 from __future__ import annotations
 
+import re
+
+from pathlib import Path
 from typing import Callable
 
 from core.mission import Step
@@ -33,6 +36,18 @@ def _verdict(raw) -> tuple[bool, str]:
     return bool(resp["ok"]), tr.message[:200]
 
 
+def _verdict_data(raw) -> tuple[bool, str, dict]:
+    """Same as `_verdict`, plus the tool's `.data` — where a download's saved
+    path and an upload's confirmation live. `to_response()` never surfaces
+    `.data` to the model (see `web_agency`'s module docstring); it is only for
+    this codebase's own callers, which a mission runner is."""
+    tr: ToolResult = normalize(raw)
+    resp = tr.to_response()
+    if "ok" not in resp:
+        return False, f"tool gave no verdict: {tr.message[:120]}", {}
+    return bool(resp["ok"]), tr.message[:200], tr.data
+
+
 def _web(action: str, **extra) -> Callable[[Step], tuple[bool, str]]:
     def run(step: Step) -> tuple[bool, str]:
         from actions.web_agency import web_agency
@@ -47,6 +62,15 @@ def _web(action: str, **extra) -> Callable[[Step], tuple[bool, str]]:
             params["url"] = step.url
         if step.text:
             params["text"] = step.text
+        if step.authorized:
+            # NOT a param the model's own tool declaration advertises — see
+            # `main.py`'s web_agency entry. If it were, the model could pass
+            # `confirmed=True` on any ordinary click and the whole consent
+            # guard would be theatre. This path only exists because a HUMAN
+            # already said yes to this exact mission, once, up front — see
+            # `Mission.authorized` — and reaches web_agency only through
+            # this runner, never through anything the model writes itself.
+            params["confirmed"] = True
         params.update(extra)
         return _verdict(web_agency(parameters=params))
     return run
@@ -378,6 +402,194 @@ def _user_look(step: Step) -> tuple[bool, str]:
     return bool(nodes), f"{len(nodes)} controls in the user's window"
 
 
+# ── the disk: getting a file, reading it, filling one, sending it back ──────
+#
+# These four runners are what makes "download a form, fill it in with details
+# from a file on my Desktop, upload and submit it" a workflow the eagle can
+# actually run rather than four steps that each report success while doing
+# nothing. `step.data` — the SAME dict as `Mission.facts`, wired in by
+# `mission_ladder.attempt` right before any rung runs — is how a later runner
+# finds what an earlier one produced: the downloaded file's path, the values
+# read off the disk, the filled copy's path. None of it is re-derived by
+# guessing at filenames from the step's own wording where a fact already
+# answers the question.
+
+
+def _web_download(step: Step) -> tuple[bool, str]:
+    """Click a download control and keep the path it produced.
+
+    Distinct from `web_click` for the reason `web_agency._download` documents:
+    a click succeeds when the page reacts, a download succeeds only when a
+    file is on disk. The path goes onto the blackboard as `downloaded_file` —
+    the only way "fill the downloaded form" can find it without guessing.
+    """
+    from actions.web_agency import web_agency
+    ok, detail, data = _verdict_data(web_agency(parameters={
+        "action": "download", "description": step.target or step.intent}))
+    if ok and data.get("path"):
+        step.data["downloaded_file"] = data["path"]
+        step.data["downloaded_name"] = data.get("name", "")
+    return ok, detail
+
+
+#: A location word in the step's own phrasing, and the folder it means.
+#: Checked in this order so the first one named wins rather than the last.
+_FOLDER_WORDS = (("desktop", "Desktop"), ("downloads", "Downloads"),
+                 ("download", "Downloads"), ("documents", "Documents"))
+
+#: A bare filename with a document-shaped extension, as a person would type
+#: it in a sentence — never a full path, which nobody speaks aloud. `\S+`
+#: rather than a wider class: an earlier version allowed spaces inside the
+#: match, so it greedily swallowed "read the file my-details.txt" as ONE
+#: filename (there is only one '.txt' in the sentence, and every character
+#: before it — including "read the file " — is a legal char in that class).
+#: A filename has no un-escaped spaces, so stopping at whitespace is correct,
+#: not merely convenient.
+_FILENAME = re.compile(
+    r"\S+\.(?:txt|pdf|csv|json|md|docx?|rtf)\b", re.I)
+
+
+def _named_file(intent: str) -> Path | None:
+    """A file the step's OWN wording points to, in whichever folder it names.
+
+    None when the step names no filename at all — the honest answer for
+    something like "fill it in", which means whatever was already found, not
+    a fresh guess.
+    """
+    m = _FILENAME.search(intent)
+    if not m:
+        return None
+    folder = Path.home()
+    for word, sub in _FOLDER_WORDS:
+        if word in intent:
+            folder = Path.home() / sub
+            break
+    return folder / m.group(0)
+
+
+#: "Label: value" — the shape both a person's own notes and a form template
+#: use. Loose on the label on purpose: the vocabulary belongs to whatever file
+#: or site produced it, never predicted in advance.
+_FIELD_LINE = re.compile(r"^[ \t]*([A-Za-z][A-Za-z /]{0,40}?):[ \t]*(.*)$")
+
+
+def _parse_fields(text: str) -> dict[str, str]:
+    """Every "Label: value" line in `text`, keyed by the label lowercased.
+
+    A blank value is skipped — that is the TEMPLATE's own empty line
+    ("FULL NAME:"), not data, and letting it in would erase a real value
+    read earlier with nothing.
+    """
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        m = _FIELD_LINE.match(line)
+        if not m:
+            continue
+        value = m.group(2).strip()
+        if value:
+            out[m.group(1).strip().lower()] = value
+    return out
+
+
+def _file_read(step: Step) -> tuple[bool, str]:
+    """Read a file off the disk and harvest any "Label: value" lines from it.
+
+    Never touches the browser. Before this ladder existed, "Read the file on
+    my Desktop" fell to `web_look`, which read the current PAGE instead and
+    reported success having never touched the disk — see this module's and
+    `mission_ladder`'s docstrings for the failure this replaces.
+    """
+    path = _named_file(step.intent.lower()) if step.intent else None
+    if path is None:
+        # No filename in this step's own words — "read it" after a download
+        # means THAT file, not a fresh guess.
+        prior = step.data.get("downloaded_file")
+        path = Path(prior) if prior else None
+    if path is None:
+        return False, "could not tell which file to read — no filename in the step"
+    if not path.is_file():
+        return False, f"no file at {path}"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return False, f"could not read {path}: {e}"
+    fields = _parse_fields(text)
+    step.data.setdefault("fields", {}).update(fields)
+    step.data["last_read_path"] = str(path)
+    return True, (f"read {len(text)} characters from {path}"
+                  + (f", {len(fields)} labelled values" if fields else ""))
+
+
+def _fill_template(text: str, fields: dict[str, str]) -> tuple[str, list[str]]:
+    """Every blank "LABEL:" line in `text`, filled from `fields`.
+
+    Returns the filled text and any labels with no matching value — a mission
+    must report a gap, never submit a form with one silently left blank.
+    """
+    out, missing = [], []
+    for line in text.splitlines():
+        m = _FIELD_LINE.match(line)
+        if m and not m.group(2).strip():
+            label = m.group(1).strip()
+            value = fields.get(label.lower())
+            if value:
+                out.append(f"{label}: {value}")
+                continue
+            missing.append(label)
+        out.append(line)
+    return "\n".join(out) + "\n", missing
+
+
+def _file_write(step: Step) -> tuple[bool, str]:
+    """Fill the downloaded template with details read earlier, and save it.
+
+    The template is whichever file a prior `download` step produced —
+    `downloaded_file` on the blackboard — never re-guessed from THIS step's
+    wording, because "fill the downloaded form" names no filename of its own.
+    The values are whatever `file_read` harvested; without any, there is
+    nothing to fill with, and that is reported rather than writing an empty
+    copy that would later fail the upload silently.
+    """
+    fields = step.data.get("fields") or {}
+    if not fields:
+        return False, ("no details have been read yet — read the source file "
+                       "before filling the form")
+    prior = step.data.get("downloaded_file")
+    template = Path(prior) if prior else _named_file((step.intent or "").lower())
+    if template is None or not template.is_file():
+        return False, "could not find the downloaded form to fill in"
+    try:
+        text = template.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        return False, f"could not read {template}: {e}"
+    filled, missing = _fill_template(text, fields)
+    if missing:
+        return False, f"no value found for: {', '.join(missing)}"
+    dest = template.with_name(f"{template.stem}-filled{template.suffix}")
+    try:
+        dest.write_text(filled, encoding="utf-8")
+    except Exception as e:
+        return False, f"could not save the filled form: {e}"
+    step.data["filled_file"] = str(dest)
+    return True, f"filled {len(fields)} values and saved {dest}"
+
+
+def _web_upload(step: Step) -> tuple[bool, str]:
+    """Hand whatever file this mission produced to an upload control.
+
+    Prefers the FILLED file over the raw download: uploading the blank
+    template would pass a form with nothing in it, and this runner has no way
+    to catch that once the upload itself succeeds.
+    """
+    path = step.data.get("filled_file") or step.data.get("downloaded_file")
+    if not path:
+        return False, "no file to upload — nothing downloaded or filled yet"
+    from actions.web_agency import web_agency
+    return _verdict(web_agency(parameters={
+        "action": "upload", "description": step.target or step.intent,
+        "path": path}))
+
+
 def build_runners() -> dict[str, Callable[[Step], tuple[bool, str]]]:
     return {
         "web_open":     _web("open"),
@@ -394,4 +606,8 @@ def build_runners() -> dict[str, Callable[[Step], tuple[bool, str]]]:
         "web_type":     _web_type,
         "screen_type":  _runners_screen_type,
         "press_keys":   _press_keys,
+        "web_download": _web_download,
+        "file_read":    _file_read,
+        "file_write":   _file_write,
+        "web_upload":   _web_upload,
     }

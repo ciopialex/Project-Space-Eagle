@@ -74,6 +74,15 @@ def main() -> int:
     print(f"  goal      {GOAL}\n" + "=" * 74)
 
     started = mission({"action": "start", "goal": GOAL, "steps": STEPS})
+    if not started.ok and started.data.get("needs_confirmation"):
+        # The mission includes a real commit ("Click the Submit form
+        # button"), so it asked before running a single step — this rig
+        # plays the human's "yes, go ahead" that a live session would relay,
+        # since it is testing the eagle's OWN rig, submitting to a server it
+        # owns. A real caller only sends confirm=True after actually asking.
+        print(f"  confirm   {started.message}")
+        started = mission({"action": "start", "goal": GOAL, "steps": STEPS,
+                           "confirm": True})
     if not started.ok:
         print("  could not start:", started.message)
         return 1

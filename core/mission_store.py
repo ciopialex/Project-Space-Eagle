@@ -70,6 +70,15 @@ def load(path: Path | None = None) -> Mission | None:
         # Without this a reconnect wipes the loop memory and the loop simply
         # resumes — and GoAway happens mid-mission routinely.
         m.places = list(raw.get("places", []) or [])
+        # The blackboard survives a reconnect too. Losing it mid-mission would
+        # strand every step that depends on an earlier one's output.
+        m.facts = dict(raw.get("facts", {}) or {})
+        # The human's one up-front yes must survive a reconnect exactly like
+        # everything else here — losing it mid-mission would silently turn
+        # an authorized mission back into an unauthorized one, and the very
+        # next commit-shaped step would refuse a click the human already
+        # approved.
+        m.authorized = bool(raw.get("authorized", False))
         return m
     except Exception:
         return None

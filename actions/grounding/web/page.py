@@ -83,6 +83,7 @@ _ACCESSIBLE_NAME_JS = r"""
       if (t === 'range') return 'slider';
       if (t === 'number') return 'spinbutton';
       if (t === 'search') return 'searchbox';
+      if (t === 'file') return 'file';
       if (t === 'submit' || t === 'button' || t === 'reset') return 'button';
       return 'textbox';
     }
@@ -250,10 +251,14 @@ COLLECT_JS = r"""
         //
         // Scoped to typable roles on purpose. Keeping every unnamed element
         // would flood the model's line budget with things it cannot act on,
-        // which is a different way of being blind.
-        const TYPABLE_ROLES = ['textbox', 'searchbox', 'password', 'spinbutton'];
+        // which is a different way of being blind. 'file' rides along for
+        // the same reason: a file input styled invisible with no label is
+        // exactly as common as an unlabeled search box, and a mission that
+        // cannot even SEE it can never upload anything.
+        const TYPABLE_ROLES = ['textbox', 'searchbox', 'password', 'spinbutton', 'file'];
         if (TYPABLE_ROLES.indexOf(role) === -1) continue;
-        name = role === 'searchbox' ? 'search field' : 'text field';
+        name = role === 'searchbox' ? 'search field'
+             : role === 'file' ? 'file chooser' : 'text field';
       }
 
       const rect = el.getBoundingClientRect();

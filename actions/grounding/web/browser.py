@@ -426,6 +426,38 @@ class PagePort:
 
         return self._call(_do)
 
+    def upload(self, ref: str, path: str, timeout_ms: int = 60_000) -> bool:
+        """Hand `path` to `ref`. True if the control accepted it.
+
+        Two shapes cover real forms. Most, including this codebase's own test
+        rig, are a plain `<input type=file>` — `set_input_files` writes to it
+        directly, hidden or not. Some sites style that input away and open it
+        from a button instead; clicking that button spawns a NATIVE OS file
+        dialog, which `expect_file_chooser` intercepts before it ever opens —
+        the chooser resolves as a Playwright object we can hand the path to
+        directly, so this never touches the desktop or `computer_control`.
+        """
+        from pathlib import Path as _Path
+        if not _Path(path).is_file():
+            return False
+        selector = f'[data-ae-ref="{ref}"]'
+
+        def _do():
+            try:
+                self._page.set_input_files(selector, path, timeout=_REF_TIMEOUT_MS)
+                return True
+            except Exception:
+                pass
+            try:
+                with self._page.expect_file_chooser(timeout=timeout_ms) as info:
+                    self._page.click(selector, timeout=_REF_TIMEOUT_MS)
+                info.value.set_files(path)
+                return True
+            except Exception:
+                return False
+
+        return bool(self._call(_do))
+
     def type_into_focused(self, text: str) -> str:
         """Type into whatever the PAGE has focused. "" if nothing editable is.
 

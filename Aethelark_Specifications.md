@@ -1,6 +1,6 @@
 # Aethelark — Specifications
 
-*Canonical component specs, file map, message contract, config, and dependencies. Companion to [`Aethelark_Architecture.md`](Aethelark_Architecture.md). Last updated 2026‑07‑23.*
+*Canonical component specs, file map, message contract, config, and dependencies. Companion to [`Aethelark_Architecture.md`](Aethelark_Architecture.md). §1–§6 last updated 2026‑07‑23; the mission-loop file map in §2 added 2026‑08‑13.*
 
 ---
 
@@ -40,6 +40,23 @@ previous generation and were removed once the Gemini Live session took over
 both directions; `core/installer.py` went with them, superseded by
 `requirements.txt` driven from `install.sh` and `setup.py`. Nothing imported
 any of the three.
+
+### Mission loop (`core/*`, `actions/mission.py`, `actions/web_agency.py`) — added 2026‑08‑13
+| File | Responsibility |
+|---|---|
+| `actions/mission.py` | The `mission` tool: `start` / `next` / `status` / `abandon`. Loads/saves via `mission_store`, walks one step per `next` through `mission_ladder.attempt()`, never marks a step done until the world is re-observed. |
+| `core/mission.py` | `Mission`/`Step` dataclasses — goal, steps[], cursor, status, `facts{}` (the blackboard), `authorized` (one-time consent, §8.4 of the architecture doc). Deliberately pure state, no I/O. |
+| `core/mission_ladder.py` | `kind_of(step)` routes a step to its ladder (open/click/type/read/download/upload/file_read/file_write); `attempt()` walks the rungs, never retries one that already failed; `is_compound()` refuses a step that is really several. |
+| `core/mission_runners.py` | The rungs, bound to real tools — `web_click`, `web_download`, `file_read`, `file_write`, `web_upload`, and their `user_*`/`screen_*` escalations. |
+| `core/mission_store.py` | Persists a `Mission` to `mission.json` (survives a reconnect); writes a stuck-report on abandon. |
+| `core/mission_planner.py` | Turns a bare goal into steps via the model, when the caller doesn't supply its own. |
+| `core/mission_handoff.py` | `context_pack()` — packages a blocked mission (goal, progress, everything already ruled out) for an outside agent to replan; also parses a supplied step list. |
+| `actions/web_agency.py` | The eagle's own browser perception/action: `open · look · click · download · upload · type · sign_in · close`, plus the irreversible-action consent gate (`actions/grounding/web/consent.py`). |
+| `actions/browser_control.py` | The user-facing, visible browser (CDP, sign-ins) — a separate subsystem from `web_agency`; see architecture §8.2. |
+| `core/virtual_display.py` | The private Xvfb display that lets the eagle's own browser run headed-but-unseen. |
+| `core/session_port.py` | Bridges `mission_runners`'s `user_*` rungs to whatever window `browser_control` has open for the user. |
+
+Test rigs: `tools/mission_e2e.py` + `tools/testsite/` (owned, server-verified); `tools/mission_smoke.py` (a real, external site — currently MakerWorld — self-reported only, no independent check yet).
 
 ### Tools (`actions/*`) — the operator's hands
 `browser_control` (multi‑browser + automation), `file_controller`, `file_processor`, `open_app`, `computer_control`, `computer_settings`, `desktop`, `screen_processor` (webcam/screen capture), `web_search`, `send_message` (email/IG/Twitter), `youtube_video`, `weather_report`, `flight_finder`, `game_updater`, `reminder`, `proactive`, `code_helper`, `dev_agent`, `developer_mode`, `system_monitor`.

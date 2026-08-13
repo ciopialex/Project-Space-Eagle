@@ -1,6 +1,6 @@
 # Aethelark — state of play and what's next
 
-Written 2026-08-07; §1 and §2 updated 2026-08-10. Everything here is either
+Written 2026-08-07; §1 and §2 updated 2026-08-10 and 2026-08-13. Everything here is either
 measured or verified live; where something is unproven it says so. The point
 of this document is that the next session should not have to rediscover any
 of it.
@@ -31,9 +31,11 @@ built yet.
 | **Web action** (click, type, forms) | working | consent walls auto-declined, refuses irreversible clicks |
 | **Sign-in to any site** | working, unproven end-to-end | window opens, session sticks; never watched a human complete it |
 | **Voice** | working | −250ms/turn from the VAD window |
-| **Tests** | 1781 passing | from 622 two weeks ago |
+| **Tests** | 2082 passing | from 622 three weeks ago |
 | **Downloads** | working | allow-listed; refuses executables and double extensions |
 | **Generated desktop code** | contained | 8 escapes measured and closed; see `core/safe_exec.py` |
+| **Disk round-trip** (download → read local file → fill → upload → submit) | working, proven | server-side verified, owned rig, 4+ clean runs — `tools/mission_e2e.py` |
+| **Mission-level consent** | working | one nod before an irreversible step, never renegotiated per click |
 
 ### The one thing a user must do once
 Ask for something on a site → the eagle opens a window → they sign in →
@@ -43,6 +45,49 @@ two others were built and deleted (see §4).
 ---
 
 ## 2. Open work, in priority order
+
+### DONE 2026-08-13 (the mission loop learns the disk, and a real ghost-window bug)
+
+- **The mission loop could plan a disk round-trip and not run it.** Steps
+  like "download the form" and "read the file on my Desktop" existed in
+  `mission_ladder`'s routing but had no runner behind them — a download fell
+  to a plain DOM click (reported done, saved nothing), and a file read fell
+  to `web_look` (read the current PAGE, not the disk). Built for real:
+  `web_download` (routes through `web_agency`'s dedicated download action,
+  not click), `file_read`/`file_write` (parse "Label: value" lines off a
+  real file, fill a template from them), and `web_upload` (new —
+  `PagePort.upload()` plus a `web_agency` `upload` action; taught the page
+  collector to recognise `<input type=file>` as its own role so an
+  unlabeled one is still reachable). Proven end to end against the owned
+  rig: download → read → fill → navigate → upload → submit, verified from
+  the *server's* record, 4+ clean runs.
+- **One-time mission authorization**, replacing the alternative of asking
+  mid-mission (which breaks "no approval prompts between steps" and lands as
+  a surprise after the model already said the mission was under way). `start`
+  scans the plan for a click step that would trip the irreversible-action
+  guard; if one exists, it refuses to start and asks the human once
+  ("are you sure this is a safe site to do this on?"); `confirm=True`
+  authorizes that one mission, and `Mission.authorized` → `step.authorized`
+  → `confirmed=True` on the one call it applies to — a channel never
+  declared in the model's own tool schema, so the model cannot grant this to
+  itself.
+- **A real, live-reproduced bug in `browser_control`**: an unrecognised
+  action fetched/launched a real, visible Chrome window *before* checking
+  whether the action was valid at all — so calling it with a typo'd action
+  name opened a window, then refused. Not caught by reading the code twice;
+  caught by a window monitor watching the real X11 display while the full
+  test suite ran, correlating the exact timestamp a ghost window appeared
+  against which test was executing. Fixed by moving the action check before
+  `_registry.get()`; pinned with a regression test that fails loudly if an
+  unrecognised action ever reaches the registry again.
+- **A filename-extraction regression, caught in the same session it was
+  written**: the first version of the "which file does this step mean"
+  regex allowed spaces inside the match, so `[\w .\-]*` matched from "read"
+  all the way to the extension and swallowed the entire sentence as one
+  filename. Fixed to stop at whitespace, with a regression test pinning the
+  exact failure.
+
+**Tests 1781 → 2082.**
 
 ### DONE 2026-08-10 (third pass — an audit, then the logs)
 
@@ -90,7 +135,7 @@ those, not from the queue.
 
 **Tests 1652 → 1781.**
 
-### P0 — The mission loop  *(built 2026-08-11, live-verified, not yet driven by voice)*
+### P0 — The mission loop  *(built 2026-08-11, extended 2026-08-13, not yet driven by voice)*
 
 The coordination layer. Every part already worked and the whole did not,
 because nothing held the goal. `core/mission.py` + `mission_ladder` +
@@ -98,6 +143,9 @@ because nothing held the goal. `core/mission.py` + `mission_ladder` +
 reachable as the `mission` tool.
 
 Verified live: three steps against real Wikipedia, unattended, 2.8s total.
+Extended and proven 2026-08-13 on a full disk round-trip — see the entry
+below. Full mechanism, both browsers, the ladder, and the consent gate are
+diagrammed in `Aethelark_Architecture.md` §8.
 
 **Not yet done, in order:**
 1. **Drive it by voice.** Say "go to makerworld and download a laptop stand".

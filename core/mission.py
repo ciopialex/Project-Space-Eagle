@@ -53,6 +53,19 @@ class Step:
     url: str = ""         # where to go, if anything
     done: bool = False
     attempts: list[Attempt] = field(default_factory=list)
+    #: The mission's blackboard, handed in by the mission layer right before a
+    #: rung runs. It is the SAME dict object as `Mission.facts`, so a runner
+    #: that writes into it has told every later step. This is how "read the
+    #: file on my Desktop" reaches "fill the form with those details" — without
+    #: it, step 4 has no way to see what step 3 found, and the workflow the
+    #: user asked for cannot be expressed at all.
+    data: dict = field(default_factory=dict)
+    #: Mirrors `Mission.authorized`, copied in by the same hand-in as `data`.
+    #: A runner only ever sees a `Step`, never the `Mission` itself, and this
+    #: is what lets `web_click`/`web_type` tell `web_agency` the human already
+    #: said yes to this mission's irreversible step — without a runner
+    #: needing to know what a `Mission` is.
+    authorized: bool = False
 
 
 @dataclass
@@ -62,10 +75,24 @@ class Mission:
     cursor: int = 0
     status: str = RUNNING
     blocked_reason: str = ""
+    #: What this mission has LEARNED — file paths it produced, contents it
+    #: read. Plain strings so the store round-trips it.
+    facts: dict = field(default_factory=dict)
     #: Where this mission has been, most recent last. Plain strings so the
     #: store can round-trip it — a reconnect that wiped this would let the
     #: loop resume exactly where it left off.
     places: list[str] = field(default_factory=list)
+    #: The human said, ONCE, before this mission ran a single step, that it
+    #: may carry out whatever it takes to reach the goal — including a
+    #: control that would otherwise be refused as irreversible (a real
+    #: "Submit", "Buy", "Pay"). Set only by `_start` reading an explicit
+    #: `confirm=True` back from the human it asked; never inferred from a
+    #: step succeeding, a domain, or anything else. This is the "no mid-
+    #: mission approval prompts" design taken to its actual conclusion: the
+    #: one nod happens up front, not renegotiated at every commit-shaped
+    #: click — asking a second time is not more careful, it is a leader who
+    #: does not trust the yes they were already given.
+    authorized: bool = False
 
     def __post_init__(self) -> None:
         if not self.steps:

@@ -579,10 +579,11 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "open | look | click | download | type | sign_in | close. Use download (not click) for anything that produces a FILE - it only reports success when a file is actually on disk."},
+                "action":      {"type": "STRING", "description": "open | look | click | download | upload | type | sign_in | close. Use download (not click) for anything that produces a FILE - it only reports success when a file is actually on disk. Use upload (not click) to hand a local file to a file input - it only reports success when the control actually holds the file."},
                 "url":         {"type": "STRING", "description": "URL for the open action"},
                 "description": {"type": "STRING", "description": "Which control, in plain words: 'the Sign in button', 'the Email field'. Use a name from the last look."},
                 "text":        {"type": "STRING", "description": "Text to type, for the type action"},
+                "path":        {"type": "STRING", "description": "Absolute path of the local file to hand over, for the upload action"},
                 "want_pixels": {"type": "BOOLEAN", "description": "Force a screenshot on look, when the structural read is not enough"},
                 "timeout":     {"type": "NUMBER", "description": "Seconds to wait for the user during sign_in (default 300)"},
             },

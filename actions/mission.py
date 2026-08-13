@@ -228,7 +228,42 @@ def _start(params: dict) -> ToolResult:
                      "detail about what they want, or do it with a single "
                      "tool if it really is one action.")
 
-    m = Mission(goal=goal, steps=steps)
+    # One nod, up front, for the whole mission — never renegotiated per click.
+    # A step that would otherwise refuse as irreversible ("Submit", "Buy",
+    # "Pay") is checked here, on the PLAN, before a single step has run.
+    # Asking mid-mission was the alternative and it is worse twice over: it
+    # breaks the "no approval prompts between steps" design this tool is
+    # built on, and by the time a commit-shaped step is REACHED the model has
+    # usually already told the user it is under way — so the question lands
+    # as a surprise instead of an informed choice made before anything
+    # started.
+    confirmed = bool(params.get("confirm"))
+    if not confirmed:
+        risky = _first_irreversible_step(steps)
+        if risky is not None:
+            from actions.grounding.web.consent import irreversible_reason
+            why = irreversible_reason(risky.intent) or "it commits something"
+            # `ok=False`, deliberately, even though nothing is actually wrong:
+            # the mission did not start, and `ok` is the field this whole
+            # codebase's model reads instead of the prose — an `ok=True` here
+            # would be read as "under way, call next", which is exactly the
+            # "tool reported success it never had" bug class `ToolResult`
+            # exists to make impossible.
+            return ToolResult.failure(
+                f"“{goal}” includes a step that cannot be undone once it "
+                f"runs: “{risky.intent}” — {why}. Nothing has started.",
+                guidance=(
+                    "Ask the user, in these words or close to them: "
+                    "\"Are you sure this is a safe site to do this on?\" "
+                    "Do NOT start the mission until they answer. If they say "
+                    "yes, call start again with the SAME goal and steps and "
+                    "confirm=true — every step in THIS mission will then run "
+                    "without asking again, including the one named above. If "
+                    "they say no, do not call start again; tell them the "
+                    "mission was not started."),
+                needs_confirmation=True, risky_step=risky.intent)
+
+    m = Mission(goal=goal, steps=steps, authorized=confirmed)
     store.save(m, _store_path())
     listed = "; ".join(s.intent for s in steps[:6])
     return ToolResult.success(
@@ -236,6 +271,32 @@ def _start(params: dict) -> ToolResult:
         + (" …" if len(steps) > 6 else "")
         + " Call next to begin.",
         steps=len(steps))
+
+
+def _first_irreversible_step(steps: list[Step]) -> Step | None:
+    """The first step that would refuse at the consent gate, or None.
+
+    Scans the step's own wording with the SAME function `web_agency`'s click
+    gate uses — not a second vocabulary that could drift from the real one.
+    A goal with no such step asks nothing: the one-nod design exists for
+    "Submit"/"Buy"/"Pay", not for browsing.
+
+    Only CLICK-kind steps are scanned — `irreversible_reason` only ever runs
+    at `_gate_click`, so a step of any other kind can never reach it at
+    runtime regardless of what this scan says. Skipping that filter is not
+    merely redundant, it is wrong: `_COMMITTING["file"]` means a web button
+    like "File a complaint", and scanning a `file_read` step's own English
+    description ("Read the file my-details.txt on the Desktop") against that
+    vocabulary flags the wrong step for the wrong reason — a disk read, named
+    as the thing needing the user's nod instead of the real commit later in
+    the same plan.
+    """
+    from actions.grounding.web.consent import irreversible_reason
+    from core.mission_ladder import kind_of
+    for s in steps:
+        if kind_of(s) == "click" and irreversible_reason(s.intent or s.target or ""):
+            return s
+    return None
 
 
 def _next(params: dict) -> ToolResult:
