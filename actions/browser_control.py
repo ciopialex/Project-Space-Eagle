@@ -1162,7 +1162,7 @@ def _verdict(result: str):
 _INTERACTIVE_ACTIONS = frozenset({
     "click", "type", "scroll", "fill_form", "smart_click", "smart_type",
     "get_text", "get_url", "press", "close_tab", "screenshot", "back",
-    "forward", "reload",
+    "forward", "reload", "look",
 })
 
 
@@ -1309,10 +1309,32 @@ def browser_control(
                 print(f"[Browser] Could not resume last page ({last}): {e}")
 
         if action == "click":
+            from actions.grounding.web.user_actions import user_click
+            r = user_click(params.get("description", ""))
+            if r.ok:
+                _log(player, r.message)
+                return r
+            # Fall back to the session's own low-level click only if the
+            # DOM lookup found no window at all (not if it found a window
+            # and just could not match the description — that is a real
+            # "no such control" the caller should hear about, not paper over).
+            if "no browser window is open" not in r.message:
+                _log(player, r.message)
+                return r
             result = sess.run(sess.click(params.get("selector"), params.get("text")))
         elif action == "type":
+            from actions.grounding.web.user_actions import user_type
+            r = user_type(params.get("description"), params.get("text", ""))
+            if r.ok or "no browser window is open" not in r.message:
+                _log(player, r.message)
+                return r
             result = sess.run(sess.type_text(
                 params.get("selector"), params.get("text", ""), params.get("clear_first", True)))
+        elif action == "look":
+            from actions.grounding.web.user_actions import user_look
+            r = user_look()
+            _log(player, r.message)
+            return r
         elif action == "scroll":
             result = sess.run(sess.scroll(params.get("direction", "down"), int(params.get("amount", 500))))
         elif action == "fill_form":

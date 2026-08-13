@@ -19,6 +19,11 @@ from typing import Callable
 
 from core.mission import Step
 from core.tool_result import ToolResult, normalize
+from actions.grounding.web.user_actions import (
+    _same_page, best_text_field, focus_and_type, user_click as _ua_click,
+    user_look as _ua_look, user_open as _ua_open, user_type as _ua_type,
+    what_is_here,
+)
 
 
 def _verdict(raw) -> tuple[bool, str]:
@@ -214,110 +219,9 @@ def _user_window(create: bool = False):
 
 
 
-def _what_is_here(port, limit: int = 12) -> str:
-    """The names actually on the page, for a step that could not find its own.
-
-    A dead end that only says "no control matches" makes the model guess
-    again. `web_agency` has always answered this way — "The page has: …; use
-    one of those names" — and the mission's own rungs did not, so a step like
-    "Click the first result" blocked with nothing to replan from.
-    """
-    try:
-        from actions.grounding.web.page import nodes_from_records
-        from actions.web_agency import _spread
-        names = []
-        # Spread across the page, not the first N. Taking the front returned
-        # "Home; All Models; Following; MakerLab" on a page of search results —
-        # the sidebar, in document order, which is exactly the positional bias
-        # that hides content from the model everywhere else.
-        for n in _spread(nodes_from_records(port.collect()), budget=60, run=6):
-            nm = str(getattr(n, "name", "") or "").strip()
-            if nm and nm not in names:
-                names.append(nm)
-            if len(names) >= limit:
-                break
-        return "; ".join(names)
-    except Exception:
-        return ""
-
-
 def _user_click(step: Step) -> tuple[bool, str]:
-    port, grounder = _user_window()
-    if port is None:
-        return False, "no browser window is open for the user"
-    what = step.target or step.intent
-    node = grounder.find_node(what)
-    if node is None:
-        here = _what_is_here(port)
-        return False, (f"no control matching {what!r}"
-                       + (f" — the page has: {here}" if here else ""))
-    from actions.grounding.web.page import ref_of
-    port.click(ref_of(node))
-    return True, f"clicked {node.name!r} in the user's window"
-
-
-
-#: Roles you can type into. `searchbox` first: typing a search query into a
-#: newsletter signup is the failure this ordering exists to avoid.
-_FIELD_ROLES = ("searchbox", "textbox")
-
-
-def best_text_field(nodes):
-    """The field a person would type in, or None.
-
-    "Search for X" is two actions wearing one step — focus a field, then type
-    — and a person does not need to be told which field. They look for the one
-    you can type in. This is that.
-
-    None is a real answer. Guessing at a control that is not editable is how
-    `Page.fill: Element is not ...` happened on makerworld, and how text ends
-    up somewhere nobody asked for.
-    """
-    best, best_rank = None, ()
-    for n in nodes or ():
-        role = str(getattr(n, "role", "") or "").lower()
-        states = getattr(n, "states", frozenset()) or frozenset()
-        if role not in _FIELD_ROLES:
-            continue
-        # Must be typable NOW. A disabled or off-screen field accepts nothing
-        # and would report success for text that went nowhere.
-        if "EDITABLE" not in states or "VISIBLE" not in states:
-            continue
-        name = str(getattr(n, "name", "") or "")
-        rank = (
-            _FIELD_ROLES.index(role) == 0,          # a searchbox wins
-            "search" in name.lower(),               # then one that says so
-            bool(name),                             # then a named one
-            int(getattr(n, "width", 0) or 0),       # then the widest
-        )
-        if best is None or rank > best_rank:
-            best, best_rank = n, rank
-    return best
-
-
-def _focus_and_type(port, grounder, text: str) -> tuple[bool, str]:
-    """Put the cursor in the page's text field, then type. Exact, not blind."""
-    try:
-        where = port.type_into_focused(text)
-        if where:
-            return True, f"typed into the focused field ({where})"
-    except Exception:
-        pass
-    try:
-        from actions.grounding.web.page import nodes_from_records, ref_of
-        field = best_text_field(nodes_from_records(port.collect()))
-        if field is None:
-            return False, ("no text field on this page to type into — the "
-                           "page may not have loaded, or the field may be "
-                           "behind a button that opens it")
-        port.click(ref_of(field))
-        typed = port.type_into_focused(text)
-        if typed:
-            return True, f"clicked {field.name or 'the search field'!r} and typed"
-        port.fill(ref_of(field), text)
-        return True, f"typed into {field.name or 'the search field'!r}"
-    except Exception as e:
-        return False, f"could not type into the page's text field: {e}"
+    r = _ua_click(step.target or step.intent)
+    return r.ok, r.message
 
 
 def _web_type(step: Step) -> tuple[bool, str]:
@@ -330,7 +234,7 @@ def _web_type(step: Step) -> tuple[bool, str]:
             from actions.grounding.web.browser import default_browser
             page = default_browser().page()
             if page is not None:
-                ok, detail = _focus_and_type(page, None, step.text)
+                ok, detail = focus_and_type(page, None, step.text)
                 if ok:
                     return ok, detail
         except Exception as e:
@@ -339,67 +243,21 @@ def _web_type(step: Step) -> tuple[bool, str]:
 
 
 def _user_type(step: Step) -> tuple[bool, str]:
-    port, grounder = _user_window()
-    if port is None:
-        return False, "no browser window is open for the user"
-    if not step.text:
-        return False, "nothing to type"
-
-    # "Type motherboard" names no control, because a person does not name one
-    # — they have just clicked the field. With no explicit target, type into
-    # whatever the PAGE reports as focused: exact, because the browser knows,
-    # and it is the field the previous step clicked. Without this the step
-    # fell through to the OS keyboard, which is how "motherboard" ended up in
-    # the user's terminal.
-    if not step.target:
-        ok, detail = _focus_and_type(port, grounder, step.text)
-        if ok:
-            return ok, detail
-
-    what = step.target or step.intent
-    node = grounder.find_node(what)
-    if node is None:
-        return False, f"no field matching {what!r} in the user's window"
-    from actions.grounding.web.page import ref_of
-    port.fill(ref_of(node), step.text)
-    return True, f"typed into {node.name!r} in the user's window"
-
-
-def _same_page(a: str, b: str) -> bool:
-    """Close enough that navigating again would only cost a reload."""
-    def norm(u):
-        u = (u or "").strip().lower().rstrip("/")
-        for pfx in ("https://", "http://", "www."):
-            if u.startswith(pfx):
-                u = u[len(pfx):]
-        return u
-    x, y = norm(a), norm(b)
-    return bool(x) and bool(y) and (x == y or x.startswith(y) or y.startswith(x))
+    r = _ua_type(step.target or None, step.text)
+    return r.ok, r.message
 
 
 def _user_open(step: Step) -> tuple[bool, str]:
-    port, _ = _user_window(create=True)   # the one rung that may open one
     why = _needs_url(step)
     if why:
         return False, why
-    if port is None:
-        return False, "no browser window is open for the user"
-    # Already there is DONE, not a reason to load it again. Re-navigating
-    # costs a page load, the scroll position, and anything already typed.
-    here = port.url()
-    if _same_page(here, step.url):
-        return True, f"already on {here}"
-    port.goto(step.url)
-    return True, f"navigated the user's window to {step.url}"
+    r = _ua_open(step.url)
+    return r.ok, r.message
 
 
 def _user_look(step: Step) -> tuple[bool, str]:
-    port, _ = _user_window()
-    if port is None:
-        return False, "no browser window is open for the user"
-    from actions.grounding.web.page import nodes_from_records
-    nodes = nodes_from_records(port.collect())
-    return bool(nodes), f"{len(nodes)} controls in the user's window"
+    r = _ua_look()
+    return r.ok, r.message
 
 
 # ── the disk: getting a file, reading it, filling one, sending it back ──────

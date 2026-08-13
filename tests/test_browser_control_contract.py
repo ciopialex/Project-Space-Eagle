@@ -126,6 +126,44 @@ def test_an_exception_is_a_failure(monkeypatch):
     assert r.ok is False and "chrome died" in r.message
 
 
+def test_click_action_uses_the_dom_grounder_when_a_window_is_open(monkeypatch):
+    from core.tool_result import ToolResult
+    called = {}
+    def fake_user_click(description):
+        called["description"] = description
+        return ToolResult.success(f"clicked {description!r} in the user's window")
+    import actions.grounding.web.user_actions as UA
+    monkeypatch.setattr(UA, "user_click", fake_user_click)
+    _fake_registry(monkeypatch)
+    r = BC.browser_control({"action": "click", "description": "Search"})
+    assert r.ok is True
+    assert called["description"] == "Search"
+
+
+def test_type_action_uses_the_dom_grounder_when_a_window_is_open(monkeypatch):
+    from core.tool_result import ToolResult
+    called = {}
+    def fake_user_type(description, text):
+        called["args"] = (description, text)
+        return ToolResult.success("typed into 'Search' in the user's window")
+    import actions.grounding.web.user_actions as UA
+    monkeypatch.setattr(UA, "user_type", fake_user_type)
+    _fake_registry(monkeypatch)
+    r = BC.browser_control({"action": "type", "description": "Search", "text": "watch stand"})
+    assert r.ok is True
+    assert called["args"] == ("Search", "watch stand")
+
+
+def test_look_action_reports_whats_on_the_page(monkeypatch):
+    from core.tool_result import ToolResult
+    import actions.grounding.web.user_actions as UA
+    monkeypatch.setattr(UA, "user_look", lambda: ToolResult.success("3 controls: Home; Search; Download"))
+    _fake_registry(monkeypatch)
+    r = BC.browser_control({"action": "look"})
+    assert r.ok is True
+    assert "Home" in r.message
+
+
 def test_the_mission_runner_now_accepts_a_successful_open(monkeypatch):
     """End to end on the thing that actually broke: the runner must read the
     verdict and pass the step."""

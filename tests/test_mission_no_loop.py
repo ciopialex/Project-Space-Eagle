@@ -93,13 +93,18 @@ def test_a_blocked_mission_restarts_rather_than_resuming_into_the_wall(monkeypat
 def test_opening_a_page_already_open_does_not_navigate_again(monkeypatch):
     from core.mission import Step
     import core.mission_runners as R
+    # R._user_open is now a thin adapter over user_actions.user_open, which
+    # resolves its own window — patch the module the lookup actually
+    # happens in, not the (still-present, but now unused by this path)
+    # wrapper on mission_runners.
+    import actions.grounding.web.user_actions as UA
 
     navigated = []
 
     class _Port:
         def url(self): return "https://makerworld.com/en"
         def goto(self, u): navigated.append(u)
-    monkeypatch.setattr(R, "_user_window",
+    monkeypatch.setattr(UA, "_user_window",
                         lambda create=False: (_Port(), None))
 
     ok, detail = R._user_open(Step(intent="Go to makerworld.com",
@@ -112,13 +117,14 @@ def test_opening_a_page_already_open_does_not_navigate_again(monkeypatch):
 def test_a_different_page_does_navigate(monkeypatch):
     from core.mission import Step
     import core.mission_runners as R
+    import actions.grounding.web.user_actions as UA
 
     navigated = []
 
     class _Port:
         def url(self): return "https://example.test"
         def goto(self, u): navigated.append(u)
-    monkeypatch.setattr(R, "_user_window",
+    monkeypatch.setattr(UA, "_user_window",
                         lambda create=False: (_Port(), None))
 
     ok, _ = R._user_open(Step(intent="go", url="https://makerworld.com"))
