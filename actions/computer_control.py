@@ -375,8 +375,22 @@ def _scroll(direction: str = "down", amount: int = 3) -> str:
     return f"Scrolled {direction} ×{amount}"
 
 
-def _move(x: int, y: int, duration: float = 0.3) -> str:
+_DIRECTIONS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
+
+
+def _move(x: int | None = None, y: int | None = None, direction: str | None = None,
+          amount: int = 100, duration: float = 0.3):
     _require_pyautogui()
+    if direction:
+        dx, dy = _DIRECTIONS.get(direction.lower(), (0, 0))
+        if dx == 0 and dy == 0:
+            return Failed(f"'{direction}' is not a direction.",
+                         guidance="Use one of: up, down, left, right.")
+        cx, cy = pyautogui.position()
+        x, y = cx + dx * amount, cy + dy * amount
+    elif x is None or y is None:
+        return Failed("move needs either 'direction' or both 'x' and 'y'.",
+                     guidance="e.g. direction='up', amount=100 — or x=700, y=200 for an absolute position.")
     pyautogui.moveTo(x, y, duration=duration)
     return f"Mouse → ({x}, {y})"
 
@@ -718,7 +732,12 @@ def _dispatch_action(action: str, params: dict, player=None):
             return _click(params.get("x"), params.get("y"), "right", 1)
 
         if action == "move":
-            return _move(int(params.get("x", 0)), int(params.get("y", 0)))
+            return _move(
+                x=int(params["x"]) if "x" in params else None,
+                y=int(params["y"]) if "y" in params else None,
+                direction=params.get("direction"),
+                amount=int(params.get("amount", 100)),
+            )
 
         if action == "drag":
             return _drag(
