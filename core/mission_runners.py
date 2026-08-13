@@ -243,13 +243,28 @@ def _web_type(step: Step) -> tuple[bool, str]:
 
 
 def _user_type(step: Step) -> tuple[bool, str]:
-    # step.target or step.intent: a step's target names the control ("the
-    # search box"); when it is empty, the intent ("type laptop stand") is
-    # the only description left to search the page for. Dropping this
-    # fallback (passing step.target or None) lost it entirely — user_type
-    # would search for "" instead of the intent whenever nothing was
-    # focused and target was blank.
-    r = _ua_type(step.target or step.intent or None, step.text)
+    # A step's target names the control ("the search box"). When target is
+    # present, search for it directly — no focus attempt, exactly like the
+    # pre-refactor `if not step.target:` gate below.
+    #
+    # When target is EMPTY, user_type(None, ...) is called first so its own
+    # `if not description:` gate fires and tries the focused-field fast path
+    # ("type laptop stand" names no control because a person just clicked
+    # the field — see actions/grounding/web/user_actions.py's module
+    # docstring for why that path exists at all). Collapsing target and
+    # intent into one description BEFORE calling user_type (as an earlier
+    # version of this fix did) made description truthy on nearly every step
+    # with a blank target, since step.intent is required and non-empty —
+    # which skipped that fast path almost always. Only if the focus attempt
+    # fails do we fall back to searching for the intent text, the same as
+    # the original's `what = step.target or step.intent`.
+    if step.target:
+        r = _ua_type(step.target, step.text)
+        return r.ok, r.message
+    r = _ua_type(None, step.text)
+    if r.ok:
+        return r.ok, r.message
+    r = _ua_type(step.intent or None, step.text)
     return r.ok, r.message
 
 

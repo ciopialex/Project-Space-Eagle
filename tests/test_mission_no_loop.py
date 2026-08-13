@@ -133,13 +133,14 @@ def test_a_different_page_does_navigate(monkeypatch):
 
 # ── the type step ───────────────────────────────────────────────────────────
 
-def test_user_type_falls_back_to_the_steps_intent_when_target_is_empty(monkeypatch):
-    """R._user_type's adapter must pass `step.target or step.intent` down to
-    user_actions.user_type, not `step.target or None` alone. A step planned
-    with no target ("type laptop stand" with target="") still carries the
-    description in its intent — dropping that fallback meant the grounder
-    was asked to find "" instead of the intent whenever nothing was focused
-    and target was blank."""
+def test_user_type_with_empty_target_tries_the_focused_field_first(monkeypatch):
+    """"Type laptop stand" names no control, because a person just clicked
+    the field — with target="", R._user_type must try the page's focused
+    field FIRST (the fast, exact path user_actions.py exists for), not go
+    straight to a DOM search for the intent text. A prior fix collapsed
+    `step.target or step.intent` into one description before ever calling
+    user_type, which made that description truthy on nearly every step and
+    skipped this fast path almost always."""
     from core.mission import Step
     import core.mission_runners as R
     import actions.grounding.web.user_actions as UA
@@ -153,12 +154,87 @@ def test_user_type_falls_back_to_the_steps_intent_when_target_is_empty(monkeypat
 
     class _Port:
         def type_into_focused(self, text):
-            return ""   # nothing focused — forces the fallback to find_node
+            return "the search box"   # focus succeeds
+
+    monkeypatch.setattr(UA, "_user_window",
+                        lambda create=False: (_Port(), _Grounder()))
+
+    ok, detail = R._user_type(
+        Step(intent="type laptop stand", text="laptop stand", target=""))
+
+    assert ok is True
+    assert "focused" in detail.lower()
+    assert asked == [], \
+        f"grounder was searched ({asked!r}) even though focus succeeded"
+
+
+def test_user_type_falls_back_to_the_steps_intent_when_focus_fails(monkeypatch):
+    """When target is empty AND nothing is focused, R._user_type must fall
+    back to searching the page for the step's intent — the only description
+    left. A step's target names the control ("the search box"); when it is
+    empty, the intent ("type laptop stand") is the only description left to
+    search the page for. Dropping this fallback (passing step.target or
+    None) lost it entirely — user_type would search for "" instead of the
+    intent whenever nothing was focused and target was blank."""
+    from core.mission import Step
+    import core.mission_runners as R
+    import actions.grounding.web.user_actions as UA
+
+    asked = []
+
+    class _Grounder:
+        def find_node(self, description):
+            asked.append(description)
+            return None
+
+    class _Port:
+        def type_into_focused(self, text):
+            return ""   # nothing focused
+
+        def collect(self):
+            return []   # page has no field either — focus attempt fails
 
     monkeypatch.setattr(UA, "_user_window",
                         lambda create=False: (_Port(), _Grounder()))
 
     R._user_type(Step(intent="type laptop stand", text="laptop stand", target=""))
 
-    assert asked == ["type laptop stand"], \
+    # user_type()'s own internal fallback (untouched, out of scope) also
+    # searches for "" once the focus attempt fails inside that first call —
+    # what matters here is that the ADAPTER's retry asks for the intent
+    # text specifically, not that "" never appears.
+    assert asked[-1] == "type laptop stand", \
         f"grounder was asked to find {asked!r}, not the step's intent"
+
+
+def test_user_type_with_a_target_searches_directly_without_a_focus_attempt(monkeypatch):
+    """When the step names a target ("the search box"), R._user_type must
+    search for it directly — matching the original `if not step.target:`
+    gate, which skipped the focus attempt entirely whenever a target was
+    given."""
+    from core.mission import Step
+    import core.mission_runners as R
+    import actions.grounding.web.user_actions as UA
+
+    asked = []
+    focus_attempted = []
+
+    class _Grounder:
+        def find_node(self, description):
+            asked.append(description)
+            return None
+
+    class _Port:
+        def type_into_focused(self, text):
+            focus_attempted.append(text)
+            return "should not be called"
+
+    monkeypatch.setattr(UA, "_user_window",
+                        lambda create=False: (_Port(), _Grounder()))
+
+    R._user_type(Step(intent="type laptop stand", text="laptop stand",
+                      target="the search box"))
+
+    assert asked == ["the search box"]
+    assert focus_attempted == [], \
+        "a focus attempt was made even though the step named a target"
