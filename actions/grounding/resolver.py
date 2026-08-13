@@ -108,10 +108,19 @@ _atspi_cache: bool | None = None
 
 def _atspi_probe() -> bool:
     """A cheap, real check — not a guess. Tries to enumerate the AT-SPI
-    accessible registry root; a broken bus raises or returns nothing."""
+    accessible registry root; a broken bus raises or returns nothing.
+
+    Uses the same `gi.repository.Atspi` binding as the rest of this
+    codebase (see `actions/grounding/atspi.py`), not the separate legacy
+    `pyatspi` package — that package isn't installed here and checking it
+    made this probe always fail closed, permanently disabling a working
+    AT-SPI tier instead of only skipping it when the bus is actually dead.
+    """
     try:
-        import pyatspi
-        return pyatspi.Registry.getDesktop(0).childCount >= 0
+        import gi
+        gi.require_version("Atspi", "2.0")
+        from gi.repository import Atspi
+        return Atspi.get_desktop(0).get_child_count() >= 0
     except Exception:
         return False
 
