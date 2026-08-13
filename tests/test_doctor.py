@@ -100,3 +100,34 @@ def test_it_actually_runs_and_checks_the_real_things():
 def test_no_check_raises():
     for c in run_checks():
         assert c.status in (OK, MISSING, UNKNOWN, MANUAL), (c.name, c.status)
+
+
+# ── the GNOME accessibility toggle is a layer above the binding ────────────
+
+def test_structural_grounding_also_checks_the_gnome_accessibility_toggle(monkeypatch):
+    """The existing check only verified the AT-SPI python binding imports —
+    that already passed on the machine where this was found, while every
+    screen_click still failed, because GNOME's own toolkit-accessibility
+    toggle (a layer up from the binding) was off. The bus and both its
+    daemons were running; nothing published to it."""
+    import core.doctor as D
+    monkeypatch.setattr(D, "_plat", lambda: "linux")
+    monkeypatch.setattr(
+        D.subprocess, "run",
+        lambda cmd, **kw: type("R", (), {"stdout": "false\n", "returncode": 0})())
+    c = D._structural_grounding()
+    assert c.status == D.MISSING
+    assert "toolkit-accessibility" in c.detail
+    assert c.fix == ("gsettings set org.gnome.desktop.interface "
+                     "toolkit-accessibility true")
+    assert c.auto is True
+
+
+def test_structural_grounding_passes_when_the_toggle_is_on(monkeypatch):
+    import core.doctor as D
+    monkeypatch.setattr(D, "_plat", lambda: "linux")
+    monkeypatch.setattr(
+        D.subprocess, "run",
+        lambda cmd, **kw: type("R", (), {"stdout": "true\n", "returncode": 0})())
+    c = D._structural_grounding()
+    assert c.status == D.OK

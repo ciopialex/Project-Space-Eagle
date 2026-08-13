@@ -72,12 +72,33 @@ def _structural_grounding() -> Check:
             import gi
             gi.require_version("Atspi", "2.0")
             from gi.repository import Atspi  # noqa: F401
-            return Check("structural grounding (AT-SPI)", OK)
         except Exception as e:
             return Check(
                 "structural grounding (AT-SPI)", MISSING, str(e)[:70],
                 fix="sudo apt install python3-gi gir1.2-atspi-2.0 "
                     "&& sudo systemctl --user restart at-spi-dbus-bus")
+        # The binding importing is necessary but not sufficient. GNOME's own
+        # toggle gates whether ANY app publishes to the bus at all — found
+        # live: the bus and both its daemons were running, this import
+        # succeeded, and every screen_click still failed, because only this
+        # one setting was off.
+        try:
+            out = subprocess.run(
+                ["gsettings", "get", "org.gnome.desktop.interface",
+                 "toolkit-accessibility"],
+                capture_output=True, text=True, timeout=3)
+            if out.stdout.strip() != "true":
+                return Check(
+                    "structural grounding (AT-SPI)", MISSING,
+                    "toolkit-accessibility is off — the bus runs but "
+                    "nothing publishes to it",
+                    fix="gsettings set org.gnome.desktop.interface "
+                        "toolkit-accessibility true", auto=True)
+        except Exception:
+            pass   # not a GNOME desktop (no gsettings) — the import already
+                   # proved the binding works; do not fail a check this
+                   # function cannot honestly evaluate here
+        return Check("structural grounding (AT-SPI)", OK)
     if plat == "windows":
         try:
             import comtypes  # noqa: F401

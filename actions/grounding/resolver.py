@@ -103,6 +103,59 @@ def structural_grounder(platform: str | None = None):
         return None
 
 
+_atspi_cache: bool | None = None
+
+
+def _atspi_probe() -> bool:
+    """A cheap, real check — not a guess. Tries to enumerate the AT-SPI
+    accessible registry root; a broken bus raises or returns nothing."""
+    try:
+        import pyatspi
+        return pyatspi.Registry.getDesktop(0).childCount >= 0
+    except Exception:
+        return False
+
+
+def atspi_available() -> bool:
+    """Whether the AT-SPI tier can answer at all, checked once per process.
+
+    Before this existed, every screen_click call spent its full 5s timeout
+    (up to 85 internal polling attempts) against a bus that was never going
+    to answer, every single time, in a session where it failed 4/4 calls.
+    """
+    global _atspi_cache
+    if _atspi_cache is None:
+        _atspi_cache = _atspi_probe()
+    return _atspi_cache
+
+
+class _GatedAtspiTier:
+    """Wraps the real AT-SPI grounder so `default_resolver()` skips it fast
+    when the bus can't answer, instead of paying for a live walk to find
+    that out.
+
+    Deliberately does NOT touch `GroundingResolver.find()`'s generic tier
+    loop or `structural_grounder()`'s factory — both are exercised directly,
+    with injected walkers, by unit tests that have nothing to do with
+    whether the *real* live AT-SPI bus on *this* machine can answer, and
+    gating those by name/class would make the probe (a live-environment
+    fact) leak into tests that inject their own fake bus on purpose. Only
+    the production singleton built by `default_resolver()` needs the fast
+    skip, so only that wiring is gated.
+    """
+
+    def __init__(self, grounder) -> None:
+        self._grounder = grounder
+        self.name = grounder.name
+        self.cost = getattr(grounder, "cost", "fast")
+
+    def available(self) -> bool:
+        return atspi_available() and self._grounder.available()
+
+    def find(self, description: str):
+        return self._grounder.find(description)
+
+
 def platform_hit_test(platform: str | None = None):
     """The hit-test function for this OS, or None.
 
@@ -134,6 +187,13 @@ def default_resolver() -> GroundingResolver:
         grounders = []
         structural = structural_grounder()
         if structural is not None:
+            # AT-SPI specifically can go dead while still importing cleanly
+            # (GNOME's own toolkit-accessibility toggle, found live) and its
+            # availability check is a real bus walk, not a cheap call — so
+            # wrap only that tier with the cached process-wide probe. Other
+            # platforms' structural grounders (UIA, macOS AX) are untouched.
+            if getattr(structural, "name", None) == "atspi":
+                structural = _GatedAtspiTier(structural)
             grounders.append(structural)
         grounders.append(VisionGrounder())
         _DEFAULT = GroundingResolver(grounders=grounders, cache=ElementCache())
