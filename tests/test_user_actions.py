@@ -38,17 +38,21 @@ class _Grounder:
 
 
 class _Port:
-    def __init__(self, nodes=(), typed_into=""):
+    def __init__(self, nodes=(), typed_into="", url=""):
         self._nodes = nodes
         self.clicked_ref = None
         self.filled = None
         self._typed_into = typed_into
+        self._url = url
 
     def collect(self):
         return [{"ref": f"e{i}", "name": n.name, "role": n.role,
                  "states": list(n.states), "left": 0, "top": 0,
                  "width": n.width, "height": 20}
                 for i, n in enumerate(self._nodes)]
+
+    def url(self):
+        return self._url
 
     def click(self, ref):
         self.clicked_ref = ref
@@ -120,6 +124,31 @@ def test_user_look_reports_failure_when_the_page_has_no_controls(monkeypatch):
     monkeypatch.setattr(UA, "_user_window", lambda: (port, None))
     r = UA.user_look()
     assert r.ok is False
+
+
+def test_user_look_recognizes_a_bot_wall_instead_of_reporting_a_thin_page(monkeypatch):
+    """Live, 2026-08-14: browser_control's DOM path has no bot-wall
+    awareness at all — unlike web_agency, which already checks
+    bot_wall_reason() and tells the user a human-verification page was
+    served instead of the real site. Without it, a Cloudflare "Just a
+    moment..." interstitial reads as an ordinary thin page and the model
+    is left guessing at field names that were never really there."""
+    port = _Port(nodes=[_Node("Just a moment...", role="heading"),
+                        _Node("Cloudflare", role="link"),
+                        _Node("Ray ID: 8f2a1c9", role="text")],
+                url="https://makerworld.com/en")
+    monkeypatch.setattr(UA, "_user_window", lambda: (port, None))
+    r = UA.user_look()
+    assert r.ok is False
+    assert "block" in r.message.lower() or "human" in r.message.lower()
+
+
+def test_user_look_does_not_misread_an_ordinary_thin_page_as_a_bot_wall(monkeypatch):
+    port = _Port(nodes=[_Node("Home"), _Node("About"), _Node("Contact")],
+                url="https://example.test")
+    monkeypatch.setattr(UA, "_user_window", lambda: (port, None))
+    r = UA.user_look()
+    assert r.ok is True
 
 
 def test_user_open_with_no_window_is_an_explicit_failure(monkeypatch):

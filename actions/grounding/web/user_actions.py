@@ -194,6 +194,25 @@ def user_look(limit: int = 40) -> ToolResult:
             guidance="Call browser_control action='go_to' with a url first.")
     from actions.grounding.web.page import nodes_from_records
     nodes = nodes_from_records(port.collect())
+
+    # web_agency already checks this on its own hidden browser; this DOM
+    # path never did. Live, 2026-08-14: a Cloudflare "Just a moment..."
+    # interstitial has a handful of real controls (a heading, a Ray ID
+    # footer link), so it read as an ordinary thin page instead of a wall —
+    # every click/type attempt then failed against fields that were never
+    # really on the page, with no indication why. Unlike web_agency's
+    # hidden browser, this IS the window the user is looking at, so the
+    # actionable answer is simpler: ask them to clear it themselves.
+    from actions.grounding.web.handoff import bot_wall_reason
+    blocked = bot_wall_reason(nodes, port.url())
+    if blocked:
+        return ToolResult.failure(
+            f"the user's browser window is showing a human-verification "
+            f"check, not the real page — {blocked}",
+            guidance="This is the window the user can see. Ask them to "
+                     "clear the check themselves (click through it), then "
+                     "try again — do not keep retrying blind.")
+
     names = what_is_here(port, limit=limit)
     if not nodes:
         # A window with zero controls is not a look that "worked" — it is
