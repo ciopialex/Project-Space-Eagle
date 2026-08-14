@@ -119,3 +119,51 @@ def test_context_that_merely_repeats_the_name_is_not_printed_twice():
 def test_real_context_is_still_printed():
     out = _describe([_node("Bambu Lab P2S", context="EUR 519 in stock")])
     assert "EUR 519 in stock" in out
+
+
+# ── typable controls must never fall in a sampling gap ──────────────────────
+#
+# Measured live on makerworld.com: `collect()` correctly found the page's
+# search box (role='textbox', unnamed, TYPABLE_ROLES fallback names it "text
+# field") at document-order index 15 of 273 nodes. `_spread`'s evenly-spaced
+# windows (budget=60, run=10 -> a window every ~45 nodes: 0-10, 45-55, ...)
+# put it in the gap between window 0 and window 1. It was never dropped for
+# being unimportant - it was dropped for landing on the wrong side of an
+# arbitrary sampling grid. A page can have hundreds of links and images; it
+# rarely has more than a handful of things you can type into, so those are
+# cheap to always keep.
+
+def _typable_node(name, role, top):
+    """`_node`'s default states lack EDITABLE/SENSITIVE - real editable
+    controls carry both (measured live: COLLECT_JS reports
+    ENABLED/SENSITIVE/VISIBLE/SHOWING/EDITABLE for makerworld.com's search
+    box), and `is_editable` requires them."""
+    return WebNode(name=name, role=role, left=0, top=top, width=80, height=20,
+                   ref="e", states=frozenset({"ENABLED", "SENSITIVE",
+                                              "VISIBLE", "SHOWING", "EDITABLE"}))
+
+
+def _typable_page(n_before=15, n_after=257, role="textbox", name="text field"):
+    before = [_node(f"Nav item {i}", top=i) for i in range(n_before)]
+    field = [_typable_node(name, role, n_before)]
+    after = [_node(f"Content {i}", top=n_before + 1 + i) for i in range(n_after)]
+    return before + field + after
+
+
+def test_a_lone_search_field_in_a_sampling_gap_still_reaches_the_model():
+    out = _describe(_typable_page())
+    assert "text field" in out, "the only typable control on the page was dropped"
+
+
+def test_multiple_typable_controls_all_survive():
+    nodes = (_typable_page(n_before=15, n_after=200)
+             + [_typable_node("search field", "searchbox", 400)]
+             + [_typable_node("password field", "password", 401)])
+    out = _describe(nodes)
+    assert "text field" in out
+    assert "search field" in out
+    assert "password field" in out
+
+
+def test_typable_survival_does_not_blow_the_budget():
+    assert len(_content(_describe(_typable_page()))) <= 60

@@ -171,30 +171,49 @@ def _spread(nodes, budget: int = _DESCRIBE_BUDGET, run: int = _RUN):
     342), but that encodes one site's layout; a right-hand sidebar, a
     single-column page or an RTL locale each break it differently. Position
     in the document is the one thing every page has.
+
+    Editable controls are claimed first, before the window grid runs, and
+    always survive regardless of where they land in it. Measured live on
+    makerworld.com: `collect()` correctly found the page's one search box
+    (unnamed `<input>`, TYPABLE_ROLES fallback names it "text field") at
+    document-order index 15 of 273 nodes - and the window grid (a window
+    every ~45 nodes: 0-9, 45-54, ...) skipped straight over it. It was never
+    dropped for being unimportant, only for landing between two windows. A
+    page can have hundreds of links and images; it rarely has more than a
+    handful of things you can type into, so reserving space for all of them
+    first costs little and closes exactly that gap.
     """
     nodes = list(nodes)
     if len(nodes) <= budget:
         return nodes
 
-    # Walk the page in `budget/run` evenly spaced windows, each `run` long.
-    windows = max(1, budget // run)
-    step = len(nodes) / windows
     picked: list = []
     seen: set[int] = set()
-    for w in range(windows):
-        start = int(w * step)
-        for i in range(start, min(start + run, len(nodes))):
+    for i, n in enumerate(nodes):
+        if is_editable(n):
+            seen.add(i)
+            picked.append(i)
+
+    remaining = max(0, budget - len(picked))
+    if remaining:
+        # Walk the page in evenly spaced windows, each `run` long, over
+        # whatever the editable claim above did not already take.
+        windows = max(1, remaining // run)
+        step = len(nodes) / windows
+        for w in range(windows):
+            start = int(w * step)
+            for i in range(start, min(start + run, len(nodes))):
+                if i not in seen and len(picked) < budget:
+                    seen.add(i)
+                    picked.append(i)
+        # Top up from the front if rounding left the budget unspent - the
+        # first controls are still the likeliest way OFF the page.
+        for i in range(len(nodes)):
+            if len(picked) >= budget:
+                break
             if i not in seen:
                 seen.add(i)
                 picked.append(i)
-    # Top up from the front if rounding left the budget unspent - the first
-    # controls are still the likeliest way OFF the page.
-    for i in range(len(nodes)):
-        if len(picked) >= budget:
-            break
-        if i not in seen:
-            seen.add(i)
-            picked.append(i)
     return [nodes[i] for i in sorted(picked)[:budget]]
 
 
