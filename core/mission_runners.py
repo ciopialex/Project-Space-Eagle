@@ -106,19 +106,15 @@ def _focused_text_field() -> str | None:
     while Claude Code was running in it, and reported success. The same defect
     is documented at the top of actions/whatsapp_web.py from months earlier:
     blind-typing put "Go to sleep" into a terminal instead of a chat.
+
+    A thin, module-local alias kept around (rather than inlining the import
+    at every call site) purely so this name stays monkeypatchable exactly as
+    it was — the real check now lives in actions/grounding/focus.py so
+    computer_control's own direct actions share it too, instead of carrying
+    a second, drifted copy of the same logic.
     """
-    try:
-        from actions.grounding.resolver import structural_grounder
-        g = structural_grounder()
-        if g is None:
-            return None
-        for node in (g.nodes() if hasattr(g, "nodes") else []):
-            states = getattr(node, "states", frozenset())
-            if "FOCUSED" in states and "EDITABLE" in states:
-                return str(getattr(node, "name", "") or "a text field")
-    except Exception:
-        return None
-    return None
+    from actions.grounding.focus import focused_editable_name
+    return focused_editable_name()
 
 
 def _refuse_blind(step: Step) -> tuple[bool, str]:

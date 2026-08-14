@@ -285,15 +285,33 @@ def _focus_result(title: str) -> ToolResult:
                   "similar title and type into whatever comes forward."))
 
 
-def _type(text: str, interval: float = 0.03) -> str:
+def _type(text: str, interval: float = 0.03):
     _require_pyautogui()
+    from actions.grounding.focus import focused_editable_name
+    where = focused_editable_name()
+    if not where:
+        return Failed(
+            "refusing to type: nothing identifiable has keyboard focus, "
+            "so the text could land anywhere — a terminal, a chat, "
+            "someone's half-filled form.",
+            guidance="Click the field first (screen_click, or browser_control "
+                     "action='click' if it's in a browser window), then type.")
     time.sleep(0.3)
     pyautogui.typewrite(text, interval=interval)
-    return f"Typed: {text[:60]}{'…' if len(text) > 60 else ''}"
+    return f"Typed: {text[:60]}{'…' if len(text) > 60 else ''} (into {where!r})"
 
 
-def _smart_type(text: str, clear_first: bool = True) -> str:
+def _smart_type(text: str, clear_first: bool = True):
     _require_pyautogui()
+    from actions.grounding.focus import focused_editable_name
+    where = focused_editable_name()
+    if not where:
+        return Failed(
+            "refusing to type: nothing identifiable has keyboard focus, "
+            "so the text could land anywhere — a terminal, a chat, "
+            "someone's half-filled form.",
+            guidance="Click the field first (screen_click, or browser_control "
+                     "action='click' if it's in a browser window), then type.")
     if clear_first:
         _clear_field()
         time.sleep(0.1)
