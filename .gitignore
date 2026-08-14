@@ -61,3 +61,14 @@ screenshot_*.png
 # Screenshots the vision tool writes into the repo root — these are
 # pictures of the user's actual screen and must never be committed.
 screenshot*.png
+
+# Internal developer docs — architecture, specs, plans, roadmap, audits.
+# This repo is PUBLIC (curl-install distribution): only genuinely
+# user-facing docs (readme.md, Aethelark_Google_Setup.md,
+# packaging/README.md) belong in the tracked tree. Everything that exists
+# to help build the codebase, not use it, stays local-only.
+Aethelark_Architecture.md
+Aethelark_Specifications.md
+Aethelark_Vision.md
+CURRENT_STATUS.md
+docs/
