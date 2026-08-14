@@ -154,6 +154,87 @@ def test_type_action_uses_the_dom_grounder_when_a_window_is_open(monkeypatch):
     assert called["args"] == ("Search", "watch stand")
 
 
+def test_click_with_only_a_selector_uses_the_selector_path_not_an_empty_description(monkeypatch):
+    """Final whole-branch review, Finding 1: `main.py`'s own tool
+    declaration still documents `selector` as how to target `click`/`type`,
+    unchanged since before Task 1. A caller following that documented
+    interface passes `selector`, never `description` — so the dispatch must
+    not silently call `user_click("")`, which can only ever fail
+    (`find_node("")` matches nothing). It must reach the selector-based
+    path instead.
+    """
+    import actions.grounding.web.user_actions as UA
+    def _must_not_be_called(description):
+        raise AssertionError(
+            "user_click() was called with an empty/absent description — "
+            "the selector-only path must not fall through to the DOM guess")
+    monkeypatch.setattr(UA, "user_click", _must_not_be_called)
+
+    clicked = {}
+    class _Sess:
+        def run(self, coro, timeout=None):
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return "Clicked selector: #search"
+        def go_to(self, *a, **k): return None
+        def click(self, selector=None, text=None):
+            clicked["selector"] = selector
+            return "coro"
+
+    class _Reg:
+        def has(self, b=None): return True
+        def get(self, b=None): return _Sess()
+        def pop_native_url(self): return None
+    monkeypatch.setattr(BC, "_registry", _Reg())
+
+    r = BC.browser_control({"action": "click", "selector": "#search"})
+    assert clicked.get("selector") == "#search"
+    assert r.ok is True
+
+
+def test_type_with_only_a_selector_never_guesses_a_focused_field(monkeypatch):
+    """Same regression, the unsafe half: `user_type(None, text)` falls
+    through to `focus_and_type`'s best-guess-at-a-text-field heuristic,
+    which can silently type into a COMPLETELY DIFFERENT field than the one
+    `selector` named while still reporting ok=True. A selector-only call
+    must reach the selector-based `sess.type_text` path, never `user_type`.
+    """
+    import actions.grounding.web.user_actions as UA
+    def _must_not_be_called(description, text):
+        raise AssertionError(
+            "user_type() was called on a selector-only request — this is "
+            "the DOM-guess path that can type into the wrong field while "
+            "reporting success")
+    monkeypatch.setattr(UA, "user_type", _must_not_be_called)
+
+    typed = {}
+    class _Sess:
+        def run(self, coro, timeout=None):
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return "Text typed."
+        def go_to(self, *a, **k): return None
+        def type_text(self, selector=None, text="", clear_first=True):
+            typed["selector"] = selector
+            typed["text"] = text
+            return "coro"
+
+    class _Reg:
+        def has(self, b=None): return True
+        def get(self, b=None): return _Sess()
+        def pop_native_url(self): return None
+    monkeypatch.setattr(BC, "_registry", _Reg())
+
+    r = BC.browser_control({"action": "type", "selector": "#search", "text": "eagle"})
+    assert typed.get("selector") == "#search"
+    assert typed.get("text") == "eagle"
+    assert r.ok is True
+
+
 def test_look_action_reports_whats_on_the_page(monkeypatch):
     from core.tool_result import ToolResult
     import actions.grounding.web.user_actions as UA

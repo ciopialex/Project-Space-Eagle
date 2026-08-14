@@ -1293,6 +1293,22 @@ def browser_control(
                       "get_url, press, close_tab, screenshot, back, forward, "
                       "reload."))
 
+    # `look` is read-only and must stay that way: it is answered entirely by
+    # `user_look()`, which already asks for the user's window with
+    # `create=False` and returns cleanly if none is open. Handled here,
+    # BEFORE `_registry.get(browser)` below — which unconditionally LAUNCHES
+    # a visible Chrome window if none exists — because that call runs before
+    # the action-specific branch further down ever gets a look at `action`.
+    # Left in the elif chain, a plain "what's on this page" question with no
+    # browser open opened an empty visible window and then reported "0
+    # controls" as a failure: a live-reachable bug once Task 5's prompt
+    # guidance started routing read-only questions to `look`.
+    if action == "look":
+        from actions.grounding.web.user_actions import user_look
+        r = user_look()
+        _log(player, r.message)
+        return r
+
     try:
         sess = _registry.get(browser)
     except Exception as e:
@@ -1309,32 +1325,41 @@ def browser_control(
                 print(f"[Browser] Could not resume last page ({last}): {e}")
 
         if action == "click":
-            from actions.grounding.web.user_actions import user_click
-            r = user_click(params.get("description", ""))
-            if r.ok:
-                _log(player, r.message)
-                return r
-            # Fall back to the session's own low-level click only if the
-            # DOM lookup found no window at all (not if it found a window
-            # and just could not match the description — that is a real
-            # "no such control" the caller should hear about, not paper over).
-            if "no browser window is open" not in r.message:
+            # `description` is the DOM-exact path (`user_click`), and is
+            # what browser_control's own tool declaration has documented
+            # `click` as taking since Task 1. But `selector` is STILL
+            # documented (main.py) as the way to target an element for
+            # click/type, and predates `description` entirely — a caller
+            # following the tool's own documented interface may pass only
+            # `selector`. Gate on `description` being actually present:
+            # a caller who used `selector` as documented must get the
+            # selector-based path, not an empty-description DOM lookup that
+            # can only ever fail (`find_node("")` matches nothing).
+            desc = (params.get("description") or "").strip()
+            if desc:
+                from actions.grounding.web.user_actions import user_click
+                r = user_click(desc)
                 _log(player, r.message)
                 return r
             result = sess.run(sess.click(params.get("selector"), params.get("text")))
         elif action == "type":
-            from actions.grounding.web.user_actions import user_type
-            r = user_type(params.get("description"), params.get("text", ""))
-            if r.ok or "no browser window is open" not in r.message:
+            # Same gating as click, and higher-stakes: `user_type` with no
+            # `description` falls through to `focus_and_type`'s
+            # best-guess-at-a-text-field heuristic, which can silently type
+            # into a COMPLETELY DIFFERENT field than the one `selector`
+            # named while still reporting ok=True. A caller who passed only
+            # `selector` must reach the selector-based path, never the
+            # DOM-guess path — that is exactly the "reported success, text
+            # landed nowhere/wrong place" failure this whole plan exists to
+            # eliminate.
+            desc = (params.get("description") or "").strip()
+            if desc:
+                from actions.grounding.web.user_actions import user_type
+                r = user_type(desc, params.get("text", ""))
                 _log(player, r.message)
                 return r
             result = sess.run(sess.type_text(
                 params.get("selector"), params.get("text", ""), params.get("clear_first", True)))
-        elif action == "look":
-            from actions.grounding.web.user_actions import user_look
-            r = user_look()
-            _log(player, r.message)
-            return r
         elif action == "scroll":
             result = sess.run(sess.scroll(params.get("direction", "down"), int(params.get("amount", 500))))
         elif action == "fill_form":

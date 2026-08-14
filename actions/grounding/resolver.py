@@ -115,8 +115,31 @@ def _atspi_probe() -> bool:
     `pyatspi` package — that package isn't installed here and checking it
     made this probe always fail closed, permanently disabling a working
     AT-SPI tier instead of only skipping it when the bus is actually dead.
+
+    Two more things every OTHER entry point into AT-SPI already does, that
+    this probe must do too or it defeats its own purpose:
+
+    1. Call `_ensure_bindings_once()` FIRST. On a fresh install `gi` is
+       often sealed outside the project's venv until that one-time
+       bootstrap symlinks it in — `live_walker()` and `AtspiGrounder.find()`
+       both call it before touching `gi` at all. Without it, a bare
+       `import gi` fails on a machine where AT-SPI would otherwise work
+       fine, this probe caches `False` for the rest of the process, and
+       because `_GatedAtspiTier.available()` checks this cache BEFORE ever
+       calling the real grounder (which is what would have triggered the
+       bootstrap), the fix that would have made it work never runs.
+    2. Check `atspi_enabled()` — the GNOME `toolkit-accessibility` toggle.
+       The live bug this whole probe exists to catch was bus-up,
+       binding-importing-fine, toggle-OFF. Checking only whether the import
+       succeeds is really just "is gi installed", not "can AT-SPI answer",
+       and would sail straight past the exact scenario this was written
+       for.
     """
     try:
+        from actions.grounding.atspi import _ensure_bindings_once, atspi_enabled
+        _ensure_bindings_once()
+        if not atspi_enabled():
+            return False
         import gi
         gi.require_version("Atspi", "2.0")
         from gi.repository import Atspi

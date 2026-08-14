@@ -106,6 +106,23 @@ def test_reading_with_no_window_open_does_not_launch_one(monkeypatch):
     assert ok is False and reg.created == 0
 
 
+def test_browser_control_look_with_no_window_open_does_not_launch_one(monkeypatch):
+    """Final whole-branch review, Finding 7: `look` was added to
+    `browser_control`'s `_INTERACTIVE_ACTIONS`, but the interactive dispatch
+    path called `_registry.get(browser)` — which launches a visible Chrome
+    window if none exists — BEFORE the action-specific branch ever ran. A
+    read-only "what's on this page" question with no browser open opened an
+    empty visible window and then reported "0 controls" as a failure.
+    Reachable in practice, not just theoretically: Task 5's prompt guidance
+    routes read-only questions straight to `look`.
+    """
+    import actions.browser_control as BC
+    reg = _reg(monkeypatch)
+    r = BC.browser_control({"action": "look"})
+    assert r.ok is False
+    assert reg.created == 0, "opened a blank browser just to answer 'look'"
+
+
 def test_observing_never_launches_a_window(monkeypatch):
     """The observer runs around EVERY step. If it could create, every mission
     would spawn one."""

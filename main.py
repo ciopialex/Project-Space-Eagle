@@ -499,16 +499,18 @@ TOOL_DECLARATIONS = [
         "name": "browser_control",
         "description": (
             "Opens a website in the USER'S OWN browser, with their own logins and tabs — "
-            "for when they want to look at something themselves. "
-            "Do NOT use it to do work inside a page: for reading a page's controls, clicking, "
-            "typing, filling forms, or any multi-step task on a site, use web_agency, which "
-            "perceives the page properly and refuses irreversible actions. "
+            "for when they want to look at something themselves. Its click/type/look actions "
+            "CAN read and act inside a page already open there — the same exact DOM lookup the "
+            "mission tool uses, not pixels — for a single command aimed at something the user can "
+            "already see. "
+            "For a multi-step task on a site, or a page not already open in the user's own browser, "
+            "use web_agency instead, which perceives the page properly and refuses irreversible actions. "
             "Simple open/search requests launch the user's own browser normally (their real profile "
             "and logged-in accounts); interactive actions (click, type, fill_form...) attach an "
             "automation browser. "
             "Always pass the 'browser' parameter when the user specifies a browser (e.g. 'open in Edge', "
-            "'use Firefox', 'open Chrome'). Multiple browsers can run simultaneously."
-            "It opens the USER'S own browser and cannot read or click inside a page: for that use web_agency. For files on disk use file_controller."
+            "'use Firefox', 'open Chrome'). Multiple browsers can run simultaneously. "
+            "For files on disk use file_controller."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -518,9 +520,9 @@ TOOL_DECLARATIONS = [
                 "url":         {"type": "STRING", "description": "URL for go_to / new_tab action"},
                 "query":       {"type": "STRING", "description": "Search query for search action"},
                 "engine":      {"type": "STRING", "description": "Search engine: google | bing | duckduckgo | yandex (default: google)"},
-                "selector":    {"type": "STRING", "description": "CSS selector for click/type"},
+                "selector":    {"type": "STRING", "description": "CSS selector for click/type — fallback ONLY when 'description' is not given; prefer 'description', it is DOM-exact and survives page structure changing."},
                 "text":        {"type": "STRING", "description": "Text to click or type"},
-                "description": {"type": "STRING", "description": "Element description for smart_click/smart_type"},
+                "description": {"type": "STRING", "description": "Plain-language description of the control, for click/type/smart_click/smart_type — preferred over 'selector' for click/type. Not used by look, which reads the whole page."},
                 "direction":   {"type": "STRING", "description": "up | down for scroll"},
                 "amount":      {"type": "INTEGER", "description": "Scroll amount in pixels (default: 500)"},
                 "key":         {"type": "STRING", "description": "Key name for press action (e.g. Enter, Escape, F5)"},

@@ -39,7 +39,15 @@ def test_atspi_probe_uses_the_gi_binding_not_pyatspi(monkeypatch):
     actually uses, four times) healthy, with `pyatspi` left absent exactly
     as it is on a real machine, and confirms the probe reports available —
     proving it does not depend on `pyatspi` at all.
+
+    `_ensure_bindings_once` and `atspi_enabled` are stubbed healthy so this
+    stays a pure unit test, unaffected by whatever this machine's real
+    GNOME toggle happens to be set to right now.
     """
+    import actions.grounding.atspi as A
+    monkeypatch.setattr(A, "_ensure_bindings_once", lambda: {"ok": True})
+    monkeypatch.setattr(A, "atspi_enabled", lambda: True)
+
     fake_desktop = types.SimpleNamespace(get_child_count=lambda: 3)
     fake_atspi_module = types.SimpleNamespace(get_desktop=lambda i: fake_desktop)
     fake_gi_repository = types.SimpleNamespace(Atspi=fake_atspi_module)
@@ -52,6 +60,62 @@ def test_atspi_probe_uses_the_gi_binding_not_pyatspi(monkeypatch):
     monkeypatch.setitem(sys.modules, "pyatspi", None)  # simulate "not installed"
 
     assert R._atspi_probe() is True
+
+
+def test_atspi_probe_calls_ensure_bindings_before_importing_gi(monkeypatch):
+    """Regression: every other AT-SPI entry point (`live_walker()`,
+    `AtspiGrounder.find()`) calls `_ensure_bindings_once()` before touching
+    `gi`, because on a fresh install the system PyGObject package is often
+    sealed outside the project's venv until that one-time bootstrap symlinks
+    it in. The probe skipped this and did a bare `import gi` — so on a
+    machine where the bootstrap hadn't run yet, the probe would fail,
+    cache `False` for the life of the process, and (because
+    `_GatedAtspiTier.available()` checks the cache before ever calling the
+    real grounder) the bootstrap that would have fixed it never runs.
+    """
+    import actions.grounding.atspi as A
+    calls = []
+    monkeypatch.setattr(A, "_ensure_bindings_once", lambda: calls.append(1))
+    monkeypatch.setattr(A, "atspi_enabled", lambda: True)
+
+    fake_desktop = types.SimpleNamespace(get_child_count=lambda: 3)
+    fake_atspi_module = types.SimpleNamespace(get_desktop=lambda i: fake_desktop)
+    fake_gi_repository = types.SimpleNamespace(Atspi=fake_atspi_module)
+    fake_gi = types.SimpleNamespace(
+        require_version=lambda name, version: None,
+        repository=fake_gi_repository,
+    )
+    monkeypatch.setitem(sys.modules, "gi", fake_gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", fake_gi_repository)
+
+    assert R._atspi_probe() is True
+    assert calls, "_ensure_bindings_once() was never called before the probe"
+
+
+def test_atspi_probe_checks_the_gnome_toggle_not_just_the_import(monkeypatch):
+    """Regression (Finding 3): Task 3's own stated purpose was catching the
+    bus-up, binding-importing-fine, GNOME toggle-OFF case — but the probe as
+    first written only checked whether the import succeeded, which is really
+    just "is gi installed". With a healthy mocked `gi.repository.Atspi` and
+    `atspi_enabled()` reporting the toggle off, the probe must still report
+    unavailable — otherwise the fast-skip this task promises never engages
+    in exactly the scenario it was written for.
+    """
+    import actions.grounding.atspi as A
+    monkeypatch.setattr(A, "_ensure_bindings_once", lambda: {"ok": True})
+    monkeypatch.setattr(A, "atspi_enabled", lambda: False)
+
+    fake_desktop = types.SimpleNamespace(get_child_count=lambda: 3)
+    fake_atspi_module = types.SimpleNamespace(get_desktop=lambda i: fake_desktop)
+    fake_gi_repository = types.SimpleNamespace(Atspi=fake_atspi_module)
+    fake_gi = types.SimpleNamespace(
+        require_version=lambda name, version: None,
+        repository=fake_gi_repository,
+    )
+    monkeypatch.setitem(sys.modules, "gi", fake_gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", fake_gi_repository)
+
+    assert R._atspi_probe() is False
 
 
 def test_atspi_probe_returns_true_on_a_live_healthy_bus():
