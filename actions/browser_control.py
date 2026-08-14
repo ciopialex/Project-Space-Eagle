@@ -1134,12 +1134,17 @@ _FAILED_PREFIXES = (
 
 #: Phrases that mark a refusal from the MIDDLE of a sentence. "Browser action
 #: 'go_to' timed out (60s)" starts with a perfectly ordinary word.
+#:
+#: A bare "timeout" marker used to live here too, added to catch "Type
+#: error: Timeout 30000ms exceeded." and "Element not found (timeout).".
+#: Both are already caught by the "type error"/"element not found" PREFIXES
+#: above, and an ANYWHERE-substring "timeout" also matches a perfectly
+#: ordinary search query ("playwright timeout error"), URL
+#: (".../docs/timeout"), or link text ("Timeout settings") that never
+#: touched a refusal path — those came back ok=False live. Removed rather
+#: than narrowed, since nothing legitimate depended on it.
 _FAILED_ANYWHERE = (
     "timed out", "could not", "did not", "is not installed",
-    # "Type error: Timeout 30000ms exceeded." — the word lands mid-sentence,
-    # after the prefix above already matched, but also covers cases where it
-    # doesn't (a bare selector-path timeout with no "Type error:" prefix).
-    "timeout",
 )
 
 

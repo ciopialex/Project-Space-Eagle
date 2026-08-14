@@ -108,6 +108,23 @@ def test_a_successful_open_says_ok_on_the_wire(monkeypatch):
     assert "youtube" in resp["result"]
 
 
+def test_the_word_timeout_in_an_ordinary_result_is_not_a_failure(monkeypatch):
+    """A bare "timeout" substring marker used to live in `_FAILED_ANYWHERE`,
+    added to catch "Type error: Timeout 30000ms exceeded." — but as an
+    ANYWHERE match it also flagged perfectly ordinary results that just
+    happen to contain the word, confirmed live: a search for the query
+    "playwright timeout error" and a go_to to a URL with "timeout" in the
+    path both came back ok=False. Both failure cases the marker was added
+    for are already caught by the "type error"/"element not found"
+    PREFIXES, so the bare substring was removed rather than narrowed."""
+    _fake_registry(
+        monkeypatch,
+        result="Opened: https://example.com/docs/timeout")
+
+    r = BC.browser_control({"action": "go_to", "url": "https://example.com/docs/timeout"})
+    assert r.ok is True
+
+
 def test_a_timeout_is_a_failure_not_a_result(monkeypatch):
     import concurrent.futures
 
@@ -239,19 +256,64 @@ def test_click_with_no_target_at_all_is_a_failure_not_a_success(monkeypatch):
     """Re-review of the `selector` fallback fix: that path was DEAD CODE
     before the fallback existed, so `click()`'s own refusal prose
     ("No selector or text provided.") was never checked against a verdict
-    and fell through to `settled()` as ok=True."""
-    _fake_registry(monkeypatch, result="No selector or text provided.")
+    and fell through to `settled()` as ok=True.
+
+    The stub's `click` implements the method and returns the exact refusal
+    prose a real `BrowserSession.click` gives back when neither a selector
+    nor text is named. `_fake_registry`'s bare stub (no `click` at all)
+    can't be used here: calling a method that doesn't exist raises
+    `AttributeError` before `sess.run` is ever reached, and
+    `browser_control`'s generic `except Exception` reports that as a
+    failure too — matching this test's assertion for entirely the wrong
+    reason, even with `_is_refusal` never wired into the dispatch."""
+    class _Sess:
+        def run(self, coro, timeout=None):
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return "No selector or text provided."
+        def go_to(self, *a, **k): return None
+        def click(self, selector=None, text=None): return "coro"
+
+    class _Reg:
+        def has(self, b=None): return True
+        def get(self, b=None): return _Sess()
+        def pop_native_url(self): return None
+    monkeypatch.setattr(BC, "_registry", _Reg())
+
     r = BC.browser_control({"action": "click"})
     assert r.ok is False
+    assert "No selector or text provided." in r.message
 
 
 def test_click_at_a_selector_the_page_does_not_have_is_a_failure(monkeypatch):
     """Same gap: `click(selector=...)` against a selector the page doesn't
     have returns "Element not found (timeout)." — prose, not an exception —
-    and that also used to read as ok=True."""
-    _fake_registry(monkeypatch, result="Element not found (timeout).")
+    and that also used to read as ok=True.
+
+    As above, the stub's `click` is a real method returning real refusal
+    prose, not an absent one that would fail via `AttributeError` instead
+    of via the `_is_refusal` check this test exists to pin."""
+    class _Sess:
+        def run(self, coro, timeout=None):
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return "Element not found (timeout)."
+        def go_to(self, *a, **k): return None
+        def click(self, selector=None, text=None): return "coro"
+
+    class _Reg:
+        def has(self, b=None): return True
+        def get(self, b=None): return _Sess()
+        def pop_native_url(self): return None
+    monkeypatch.setattr(BC, "_registry", _Reg())
+
     r = BC.browser_control({"action": "click", "selector": "#nonexistent-thing"})
     assert r.ok is False
+    assert "Element not found (timeout)." in r.message
 
 
 def test_type_with_neither_description_nor_selector_refuses_outright(monkeypatch):
@@ -259,13 +321,35 @@ def test_type_with_neither_description_nor_selector_refuses_outright(monkeypatch
     `page.locator(":focus")` — a guess at whatever currently has focus,
     which can type into the wrong field while still reporting success. A
     request naming no target must be refused before it ever reaches that
-    guess, not merely reported as failed after the fact."""
+    guess, not merely reported as failed after the fact.
+
+    `sess.type_text` is evaluated as an argument to `sess.run(...)` before
+    `run` is ever called — so a stub missing `type_text` entirely raises
+    `AttributeError` on the argument expression, which also happens to
+    read as ok=False, "proving" the session was never touched for the
+    wrong reason. Give the stub a real `type_text` (in addition to `run`)
+    that also raises if called, so a regression that reaches `type_text`
+    first is caught cleanly instead of accidentally passing via a missing
+    method.
+
+    Checking `r.ok is False` alone is not enough here: `browser_control`'s
+    outer `except Exception` catches ANY exception from the dispatch,
+    including the `AssertionError` this stub raises if touched, and
+    reports it as an ordinary failure too — so a regression that removes
+    the outright-refuse guard and lets `type_text` be reached would still
+    read ok=False, just via the stub's assertion instead of the guard's
+    own refusal. Asserting on the exact refusal message is what tells
+    the two apart."""
     class _SessionThatMustNotBeTouched:
         def run(self, *a, **k):
             raise AssertionError(
                 "type_text() was reached with neither description nor "
                 "selector — this is the page.locator(':focus') guess path")
         def go_to(self, *a, **k): return None
+        def type_text(self, *a, **k):
+            raise AssertionError(
+                "type_text() was reached with neither description nor "
+                "selector — this is the page.locator(':focus') guess path")
 
     class _Reg:
         def has(self, b=None): return True
@@ -275,15 +359,38 @@ def test_type_with_neither_description_nor_selector_refuses_outright(monkeypatch
 
     r = BC.browser_control({"action": "type", "text": "eagle"})
     assert r.ok is False
+    assert r.message == (
+        "Type error: no description or selector given — refusing to guess "
+        "a focused field.")
 
 
 def test_type_at_a_selector_the_page_does_not_have_is_a_failure(monkeypatch):
     """`type_text(selector=...)` against a selector that never resolves
     times out inside Playwright and returns "Type error: ..." prose — also
-    used to read as ok=True."""
-    _fake_registry(monkeypatch, result="Type error: Timeout 30000ms exceeded.")
+    used to read as ok=True.
+
+    The stub's `type_text` is a real method returning the real timeout
+    prose, not an absent one — see the two `click` tests above for why an
+    absent method makes this pass for the wrong reason."""
+    class _Sess:
+        def run(self, coro, timeout=None):
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return "Type error: Timeout 30000ms exceeded."
+        def go_to(self, *a, **k): return None
+        def type_text(self, selector=None, text="", clear_first=True): return "coro"
+
+    class _Reg:
+        def has(self, b=None): return True
+        def get(self, b=None): return _Sess()
+        def pop_native_url(self): return None
+    monkeypatch.setattr(BC, "_registry", _Reg())
+
     r = BC.browser_control({"action": "type", "selector": "#nonexistent-thing", "text": "eagle"})
     assert r.ok is False
+    assert "Type error: Timeout 30000ms exceeded." in r.message
 
 
 def test_look_action_reports_whats_on_the_page(monkeypatch):
