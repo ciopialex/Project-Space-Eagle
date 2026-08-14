@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Every new/changed function that touches the world returns a `ToolResult` (`core/tool_result.py`) or, inside `mission_runners.py`'s existing `(ok, detail)` tuple contract where a function is a ladder rung — never a bare string claiming success.
+- Every new/changed function that touches the world returns a `ToolResult` (`core/tool_result.py`), or, inside `mission_runners.py`'s existing `(ok, detail)` tuple contract where a function is a ladder rung, or, inside `actions/computer_control.py`, that module's own existing convention (a bare string on success, `Failed(...)` on failure, normalized centrally by `core/tool_result.normalize()` at the dispatch boundary) — matching whichever of the three conventions already governs the file being changed. Never a bare string claiming success where none of the three applies.
 - No behavior change to any *currently passing* test. Run the full suite (`python -m pytest tests/ -q`) after every task; it must stay green.
 - Follow this repo's existing test-naming convention: one `test_...` function names one bug or one guarantee, with a short module-docstring context block, matching the style already in `tests/test_mission_ladder.py` and `tests/test_browser_control_contract.py`.
 - Do not touch the "Dynamic Island background mode" / pill live-wiring work — that's explicitly out of scope for this plan (see the plan's closing note).
@@ -22,7 +22,6 @@
 **Files:**
 - Create: `actions/grounding/web/user_actions.py`
 - Create: `tests/test_user_actions.py`
-- Modify: `core/mission_runners.py:92-124` (delete `_focused_text_field`/`_refuse_blind` — wait, these move to Task 4, not here; leave them for now)
 - Modify: `core/mission_runners.py:193-217` (`_what_is_here`) — delete, replaced by import
 - Modify: `core/mission_runners.py:220-403` (`_user_click`, `best_text_field`, `_focus_and_type`, `_web_type`, `_user_type`, `_same_page`, `_user_open`, `_user_look`) — rewritten as thin adapters
 - Modify: `actions/browser_control.py:1154-1166` (`_INTERACTIVE_ACTIONS`) — add `click`, `type`, `look`
