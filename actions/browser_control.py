@@ -1126,11 +1126,33 @@ _FAILED_PREFIXES = (
     "unknown browser action", "unknown action", "please specify",
     "browser error", "no url", "could not", "failed", "not found",
     "no browser",
+    # `click`/`type`'s own session-level refusals (`BrowserSession.click`,
+    # `.type_text`) — resurrected as reachable by the `selector` fallback fix
+    # but never exercised against this list, so all four read as ok=True.
+    "no selector", "element not found", "type error", "click error",
 )
 
 #: Phrases that mark a refusal from the MIDDLE of a sentence. "Browser action
 #: 'go_to' timed out (60s)" starts with a perfectly ordinary word.
-_FAILED_ANYWHERE = ("timed out", "could not", "did not", "is not installed")
+_FAILED_ANYWHERE = (
+    "timed out", "could not", "did not", "is not installed",
+    # "Type error: Timeout 30000ms exceeded." — the word lands mid-sentence,
+    # after the prefix above already matched, but also covers cases where it
+    # doesn't (a bare selector-path timeout with no "Type error:" prefix).
+    "timeout",
+)
+
+
+def _is_refusal(result) -> bool:
+    """True when `result` is prose a session produced to describe a refusal
+    rather than a result — the shared predicate behind `_verdict` and the
+    `click`/`type` dispatch below, so both read the SAME markers instead of
+    the dispatch quietly trusting a string `_verdict` would have rejected."""
+    text = str(result or "").strip()
+    low = text.lower()
+    return (not text
+            or any(low.startswith(pfx) for pfx in _FAILED_PREFIXES)
+            or any(mark in low for mark in _FAILED_ANYWHERE))
 
 
 def _verdict(result: str):
@@ -1141,10 +1163,7 @@ def _verdict(result: str):
     only converted the last return and left seven reporting nothing.
     """
     text = str(result or "").strip()
-    low = text.lower()
-    if (not text
-            or any(low.startswith(pfx) for pfx in _FAILED_PREFIXES)
-            or any(mark in low for mark in _FAILED_ANYWHERE)):
+    if _is_refusal(text):
         return ToolResult.failure(
             text or "The browser did nothing.",
             guidance=("Nothing happened in the browser. Do not tell the user "
@@ -1342,6 +1361,14 @@ def browser_control(
                 _log(player, r.message)
                 return r
             result = sess.run(sess.click(params.get("selector"), params.get("text")))
+            # The selector path was DEAD CODE until the fallback above was
+            # fixed, so it was never checked against a verdict: `click()`'s
+            # own refusals ("No selector or text provided.", "Element not
+            # found (timeout).") are ordinary prose, not exceptions, so
+            # `failed` was never set for them and they fell through to
+            # `settled()` below as ok=True.
+            if _is_refusal(result):
+                failed = True
         elif action == "type":
             # Same gating as click, and higher-stakes: `user_type` with no
             # `description` falls through to `focus_and_type`'s
@@ -1353,13 +1380,26 @@ def browser_control(
             # landed nowhere/wrong place" failure this whole plan exists to
             # eliminate.
             desc = (params.get("description") or "").strip()
+            selector = (params.get("selector") or "").strip()
             if desc:
                 from actions.grounding.web.user_actions import user_type
                 r = user_type(desc, params.get("text", ""))
                 _log(player, r.message)
                 return r
-            result = sess.run(sess.type_text(
-                params.get("selector"), params.get("text", ""), params.get("clear_first", True)))
+            if not selector:
+                # Neither `description` nor `selector`: refuse outright.
+                # `BrowserSession.type_text` falls through to
+                # `page.locator(":focus")` — a guess at whatever element
+                # currently has focus, which can silently type into the
+                # wrong field while still reporting success. A request that
+                # names no target gets no guess.
+                result = "Type error: no description or selector given — refusing to guess a focused field."
+                failed = True
+            else:
+                result = sess.run(sess.type_text(
+                    selector, params.get("text", ""), params.get("clear_first", True)))
+                if _is_refusal(result):
+                    failed = True
         elif action == "scroll":
             result = sess.run(sess.scroll(params.get("direction", "down"), int(params.get("amount", 500))))
         elif action == "fill_form":

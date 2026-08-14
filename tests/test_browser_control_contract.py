@@ -235,6 +235,57 @@ def test_type_with_only_a_selector_never_guesses_a_focused_field(monkeypatch):
     assert r.ok is True
 
 
+def test_click_with_no_target_at_all_is_a_failure_not_a_success(monkeypatch):
+    """Re-review of the `selector` fallback fix: that path was DEAD CODE
+    before the fallback existed, so `click()`'s own refusal prose
+    ("No selector or text provided.") was never checked against a verdict
+    and fell through to `settled()` as ok=True."""
+    _fake_registry(monkeypatch, result="No selector or text provided.")
+    r = BC.browser_control({"action": "click"})
+    assert r.ok is False
+
+
+def test_click_at_a_selector_the_page_does_not_have_is_a_failure(monkeypatch):
+    """Same gap: `click(selector=...)` against a selector the page doesn't
+    have returns "Element not found (timeout)." — prose, not an exception —
+    and that also used to read as ok=True."""
+    _fake_registry(monkeypatch, result="Element not found (timeout).")
+    r = BC.browser_control({"action": "click", "selector": "#nonexistent-thing"})
+    assert r.ok is False
+
+
+def test_type_with_neither_description_nor_selector_refuses_outright(monkeypatch):
+    """`type_text(selector=None, ...)` falls through to
+    `page.locator(":focus")` — a guess at whatever currently has focus,
+    which can type into the wrong field while still reporting success. A
+    request naming no target must be refused before it ever reaches that
+    guess, not merely reported as failed after the fact."""
+    class _SessionThatMustNotBeTouched:
+        def run(self, *a, **k):
+            raise AssertionError(
+                "type_text() was reached with neither description nor "
+                "selector — this is the page.locator(':focus') guess path")
+        def go_to(self, *a, **k): return None
+
+    class _Reg:
+        def has(self, b=None): return True
+        def get(self, b=None): return _SessionThatMustNotBeTouched()
+        def pop_native_url(self): return None
+    monkeypatch.setattr(BC, "_registry", _Reg())
+
+    r = BC.browser_control({"action": "type", "text": "eagle"})
+    assert r.ok is False
+
+
+def test_type_at_a_selector_the_page_does_not_have_is_a_failure(monkeypatch):
+    """`type_text(selector=...)` against a selector that never resolves
+    times out inside Playwright and returns "Type error: ..." prose — also
+    used to read as ok=True."""
+    _fake_registry(monkeypatch, result="Type error: Timeout 30000ms exceeded.")
+    r = BC.browser_control({"action": "type", "selector": "#nonexistent-thing", "text": "eagle"})
+    assert r.ok is False
+
+
 def test_look_action_reports_whats_on_the_page(monkeypatch):
     from core.tool_result import ToolResult
     import actions.grounding.web.user_actions as UA
