@@ -21,6 +21,9 @@
     padding:0 19px;cursor:pointer;font:inherit;font-size:12.5px;letter-spacing:.04em;transition:.16s}
   .ae-row button:hover{background:#1d2531;color:var(--ink)}
   .ae-row button.ok{color:var(--amber)}
+  .ae-steps{color:var(--dim);font-size:13.5px;margin:0 0 14px;text-align:center;letter-spacing:.01em}
+  .ae-steps b{color:var(--amber);font-weight:600;margin-right:3px}
+  .ae-steps span.ae-sep{margin:0 10px;opacity:.4}
   .ae-hint{color:var(--dim);font-size:13px;margin:13px 2px 0;line-height:1.65}
   .ae-hint b{color:#b9c2cf;font-weight:600}
   .ae-beta{display:inline-block;background:#2a1f0c;color:var(--amber);border:1px solid #4a3a15;
@@ -48,6 +51,7 @@
     </button>
   </div>
 
+  <p class="ae-steps"><b>1</b>Copy<span class="ae-sep">&middot;</span><b>2</b>Open <span id="ae-term">Terminal</span><span class="ae-sep">&middot;</span><b>3</b>Paste and press Enter</p>
   <div class="ae-cmd">
     <div class="ae-row">
       <code id="ae-line">curl -fsSL https://get.aethelark.com | bash</code>
@@ -64,12 +68,12 @@
 <script>
 (function () {
   var CMD = {
-    mac:   { c: 'curl -fsSL https://get.aethelark.com | bash',
-             h: 'Open <b>Terminal</b> &mdash; press <b>Cmd + Space</b>, type <b>Terminal</b>, hit Enter. Paste the line above and press Enter.' },
-    linux: { c: 'curl -fsSL https://get.aethelark.com | bash',
-             h: 'Open a terminal with <b>Ctrl + Alt + T</b>, paste, press Enter. You will be asked for your password once, to install the Qt system libraries pip cannot provide.' },
-    win:   { c: 'irm https://get.aethelark.com/install.ps1 | iex',
-             h: 'Right-click <b>Start</b> &rarr; <b>Terminal</b> (or open <b>PowerShell</b>). Paste the line above and press Enter. <b>Windows is in beta</b> &mdash; it installs and starts in automated tests but has had little real-world use, so please tell us what breaks.' }
+    mac:   { c: 'curl -fsSL https://get.aethelark.com | bash', t: 'Terminal',
+             h: 'Press <b>Cmd + Space</b>, type <b>Terminal</b> and hit Enter. Paste with <b>Cmd + V</b>. It takes about 10 minutes and opens by itself when it is done.' },
+    linux: { c: 'curl -fsSL https://get.aethelark.com | bash', t: 'a terminal',
+             h: 'Press <b>Ctrl + Alt + T</b>, paste with <b>Ctrl + Shift + V</b> and press Enter. It takes about 10 minutes. If your system is missing a library, Linux asks for your password once.' },
+    win:   { c: 'irm https://get.aethelark.com/install.ps1 | iex', t: 'PowerShell',
+             h: 'Right-click <b>Start</b> &rarr; <b>Terminal</b> (or open <b>PowerShell</b>), paste with <b>Ctrl + V</b> and press Enter. <b>Windows is in beta</b> &mdash; it installs and starts in automated tests but has had little real-world use, so please tell us what breaks.' }
   };
   var root  = document.currentScript.parentNode,
       tabs  = root.querySelectorAll('.ae-os button'),
@@ -81,6 +85,7 @@
     tabs.forEach(function (t) { t.setAttribute('aria-selected', String(t.dataset.os === os)); });
     line.textContent = CMD[os].c;
     hint.innerHTML   = CMD[os].h;
+    root.querySelector('#ae-term').textContent = CMD[os].t;
     copy.textContent = 'COPY';
     copy.classList.remove('ok');
   }
