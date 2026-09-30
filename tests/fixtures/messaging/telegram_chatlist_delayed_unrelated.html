@@ -1,0 +1,19 @@
+<!-- provisional: hand-authored until the signed-in capture (Task 4b) -->
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Telegram</title></head>
+<body>
+<div id="column-left">
+  <div class="chatlist">
+    <input class="input-search-input" type="text">
+    <a class="chatlist-chat"><div class="user-title"><span class="peer-title">Contact A</span></div></a>
+    <a class="chatlist-chat"><div class="user-title"><span class="peer-title">Contact B</span></div></a>
+  </div>
+</div>
+<script>
+setTimeout(function () {
+  document.querySelector('.chatlist').innerHTML =
+    '<input class="input-search-input" type="text">' +
+    '<a class="chatlist-chat"><div class="user-title"><span class="peer-title">Contact B</span></div></a>';
+}, 300);
+</script>
+</body></html>

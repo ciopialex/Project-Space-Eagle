@@ -1,0 +1,172 @@
+<div class="island-capsule collapsed">
+  <img class="a3d-cthumb" src="{thumb}" alt="">
+  <div class="mark a3d-mark">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#00FFA3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:24px;height:24px;"><rect x="3" y="3" width="18" height="18" rx="3" stroke-opacity="0.3"/><path d="M7 8h10"/><path d="M12 8v5l-1.5 2h3L12 13"/><path d="M6 19h12" stroke-width="2.2" stroke="#00FFA3"/><circle cx="12" cy="16.5" r="0.75" fill="#00FFA3"/></svg>
+  </div>
+  <div class="cmid">
+    <div class="ctitle">{title}</div>
+    <div class="cdetail">{detail}</div>
+  </div>
+  <div class="badge">{badge}</div>
+</div>
+
+<div class="island-glance glance">
+  <!-- Left: the part itself, turning. Canvas 2D and not WebGL on purpose —
+       three.js is 615KB against a 500KB bundle budget, and three hundred
+       triangles at 220px needs no GPU context to lose. -->
+  <div class="a3d-view">
+    <canvas id="a3d-viewport" width="440" height="472"></canvas>
+    <!-- Browse shows the repository's cover here (no model downloaded yet); the
+         canvas turns the real part once a model is picked. Filled by pill.html. -->
+    <img class="a3d-cover" id="a3d-cover" alt="" hidden>
+    <div class="a3d-viewtag">{printer}</div>
+    <!-- Filled by the island when the viewport is showing a calibration
+         cube instead of the part on the bed. Empty otherwise. -->
+    <div class="a3d-nopreview" id="a3d-nopreview"></div>
+    <!-- Filled by the island when this candidate is one of the user's picks.
+         The badge is its pick order; the chip is where it is going. -->
+    <div class="a3d-badge" id="a3d-badge">{pick_badge}</div>
+    <div class="a3d-chip"  id="a3d-chip">{pick_printer}</div>
+    <div class="a3d-deckpos" id="a3d-deckpos">{deck_pos}</div>
+    <!-- The discoverable way to flip. The wheel and the voice both work, and
+         neither is visible; a card that can be paged through should say so. -->
+    <button class="a3d-arrow prev" id="a3d-prev" aria-label="Previous model">‹</button>
+    <button class="a3d-arrow next" id="a3d-next" aria-label="Next model">›</button>
+  </div>
+
+  <!-- Right: the numbers. -->
+  <div class="a3d-tele">
+    <div class="a3d-teletop">
+      <span class="a3d-class">{classification}</span>
+      <span class="a3d-ready">{ready_label}</span>
+    </div>
+    <div class="a3d-dims">{dim_x} <i>×</i> {dim_y} <i>×</i> {dim_z}<em>mm</em></div>
+    <div class="a3d-by">by {creator}</div>
+    <div class="a3d-grid2">
+      <div class="a3d-cell"><span class="k">ETA</span><span class="v">{eta}</span></div>
+      <div class="a3d-cell"><span class="k">Filament</span><span class="v">{filament_grams}</span></div>
+      <div class="a3d-cell job-only"><span class="k">Layer</span><span class="v">{layers}</span></div>
+      <div class="a3d-cell wide job-only"><span class="k">Purgex</span><span class="v purge">{purgex}</span></div>
+      <div class="a3d-cell cand"><span class="k">Likes</span><span class="v">{likes_label}</span></div>
+      <div class="a3d-cell cand"><span class="k">Downloads</span><span class="v">{downloads_label}</span></div>
+    </div>
+    <div class="a3d-track"><i style="width:{progress_pct}%"></i></div>
+  </div>
+
+  <div class="a3d-job">
+    <div class="a3d-jobart">
+      <img class="a3d-thumb" src="{thumb}" alt="">
+      <div class="a3d-printerart" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M7 8h10"/><path d="M12 8v5l-1.5 2h3L12 13"/><path d="M6 19h12"/></svg></div>
+      <span class="a3d-jobname">{printer}</span>
+    </div>
+    <div class="a3d-jobmain">
+      <div class="a3d-jobhead">
+        <span class="a3d-jobstate">{state_label}</span>
+        <span class="a3d-jobpct">{pct_label}</span>
+      </div>
+      <div class="a3d-jobeta">{eta_left}</div>
+      <div class="a3d-jobsub">{finish_at} <span>Layer {layer_label}</span></div>
+      <div class="a3d-jobtele"><span>{xyz}</span><span>Fan {fan_part}</span></div>
+      <div class="a3d-jobtemps">
+        <div><span class="k">Nozzle</span><b>{nozzle}</b></div>
+        <div><span class="k">Bed</span><b>{bed}</b></div>
+        <div><span class="k">Chamber</span><b>{chamber}</b></div>
+      </div>
+      <div class="a3d-jobspool"><span class="k">Filament</span> {spool}</div>
+      <div class="a3d-jobbar"><i style="width:{progress_pct}%"></i></div>
+      <div class="a3d-controls">
+        <div class="a3d-speed" data-group="speed">
+          <button data-action="speed" data-arg-mode="silent" data-arg-printer="{printer_key}" aria-pressed="{speed_silent}">Silent</button>
+          <button data-action="speed" data-arg-mode="balanced" data-arg-printer="{printer_key}" aria-pressed="{speed_balanced}">Balanced</button>
+          <button data-action="speed" data-arg-mode="sport" data-arg-printer="{printer_key}" aria-pressed="{speed_sport}">Sport</button>
+          <button data-action="speed" data-arg-mode="ludicrous" data-arg-printer="{printer_key}" aria-pressed="{speed_ludicrous}">Ludicrous</button>
+        </div>
+        <button class="a3d-icon" data-action="light" data-toggle="state" data-arg-state="{light_next}" data-arg-printer="{printer_key}" aria-pressed="{light_on}" aria-label="Chamber light">
+          <svg viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V17h5v-1.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/></svg>
+        </button>
+        <button class="a3d-icon a3d-pause" data-action="{pause_action}" data-arg-printer="{printer_key}" aria-label="{pause_label}">
+          <svg viewBox="0 0 24 24"><path class="i-pause" d="M9 5v14M15 5v14"/><path class="i-play" d="M8 5l11 7-11 7z"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="island-expanded exp">
+  <div class="crown">
+    <div class="mark big">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#00FFA3" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:32px;height:32px;"><rect x="3" y="3" width="18" height="18" rx="3" stroke-opacity="0.3"/><path d="M7 8h10"/><path d="M12 8v5l-1.5 2h3L12 13"/><path d="M6 19h12" stroke-width="2.2" stroke="#00FFA3"/><circle cx="12" cy="16.5" r="0.75" fill="#00FFA3"/></svg>
+    </div>
+    <div class="who">
+      <div class="tick">{printer}</div>
+      <div class="corp">{name} • {state}</div>
+    </div>
+    <div class="rating">
+      <b>{state}</b>
+      <div class="why">Layer {layers} • ETA {eta}</div>
+    </div>
+  </div>
+
+  <div class="gov" style="--gtone:#00FFA3">
+    <span class="gicon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="14,2 6,2 6,22 18,22 18,8"/><polyline points="14,2 14,8 20,8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span>
+    <span class="gtext"><b>ACTIVE JOB</b> — {detail}</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat strong">
+      <span class="body"><span class="nm">Nozzle Temp</span><span class="track"><i style="width:{nozzle_pct}%"></i></span></span>
+      <span class="val">{nozzle}</span>
+    </div>
+    <div class="stat strong">
+      <span class="body"><span class="nm">Bed Temp</span><span class="track"><i style="width:{bed_pct}%"></i></span></span>
+      <span class="val">{bed}</span>
+    </div>
+    <div class="stat">
+      <span class="body"><span class="nm">Chamber Temp</span><span class="track"><i style="width:{chamber_pct}%"></i></span></span>
+      <span class="val">{chamber}</span>
+    </div>
+    <div class="stat strong">
+      <span class="body"><span class="nm">Print Progress</span><span class="track"><i style="width:{progress_pct}%"></i></span></span>
+      <span class="val">{progress_label}</span>
+    </div>
+    <div class="stat">
+      <span class="body"><span class="nm">Layer Progress</span><span class="track"><i style="width:{progress_pct}%"></i></span></span>
+      <span class="val">{layers}</span>
+    </div>
+    <div class="stat">
+      <span class="body"><span class="nm">Filament Remaining</span><span class="track"><i style="width:{filament_pct}%"></i></span></span>
+      <span class="val">{filament_remaining}</span>
+    </div>
+    <div class="stat strong">
+      <span class="body"><span class="nm">PURGEX Savings</span><span class="track"><i style="width:{purgex_pct}%"></i></span></span>
+      <span class="val">{purgex}</span>
+    </div>
+  </div>
+
+  <div class="footline">
+    <span class="fcell"><span class="fkey">Spool Material</span><span class="fval">{spool_material}</span></span>
+    <span class="fcell right"><span class="fkey">Estimated Finish</span><span class="fval">{eta}</span></span>
+  </div>
+
+  <div class="a3d-jobdeep">
+    <div class="a3d-cam">
+      <img data-live alt="">
+      <span class="a3d-camnote a3d-camwait">Starting camera</span>
+      <span class="a3d-camnote a3d-camoff">Camera inactive · Check connection</span>
+      <div class="a3d-camtag"><b>{printer}</b><span>{cam_note}</span></div>
+    </div>
+    <div class="a3d-thermals">
+      <div class="a3d-therm"><span class="k">Nozzle</span><b>{nozzle}</b><span class="t">target {nozzle_target}</span></div>
+      <div class="a3d-therm"><span class="k">Bed</span><b>{bed}</b><span class="t">target {bed_target}</span></div>
+      <div class="a3d-therm"><span class="k">Chamber</span><b>{chamber}</b><span class="t">fans {fans}</span></div>
+    </div>
+    <div class="a3d-file">{file_tail}</div>
+  </div>
+
+  <div class="a3d-grid" style="display:none;">
+    <div class="a3d-tile"><span class="k">Nozzle</span><span class="v">{nozzle}</span></div>
+    <div class="a3d-tile"><span class="k">Bed</span><span class="v">{bed}</span></div>
+    <div class="a3d-tile"><span class="k">Chamber</span><span class="v">{chamber}</span></div>
+    <div class="a3d-tile"><span class="k">ETA</span><span class="v">{eta}</span></div>
+  </div>
+</div>

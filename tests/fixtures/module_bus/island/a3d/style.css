@@ -1,0 +1,349 @@
+/* Aethelark-3D — Canonical 3-Stage Dynamic Island Card */
+:root {
+  --whale: #00FFA3;
+  /* The card's one colour, and it is the same green atrade uses.
+
+     a3d shipped with --accent cyan and thirteen more hardcoded var(--accent) on top
+     of it -- the CANDIDATE chip, the sensor readouts, the decay bar, the
+     governance row, two SVG icons -- so a printer card read as a different
+     product from a trade card sitting in the same pill a second earlier. The
+     island is one surface: a module supplies content for it, not a repaint of
+     it.
+
+     --material stayed cyan in atrade because it names a specific governance
+     verdict there. Nothing in this module ever referenced it, so it is gone
+     rather than left as an unused invitation to reintroduce the tint. */
+  --accent: #00FFA3;
+  --silver-hi: #ECECF2;
+  --text2: #A0A0AA;
+  --dim: #7C7C86;
+  --muted: #7C7C86;
+  --spring: cubic-bezier(.34,1.46,.5,1);
+  --ease: cubic-bezier(.4,0,.2,1);
+}
+
+/* Stage visibility */
+.pill[data-module="a3d"][data-stage="capsule"] .island-capsule, .pill[data-module="a3d"][data-stage="capsule"] .collapsed { display: flex !important; }
+.pill[data-module="a3d"][data-stage="capsule"] .island-glance, .pill[data-module="a3d"][data-stage="capsule"] .glance { display: none !important; }
+.pill[data-module="a3d"][data-stage="capsule"] .island-expanded, .pill[data-module="a3d"][data-stage="capsule"] .exp { display: none !important; }
+
+.pill[data-module="a3d"][data-stage="glance"] .island-capsule, .pill[data-module="a3d"][data-stage="glance"] .collapsed { display: none !important; }
+.pill[data-module="a3d"][data-stage="glance"] .island-glance, .pill[data-module="a3d"][data-stage="glance"] .glance { display: flex !important; }
+.pill[data-module="a3d"][data-stage="glance"] .island-expanded, .pill[data-module="a3d"][data-stage="glance"] .exp { display: none !important; }
+
+.pill[data-module="a3d"][data-stage="expanded"] .island-capsule, .pill[data-module="a3d"][data-stage="expanded"] .collapsed { display: none !important; }
+.pill[data-module="a3d"][data-stage="expanded"] .island-glance, .pill[data-module="a3d"][data-stage="expanded"] .glance { display: none !important; }
+.pill[data-module="a3d"][data-stage="expanded"] .island-expanded, .pill[data-module="a3d"][data-stage="expanded"] .exp { display: flex !important; }
+
+/* Stage 1: Collapsed / Capsule (320x62) */
+.island-capsule, .collapsed {
+  display: flex; align-items: center; gap: 13px; width: 100%; height: 100%;
+  box-sizing: border-box;
+}
+.mark { width: 34px; height: 34px; flex: none; position: relative; display: grid; place-items: center; background: transparent; }
+.mark.big { width: 52px; height: 52px; font-size: 22px; border-radius: 12px; }
+
+.cmid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ctitle { font-size: 12px; font-weight: 700; letter-spacing: .04em; color: var(--silver-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cdetail { font-size: 10px; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badge {
+  flex: none; font-family: "Doto", ui-monospace, monospace; font-weight: 800;
+  font-size: 11px; padding: 4px 10px; border-radius: 8px; color: var(--accent);
+  background: rgba(255,255,255,.05); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+/* Stage 2: Glance / Graph (440x236) */
+.island-glance, .glance {
+  height: 236px; padding: 18px 22px 14px;
+  display: flex; flex-direction: column; gap: 12px;
+  box-sizing: border-box; width: 100%;
+  animation: fadeUp .3s var(--ease) .06s both;
+}
+.qhead { display: flex; align-items: center; gap: 13px; width: 100%; }
+.who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.who .tick { font-family: "Doto", ui-monospace, monospace; font-weight: 900; font-size: 26px; line-height: 1; color: var(--silver-hi); letter-spacing: 0.01em; }
+.who .corp { font-family: "Manrope", sans-serif; font-size: 12px; color: var(--text2); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.qprice { margin-left: auto; text-align: right; flex: none; display: flex; flex-direction: column; align-items: flex-end; }
+.qprice b { display: block; font-family: "Doto", ui-monospace, monospace; font-weight: 900; font-size: 33px; line-height: 1; color: var(--silver-hi); font-variant-numeric: tabular-nums; }
+.qchg { display: flex; align-items: center; justify-content: flex-end; gap: 5px; margin-top: 4px; font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.qchg.up { color: #00FFA3; }
+.qchg .arrow { font-size: 11px; line-height: 1; }
+.qchg .qspan { font-size: 9.5px; font-weight: 800; letter-spacing: .12em; color: var(--dim); margin-left: 3px; padding: 2px 5px; border-radius: 4px; background: rgba(255,255,255,.06); }
+
+.a3d-dashboard {
+  flex: 1; display: flex; flex-direction: column; justify-content: space-between;
+  padding: 10px 14px; border-radius: 12px; background: rgba(255,255,255,0.035);
+  border: 1px solid rgba(255,255,255,0.06); gap: 6px;
+}
+.a3d-sensors { display: flex; gap: 12px; justify-content: space-between; }
+.a3d-sensor { display: flex; flex-direction: column; gap: 1px; }
+.a3d-sensor .k { font-size: 8.5px; font-weight: 800; color: var(--dim); letter-spacing: 0.12em; text-transform: uppercase; }
+.a3d-sensor .v { font-family: "Doto", monospace; font-size: 14px; font-weight: 800; color: var(--accent); }
+
+.a3d-job { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; }
+.a3d-job-name { color: var(--silver-hi); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.a3d-job-meta { color: var(--text2); font-size: 10.5px; }
+.a3d-job-meta b { color: var(--silver-hi); }
+.a3d-job-meta .dot { opacity: 0.4; margin: 0 3px; }
+
+.a3d-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.06); overflow: hidden; width: 100%; position: relative; }
+.a3d-track i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, rgba(0,255,163,.35), var(--accent)); box-shadow: 0 0 10px rgba(0,255,163,0.5); transition: width .6s ease; }
+
+.dwell { height: 2px; border-radius: 2px; background: rgba(255,255,255,.04); overflow: hidden; flex: none; opacity: 0.7; width: 100%; }
+.dwell i { display: block; height: 100%; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--accent)); transform-origin: left center; box-shadow: 0 0 6px rgba(0,255,163,0.4); }
+
+/* Stage 3: Expanded / 7-Layer Scorecard (440x364) */
+.island-expanded, .exp {
+  height: 364px; padding: 22px 24px 18px;
+  display: flex; flex-direction: column; gap: 14px;
+  box-sizing: border-box; width: 100%;
+  animation: fadeUp .34s var(--ease) .08s both;
+}
+.crown { display: flex; align-items: center; gap: 16px; width: 100%; }
+.rating { flex: none; text-align: right; max-width: 184px; }
+.rating b { display: block; font-family: "Doto", ui-monospace, monospace; font-weight: 900; font-size: 26px; line-height: 1; color: #00FFA3; letter-spacing: .02em; }
+.rating .why { display: block; font-size: 11.5px; font-weight: 600; color: var(--text2); margin-top: 4px; line-height: 1.32; }
+
+.gov { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px; background: rgba(255,255,255,.035); }
+.gov .gicon { width: 20px; height: 20px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--gtone, var(--accent)); }
+.gov .gicon svg { width: 100%; height: 100%; display: block; }
+.gov .gtext { font-size: 11.5px; color: var(--silver-hi); line-height: 1.35; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gov .gtext b { color: var(--gtone, var(--accent)); font-weight: 800; }
+
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; flex: 1; align-content: start; }
+.stat { display: grid; grid-template-columns: 1fr 40px; align-items: center; gap: 10px; }
+.stat .body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.stat .nm { font-size: 13px; font-weight: 600; color: var(--silver-hi); letter-spacing: .005em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat .track { height: 5px; border-radius: 3px; background: rgba(255,255,255,.06); overflow: hidden; }
+.stat .track i {
+  display: block; height: 100%; border-radius: 2px;
+  background: linear-gradient(90deg, rgba(0,255,163,.35), var(--accent));
+  transition: width .7s var(--spring);
+}
+.stat .val { font-family: "Manrope", sans-serif; font-weight: 800; font-size: 14.5px; text-align: right; font-variant-numeric: tabular-nums; color: var(--silver-hi); letter-spacing: .01em; }
+.stat.strong .val { color: #00FFA3; }
+
+.footline { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06); }
+.fcell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.fcell.right { text-align: right; }
+.fkey { font-size: 9px; letter-spacing: .15em; text-transform: uppercase; color: var(--dim); font-weight: 800; white-space: nowrap; }
+.fval { font-size: 15px; font-weight: 800; color: var(--silver-hi); font-variant-numeric: tabular-nums; letter-spacing: .01em; white-space: nowrap; }
+
+/* ── Stage 2: the part on the left, the numbers on the right ─────────────── */
+.pill[data-module="a3d"][data-stage="glance"] .island-glance,
+.pill[data-module="a3d"][data-stage="glance"] .glance {
+  display: flex !important; flex-direction: row; align-items: stretch;
+  gap: 0; padding: 0; height: 236px; overflow: hidden;
+}
+
+.a3d-view { position: relative; flex: 0 0 calc(50% - 8px); margin: 8px 0 8px 8px;
+            overflow: hidden; border-radius: 24px;
+            background: radial-gradient(120% 90% at 30% 20%, #0f1418, #000 70%); }
+.a3d-view canvas { width: 100%; height: 100%; display: block; }
+/* The repository cover, shown while browsing before any model is downloaded.
+   Overlays the viewport; the canvas is hidden by pill.html when this shows. */
+.a3d-cover { position: absolute; inset: 0; width: 100%; height: 100%;
+             object-fit: contain; background: #000; border-radius: inherit; }
+.a3d-viewtag { position: absolute; left: 12px; bottom: 10px;
+               font-family: 'Doto', monospace; font-size: 9px; font-weight: 800;
+               letter-spacing: .18em; color: var(--accent); opacity: .75; }
+
+.a3d-tele { width: 50%; flex: 0 0 50%; padding: 16px 18px 14px;
+            display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.a3d-teletop { display: flex; align-items: center; gap: 8px; }
+.a3d-class { font-family: 'Doto', monospace; font-size: 8.5px; font-weight: 800;
+             letter-spacing: .16em; padding: 3px 7px; border-radius: 5px;
+             color: var(--accent); background: rgba(0,255,163,.1);
+             border: 1px solid rgba(0,255,163,.28); }
+.a3d-ready { margin-left: auto; font-family: 'Doto', monospace; font-size: 8.5px;
+             font-weight: 800; letter-spacing: .14em; color: #00FFA3; }
+
+.a3d-dims { font-family: 'Manrope', sans-serif; font-size: 19px; font-weight: 800;
+            color: #F7F7FA; letter-spacing: -.4px; white-space: nowrap; }
+.a3d-dims i { font-style: normal; color: #4A4A52; margin: 0 3px; }
+.a3d-dims em { font-style: normal; font-size: 11px; color: #7C7C86; margin-left: 4px; }
+
+.a3d-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.a3d-cell { display: flex; flex-direction: column; gap: 2px; padding: 7px 9px;
+            border-radius: 8px; background: rgba(255,255,255,.035);
+            border: 1px solid rgba(255,255,255,.07); min-width: 0; }
+.a3d-cell.wide { grid-column: 1 / -1; }
+.a3d-cell .k { font-family: 'Manrope', sans-serif; font-size: 8px; font-weight: 700;
+               letter-spacing: .14em; text-transform: uppercase; color: #6E6E78; }
+.a3d-cell .v { font-family: 'Doto', monospace; font-size: 12px; font-weight: 800;
+               color: #ECECF2; white-space: nowrap; overflow: hidden;
+               text-overflow: ellipsis; }
+.a3d-cell .v.purge { color: #00FFA3; }
+
+.a3d-track { margin-top: auto; height: 4px; border-radius: 2px;
+             background: rgba(255,255,255,.07); overflow: hidden; }
+.a3d-track i { display: block; height: 100%; border-radius: 2px;
+               background: linear-gradient(90deg, rgba(0,255,163,.5), var(--accent));
+               box-shadow: 0 0 10px rgba(0,255,163,.45); }
+
+/* The stand-in marker. Sits over the viewport, low-contrast on purpose: it is
+   a caveat about the picture, not a warning about the machine. */
+.a3d-nopreview{
+  position:absolute; left:12px; top:10px;
+  font:600 8px/1 ui-monospace,monospace; letter-spacing:.14em;
+  color:#8C97A3; pointer-events:none;
+}
+.a3d-nopreview:empty{ display:none; }
+
+/* A pick has to be visible before it is committed. The assignment on screen is
+   what lets a misheard printer name be seen rather than discovered on the
+   wrong bed. */
+.pill[data-picked="1"] .a3d-view{
+  box-shadow: inset 0 0 0 2px rgba(0,255,163,.9),
+              inset 0 0 26px rgba(0,255,163,.22);
+}
+.a3d-badge{position:absolute;top:10px;left:10px;min-width:20px;height:20px;
+  border-radius:10px;background:#00FFA3;color:#04120c;
+  font:800 12px/20px ui-monospace,monospace;text-align:center;padding:0 5px}
+.a3d-badge:empty{display:none}
+.a3d-chip{position:absolute;top:10px;right:10px;padding:3px 9px;
+  border-radius:11px;border:1px solid rgba(0,255,163,.55);color:var(--accent);
+  font:700 10px/1 ui-monospace,monospace;letter-spacing:.1em}
+.a3d-chip:empty{display:none}
+.a3d-deckpos{position:absolute;bottom:10px;right:12px;color:var(--muted);
+  font:700 10px/1 ui-monospace,monospace;letter-spacing:.12em}
+.a3d-deckpos:empty{display:none}
+
+/* Only shown when there is somewhere to go: the island writes data-deck onto
+   the pill, so a single printer card carries no arrows to press. */
+.a3d-arrow{position:absolute;top:50%;transform:translateY(-50%);width:26px;
+  height:44px;display:none;align-items:center;justify-content:center;
+  border:0;border-radius:13px;cursor:pointer;
+  background:rgba(10,10,13,.72);color:var(--silver-hi,#d7d7de);
+  font:400 22px/1 ui-sans-serif,system-ui;padding:0;
+  box-shadow:0 2px 10px rgba(0,0,0,.5),inset 0 0 0 1px rgba(200,200,208,.18)}
+.pill[data-deck="1"] .a3d-arrow{display:flex}
+.a3d-arrow.prev{left:8px}
+.a3d-arrow.next{right:8px}
+.a3d-arrow:hover{background:rgba(24,24,30,.92);color:#fff}
+.a3d-arrow:disabled{opacity:.28;cursor:default}
+
+.a3d-job, .a3d-jobdeep { display: none; }
+.a3d-cthumb { display: none; }
+.pill[data-variant="job"] .a3d-cthumb:not([src=""]), .pill[data-variant="printer"] .a3d-cthumb:not([src=""]) { display: block; flex: none; width: 34px; height: 34px;
+  object-fit: contain; border-radius: 10px; corner-shape: squircle; background: rgba(255,255,255,.05); }
+.pill[data-variant="job"] .a3d-cthumb:not([src=""]) + .a3d-mark, .pill[data-variant="printer"] .a3d-cthumb:not([src=""]) + .a3d-mark { display: none; }
+.pill[data-variant="job"] .a3d-view, .pill[data-variant="job"] .a3d-tele, .pill[data-variant="printer"] .a3d-view, .pill[data-variant="printer"] .a3d-tele { display: none !important; }
+.pill[data-variant="job"] .a3d-job, .pill[data-variant="printer"] .a3d-job { display: flex; width: 100%; height: 100%; padding: 16px; gap: 16px; }
+.pill[data-variant="job"] .exp > :not(.a3d-jobdeep), .pill[data-variant="printer"] .exp > :not(.a3d-jobdeep) { display: none !important; }
+.pill[data-variant="job"] .exp, .pill[data-variant="printer"] .exp { padding: 0; }
+.pill[data-variant="job"] .a3d-jobdeep, .pill[data-variant="printer"] .a3d-jobdeep { display: flex; flex-direction: column; gap: 8px; width: 100%; height: 100%; padding: 12px; }
+
+.a3d-cam { position: relative; flex: none; width: 100%; aspect-ratio: 16 / 9; overflow: hidden;
+  border-radius: 20px; corner-shape: squircle; background: #050506;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+.a3d-cam img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  opacity: 0; transition: opacity .35s ease; }
+.pill[data-live="on"] .a3d-cam img { opacity: 1; }
+.a3d-camnote { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+  font-family: 'Manrope', sans-serif; font-size: 12px; font-weight: 700; color: var(--muted); }
+.pill[data-live="waiting"] .a3d-camwait { display: flex; animation: camshimmer 1.4s ease-in-out infinite; }
+.pill[data-live="off"] .a3d-camoff { display: flex; }
+@keyframes camshimmer { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+.a3d-camtag { position: absolute; left: 10px; bottom: 10px; display: flex; gap: 8px; align-items: baseline;
+  padding: 5px 10px; border-radius: 10px; background: rgba(0,0,0,.55); backdrop-filter: blur(8px);
+  font-family: 'Manrope', sans-serif; font-variant-numeric: tabular-nums; }
+.a3d-camtag b { font-size: 12px; font-weight: 800; color: #fff; }
+.a3d-camtag span { font-size: 11px; font-weight: 700; color: var(--accent); }
+.a3d-jobtele { display: flex; justify-content: space-between; font-family: 'Manrope', sans-serif;
+  font-size: 11px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.a3d-pause .i-play, .a3d-pause[data-action="resume"] .i-pause { display: none; }
+.a3d-pause[data-action="resume"] .i-play { display: inline; }
+
+.a3d-thumb { display: block; object-fit: contain; border-radius: 16px; corner-shape: squircle;
+  background: radial-gradient(circle at 50% 40%, rgba(0,255,163,.10), rgba(255,255,255,.02) 70%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
+.a3d-thumb[src=""] { visibility: hidden; }
+.a3d-jobart { position: relative; flex: 0 0 132px; display: flex; flex-direction: column; gap: 8px; }
+.a3d-jobart .a3d-thumb { width: 132px; height: 170px; }
+.a3d-jobname { font-family: 'Manrope', sans-serif; font-size: 12px; font-weight: 700; color: var(--text2);
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.a3d-jobmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.a3d-jobhead { display: flex; align-items: baseline; justify-content: space-between; }
+.a3d-jobstate { font-family: 'Manrope', sans-serif; font-size: 13px; font-weight: 700; color: var(--silver-hi); }
+.a3d-jobpct { font-family: 'Manrope', sans-serif; font-size: 26px; font-weight: 800; color: var(--accent);
+  font-variant-numeric: tabular-nums; line-height: 1; }
+.a3d-jobeta { font-family: 'Manrope', sans-serif; font-size: 20px; font-weight: 800; color: #fff;
+  font-variant-numeric: tabular-nums; line-height: 1.1; min-height: 22px; }
+.a3d-jobsub { font-family: 'Manrope', sans-serif; font-size: 11.5px; font-weight: 600; color: var(--muted);
+  font-variant-numeric: tabular-nums; display: flex; gap: 10px; }
+.a3d-jobbar { height: 4px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
+.a3d-jobbar i { display: block; height: 100%; border-radius: 2px; background: var(--accent);
+  box-shadow: 0 0 8px rgba(0,255,163,.5); transition: width .6s cubic-bezier(.16,1,.3,1); }
+.a3d-controls { margin-top: auto; display: flex; align-items: center; gap: 8px; }
+.a3d-speed { flex: 1; display: flex; gap: 2px; padding: 2px; border-radius: 12px; corner-shape: squircle;
+  background: rgba(255,255,255,.06); box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
+.a3d-speed button { flex: 1; border: 0; background: transparent; color: var(--text2); cursor: pointer;
+  font-family: 'Manrope', sans-serif; font-size: 10px; font-weight: 700; padding: 7px 0; border-radius: 10px;
+  corner-shape: squircle; transition: background .25s, color .25s; }
+.a3d-speed button[aria-pressed="true"] { background: rgba(255,255,255,.16); color: #fff; }
+.a3d-icon { flex: none; width: 34px; height: 34px; border: 0; border-radius: 12px; corner-shape: squircle; cursor: pointer;
+  background: rgba(255,255,255,.06); box-shadow: inset 0 0 0 1px rgba(255,255,255,.06);
+  display: flex; align-items: center; justify-content: center; transition: background .25s; }
+.a3d-icon svg { width: 17px; height: 17px; fill: none; stroke: var(--text2); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.a3d-icon[aria-pressed="true"] { background: rgba(255,214,102,.18); }
+.a3d-icon[aria-pressed="true"] svg { stroke: #FFD666; }
+.a3d-controls button[aria-busy="true"] { opacity: .5; }
+
+.a3d-deephead { display: flex; align-items: center; gap: 14px; }
+.a3d-deephead .a3d-thumb { width: 56px; height: 56px; border-radius: 14px; }
+.a3d-deepwho { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.a3d-deepwho b { font-family: 'Manrope', sans-serif; font-size: 17px; font-weight: 800; color: #fff; }
+.a3d-deepwho span, .a3d-deepeta span { font-family: 'Manrope', sans-serif; font-size: 11.5px; font-weight: 600;
+  color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.a3d-deepeta { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.a3d-deepeta b { font-family: 'Manrope', sans-serif; font-size: 17px; font-weight: 800; color: var(--accent);
+  font-variant-numeric: tabular-nums; }
+.a3d-thermals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.a3d-therm { display: flex; flex-direction: column; gap: 3px; padding: 9px 12px; border-radius: 14px; corner-shape: squircle;
+  background: rgba(255,255,255,.05); box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
+.a3d-therm .k, .a3d-deeprow .k { font-family: 'Manrope', sans-serif; font-size: 9.5px; font-weight: 800;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.a3d-therm b { font-family: 'Manrope', sans-serif; font-size: 19px; font-weight: 800; color: #fff;
+  font-variant-numeric: tabular-nums; line-height: 1; }
+.a3d-therm .t { font-family: 'Manrope', sans-serif; font-size: 10.5px; font-weight: 600; color: var(--muted);
+  font-variant-numeric: tabular-nums; }
+.a3d-deeprow { display: flex; align-items: baseline; justify-content: space-between; }
+.a3d-deeprow .v { font-family: 'Manrope', sans-serif; font-size: 13px; font-weight: 700; color: var(--silver-hi);
+  font-variant-numeric: tabular-nums; }
+.a3d-file { margin-top: auto; font-family: ui-monospace, monospace; font-size: 10px; color: rgba(255,255,255,.32);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.a3d-by, .a3d-cell.cand { display: none; }
+.pill[data-candidate="1"] .a3d-dims, .pill[data-candidate="1"] .a3d-cell.job-only,
+.pill[data-candidate="1"] .a3d-track { display: none; }
+.pill[data-candidate="1"] .a3d-cell.cand { display: flex; }
+.pill[data-candidate="1"] .a3d-by { display: block; font-family: 'Manrope', sans-serif; font-size: 13px;
+  font-weight: 700; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 6px 0 2px; }
+.pill[data-candidate="1"] .a3d-cell .v { font-variant-numeric: tabular-nums; }
+
+
+/* A printer with nothing on the bed: no progress, speed or pause, and its
+   temperatures and spool where the job figures would be. */
+.a3d-printerart, .a3d-jobtemps, .a3d-jobspool { display: none; }
+.pill[data-variant="printer"] .a3d-jobpct, .pill[data-variant="printer"] .a3d-jobeta,
+.pill[data-variant="printer"] .a3d-jobsub, .pill[data-variant="printer"] .a3d-jobbar,
+.pill[data-variant="printer"] .a3d-speed, .pill[data-variant="printer"] .a3d-pause,
+.pill[data-variant="printer"] .a3d-jobtele, .pill[data-variant="printer"] .a3d-thumb { display: none !important; }
+.pill[data-variant="printer"] .a3d-printerart { display: grid; place-items: center; width: 132px; height: 170px;
+  border-radius: 16px; corner-shape: squircle; color: var(--accent);
+  background: radial-gradient(circle at 50% 40%, rgba(0,255,163,.10), rgba(255,255,255,.02) 70%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
+.pill[data-variant="printer"] .a3d-printerart svg { width: 64px; height: 64px; opacity: .85; }
+.pill[data-variant="printer"] .a3d-jobtemps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 4px; }
+.a3d-jobtemps > div { display: flex; flex-direction: column; gap: 3px; padding: 9px 10px; border-radius: 12px;
+  corner-shape: squircle; background: rgba(255,255,255,.05); }
+.a3d-jobtemps .k, .a3d-jobspool .k { font-family: 'Manrope', sans-serif; font-size: 9px; font-weight: 800;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.a3d-jobtemps b { font-family: 'Manrope', sans-serif; font-size: 17px; font-weight: 800; color: #fff;
+  font-variant-numeric: tabular-nums; }
+.pill[data-variant="printer"] .a3d-jobspool { display: block; font-family: 'Manrope', sans-serif; font-size: 12px;
+  font-weight: 600; color: var(--text2); }
+.pill[data-variant="printer"] .a3d-jobstate { font-size: 20px; }

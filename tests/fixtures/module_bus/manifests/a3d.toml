@@ -1,0 +1,707 @@
+# Aethelark-3D's socket for the Space-Eagle harness.
+#
+# Every argv below matches the real `a3d` command line, and every tool passes
+# --json: the harness reads structured answers, never Rich tables. Tools that
+# act on a physical machine and cannot be taken back (starting and stopping a
+# print) carry `confirm`, so the harness asks the user before running them.
+#
+# `a3d register` copies this file into the user's modules directory. It is
+# copied, never re-rendered, so edits here are exactly what the eagle reads.
+
+key         = "a3d"
+binary      = "a3d"
+description = "Aethelark-3D: for Elegoo 3D printers -- find models, slice with ElegooSlicer, print, watch the print, track filament."
+output      = "json"
+
+instructions = """
+Anything about a 3D model or a 3D printer uses these tools, never a browser and never a mission.
+- These work with Elegoo printers, sliced with ElegooSlicer. If the user asks about another brand of printer or another slicer, say plainly that it is not supported yet. Filament of any brand is fine.
+- Finding models the user has not named yet, or "show me some X to print": a3d_browse. It puts several on the island to choose between.
+- One exact model they named, or a link or id: a3d_download. A file already on this computer: a3d_local. Names and download counts only: a3d_search.
+- Printing what is picked on the island: print_picked. Printing a model they named in the same breath: a3d_print. Call either as soon as the user asks; each returns the one question to ask. island_set_printer only records which printer a model on screen goes to; it starts nothing.
+- A running print: a3d_pause, a3d_resume, a3d_stop. Pausing can be undone; stopping cannot, so it asks first. a3d_speed changes how fast it prints.
+- "How is my print going": a3d_status. "Show me the print", "let me see it", "show me the camera": island_view with view details. "Show the controls": island_view with view summary. "Close it": island_view with view close. With more than one printer running, pass the printer's name as target.
+- What a print costs or what to charge: a3d_quote, in the user's currency (lei unless they set another). Prices the user tells you (filament, electricity, their time), or the currency their prices are in: a3d_rates.
+- Finding printers on the network: a3d_discover. A printer it reports as ready is connected: never ask for an access code for it. Only a printer it says needs a code gets a3d_pair with the code the user reads off the printer's screen. Never guess a code.
+- Making a machine announce itself (flash, wave, chime, beep): a3d_beacon.
+- "Does it have good reviews", "what did people say": a3d_reviews. "Open it in the browser" for a model: a3d_open. Pass the id the island shows for the model on screen.
+- When the user has one printer, leave the printer out; it is used automatically. Say a printer's name, never its key or address.
+- PurgeX is optional. On a multi-colour print you may mention it can cut waste; never turn it on unless the user asks for it.
+"""
+
+examples = ["Show me some phone stands I could print", "How's my print going?"]
+
+# A browse answers in about two seconds with covers and figures, and downloads
+# nothing: MakerWorld makes each download pass a robot check (~20 s). The host
+# downloads only the candidate the user picks and merges the answer into its
+# card, so the cover becomes the turning, measured part. The printed file is
+# the same one, so the wait is paid once.
+# MakerWorld lets only signed-in accounts download. The user signs in once,
+# in the eagle's own browser (Settings, Modules, Aethelark-3D); the eagle hands
+# this module that site's cookies -- and only those -- on stdin to `a3d
+# session`. A download refused for want of a sign-in answers needs_account,
+# and the eagle hands the session over again and retries.
+[[accounts]]
+site    = "makerworld.com"
+proof   = "token"
+why     = "Downloading models from MakerWorld needs your MakerWorld account."
+receive = ["session", "--json"]
+
+# The island runs one FSM for every module. A running print is an activity:
+# its compact bar is the capsule, `glance` is the controls card and `expanded`
+# the camera card. The camera streams only while the expanded card is on screen.
+[island]
+about      = "printer_key"
+dwell      = { expanded = 25 }
+live       = "camera"
+live_param = "printer"
+
+[deck]
+refine       = "download"      # the tool that refines one candidate
+refine_param = "query_or_id"   # ...called with this parameter
+refine_key   = "id"            # ...set to this field of the candidate
+
+[[tools]]
+name        = "search"
+description = """Search online 3D model repositories. Use when the user wants \
+to find a printable model ('find me a phone stand to print'). Returns structured \
+matches with download counts and like counts. It does NOT return how much \
+filament a model uses or how long it takes to print -- those fields come back \
+empty. Use `a3d_browse` or `a3d_local` when the user asks about size or \
+material, because those measure the actual file. For downloading, `a3d_browse` \
+wins whenever the user has not named one specific model."""
+argv        = ["search", "{query}", "--limit={limit}", "--sort={sort}", "--json"]
+seconds = 90
+reads = ["net"]
+
+  [tools.params.query]
+  type        = "STRING"
+  description = "What to search for, e.g. 'watch stand', 'starship'."
+  required    = true
+
+  [tools.params.limit]
+  type        = "INTEGER"
+  description = "How many results to return. Defaults to 10."
+
+  [tools.params.sort]
+  type        = "STRING"
+  description = "One of: downloads, likes, least_material, fastest."
+
+[[tools]]
+name        = "download"
+description = """Download ONE specific model the user has already identified, and show it. Use only when they name a particular model, give a link or an id, or pick one out of a set already on screen ('get me model 124686', 'download that one', 'the Pulsar Designs watch stand'). If they have NOT settled on a single model yet, call a3d_browse instead so they can see the options and choose — that covers phrasings like asking for "a watch stand" or "a phone dock" with nothing more specific. Returns the file, its measured bounding box in millimetres, and the geometry the Dynamic Island turns on screen. This does NOT start a print — it only fetches and shows the part. Also accepts an absolute path to a model file already on this computer (a full path ending in .stl or .3mf), which it measures and shows without downloading anything — use that whenever the user says they already have the file. Only ever handles 3D model files; reading or writing any other kind of file is file_controller."""
+argv        = ["download", "{query_or_id}", "--sort={sort}", "--printer={printer}", "--json"]
+seconds = 120
+writes = ["file"]
+exclusive = true
+danger = "undoable"
+one_at_a_time = true
+
+  [tools.params.query_or_id]
+  type        = "STRING"
+  description = "What to download: keywords like 'watch stand', or a model ID."
+  required    = true
+
+  [tools.params.sort]
+  type        = "STRING"
+  description = "Which match to take. One of: downloads, likes, least_material, fastest. Defaults to downloads."
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer the model is for. Omit to let the fleet choose by fit."
+
+[[tools]]
+name        = "browse"
+description = """Fetch several printable models at once and put them on screen \
+to choose between. Use whenever the user wants to look at options before \
+committing ('show me some watch stands', 'find me a phone dock and let me \
+pick', 'download a watch stand'). Each candidate comes back with its measured \
+size, and the Dynamic Island turns the real part on screen so the user can \
+flip through them. Prefer this over a3d_download whenever the user has not named \
+one specific model, and over a mission for any 'download a model' request \
+-- it does in one call what driving a browser does in twenty. This starts no print."""
+argv        = ["browse", "{query}", "--limit={limit}", "--printer={printer}", "--json"]
+seconds = 240
+one_at_a_time = true
+reads = ["web"]
+danger = "undoable"
+
+  [tools.params.query]
+  type        = "STRING"
+  description = "What to look for, e.g. 'watch stand'."
+  required    = true
+
+  [tools.params.limit]
+  type        = "INTEGER"
+  description = "How many candidates to fetch. Defaults to 5."
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer these are for. Omit to let the fleet choose by fit."
+
+[[tools]]
+name        = "camera"
+description = "Switch a printer's chamber camera stream on or off. The island calls this while the camera card is on screen."
+argv        = ["camera", "--printer={printer}", "--state={state}", "--json"]
+seconds     = 20
+internal    = true
+reads       = ["net"]
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer key."
+  required    = true
+
+  [tools.params.state]
+  type        = "STRING"
+  description = "on or off."
+  required    = true
+
+[[tools]]
+name           = "print_batch"
+description    = "Start printing the models the user has already picked, each on the printer they named. Use when they say 'print those', 'go ahead and print them', 'print the ones I picked', 'yes print it'. Get the job list from island_picks and pass it verbatim — never compose it yourself. Ask first: the first call runs nothing and returns a question to speak plus a token, and only a call carrying that token starts anything."
+argv           = ["print-batch", "{jobs}", "--json"]
+seconds = 600
+writes = ["printer"]
+exclusive = true
+danger = "permanent"
+one_at_a_time = true
+confirm        = true
+internal       = true
+confirm_prompt = "That will start those prints on the printers named. Shall I go ahead?"
+
+  [tools.params.jobs]
+  type        = "STRING"
+  description = "JSON array of {\"model_id\": \"...\", \"printer\": \"...\"} in the order the user picked them. Use the 'jobs' value returned by island_picks verbatim."
+  required    = true
+
+[[tools]]
+name        = "quote"
+description = """What a print costs and what to charge for it, in the user's \
+currency (lei unless they set another with a3d_rates). Use \
+whenever the user asks about price, cost, what to charge, whether a job is \
+worth it, or how much filament and time a model will use ('how much should I \
+charge for this', 'what does this cost me', 'is this worth printing'). \
+Reads the weight and print time out of the file itself when it is a sliced \
+.3mf, so it does not need to be told them. Counts filament, electricity, \
+machine wear, the user's own handling time, and the share of runs that fail \
+and have to be reprinted. Says which figures are the user's own and which are \
+assumed -- repeat that, because an assumed number quoted to a customer as \
+fact is how someone loses money. It prices a model, it does not fetch one -- to find or download a model use a3d_browse -- and it only reads 3D model files, never any other kind of file, which is file_controller. To change a rate use a3d_rates."""
+argv        = ["quote", "{model}", "--grams={grams}", "--hours={hours}", "--material={material}", "--margin={margin}", "--json"]
+seconds = 90
+reads = ["net"]
+
+  [tools.params.model]
+  type        = "STRING"
+  description = "The model file to price -- a full path to a .3mf or .stl. Leave empty and give grams and hours instead when there is no file."
+
+  [tools.params.grams]
+  type        = "NUMBER"
+  description = "Weight in grams. Leave empty for a sliced .3mf: the file already carries it and the file is right."
+
+  [tools.params.hours]
+  type        = "NUMBER"
+  description = "Print time in hours. Leave empty for a sliced .3mf: the file already carries it."
+
+  [tools.params.material]
+  type        = "STRING"
+  description = "PETG, PLA, ABS. Leave empty for a sliced .3mf. Only matters when that material has its own price set."
+
+  [tools.params.margin]
+  type        = "NUMBER"
+  description = "Target margin as a percent of the selling price, e.g. 65. Leave empty to use the user's configured target."
+
+[[tools]]
+name        = "rates"
+description = """Set or show what things cost this user: electricity per kWh, \
+filament per kilo, what the printer cost and how long it will last, their own \
+hourly rate, the target margin, and the currency those are in (lei unless \
+set). Use when the user states a price ('PETG costs me 70 a kilo', 'electricity \
+is 2 lei', 'my prices are in euros'), or asks what the \
+figures are. Setting one here makes every later a3d_quote use it. This only \
+records numbers; to price a specific model use a3d_quote, and to find or \
+download a model use a3d_browse."""
+argv        = ["rates", "--currency={currency}", "--electricity={electricity}", "--filament={filament}", "--material={material}", "--watts={watts}", "--printer-price={printer_price}", "--printer-life={printer_life}", "--failure-rate={failure_rate}", "--labour-minutes={labour_minutes}", "--labour-rate={labour_rate}", "--margin={margin}", "--json"]
+seconds = 90
+reads = ["net"]
+
+  [tools.params.currency]
+  type        = "STRING"
+  description = "What the user's prices are in, as they said it: EUR, USD, lei. Only when they say so."
+
+  [tools.params.electricity]
+  type        = "NUMBER"
+  description = "Price per kWh, in the user's currency."
+
+  [tools.params.filament]
+  type        = "NUMBER"
+  description = "Price per kilo of filament, in the user's currency. Pass material as well to price just that one."
+
+  [tools.params.material]
+  type        = "STRING"
+  description = "Which filament the price is for, e.g. PETG. Omit to set the general price."
+
+  [tools.params.watts]
+  type        = "NUMBER"
+  description = "What the printer draws while running."
+
+  [tools.params.printer_price]
+  type        = "NUMBER"
+  description = "What the printer cost, in the user's currency."
+
+  [tools.params.printer_life]
+  type        = "NUMBER"
+  description = "How many printing hours the machine is expected to last."
+
+  [tools.params.failure_rate]
+  type        = "NUMBER"
+  description = "Fraction of prints that fail and must be run again, 0 to 1. 0.08 means eight in a hundred."
+
+  [tools.params.labour_minutes]
+  type        = "NUMBER"
+  description = "Minutes of the user's own handling per job -- setup, removal, cleanup."
+
+  [tools.params.labour_rate]
+  type        = "NUMBER"
+  description = "What the user's own hour is worth, in the user's currency."
+
+  [tools.params.margin]
+  type        = "NUMBER"
+  description = "Target margin as a percent of the selling price."
+
+[[tools]]
+name        = "local"
+description = "Find 3D model files ALREADY ON THIS COMPUTER by part of their file name, measure them, and put them on screen. Use whenever the user refers to a file they already have rather than one to fetch: 'print my keychain file', 'I have a benchy somewhere, show it', 'the coaster in my 3D prints folder'. One match is shown as a card; several become a row to flip through and choose from. Downloads nothing and starts no print -- to fetch a model that is not on this computer yet, use a3d_browse. Only finds 3D model files; any other kind of file is file_controller."
+argv        = ["local", "{name}", "--dir={directory}", "--printer={printer}", "--json"]
+seconds = 60
+reads = ["files"]
+
+  [tools.params.name]
+  type        = "STRING"
+  description = "Part of the file name, e.g. 'keychain'. Not a search of the internet."
+  required    = true
+
+  [tools.params.directory]
+  type        = "STRING"
+  description = "Only look in this folder. Omit to search the usual model folders."
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer these are for. Optional."
+
+[[tools]]
+name        = "discover"
+description = "Find 3D printers on this network and add them to the fleet. Use whenever the user asks what printers are around, says a printer is missing or offline that should not be, or has just plugged one in or moved it to another network. Takes no arguments. Safe: it only asks printers to say who they are, and starts nothing."
+argv        = ["discover", "--json"]
+seconds = 60
+reads = ["net"]
+
+[[tools]]
+name        = "reviews"
+description = "What people who printed a model said: its star rating, how many printed it, and the most useful comments, including any complaints. Use for 'does it have good reviews', 'what did people say about this one', 'is it any good'. For the model on the island, pass the id the island shows. It downloads nothing; finding or downloading a model is a3d_browse."
+argv        = ["reviews", "{query_or_id}", "--json"]
+seconds = 60
+reads = ["net"]
+
+  [tools.params.query_or_id]
+  type        = "STRING"
+  description = "The model id (from the island or an earlier result), a link, or its name."
+  required    = true
+
+[[tools]]
+name        = "open"
+description = "Open a model's page in the user's browser, to see its photos, comments and makes. Use for 'open it in the browser', 'show me its page'. For the model on the island, pass the id the island shows. Any other website is web_agency."
+argv        = ["open", "{query_or_id}", "--json"]
+seconds = 60
+
+  [tools.params.query_or_id]
+  type        = "STRING"
+  description = "The model id (from the island or an earlier result), a link, or its name."
+  required    = true
+
+[[tools]]
+name        = "pair"
+description = "Connect to one printer and say whether it is ready. Leave access_code out unless a3d_discover or this tool said that printer needs one and the user read it off the printer's screen; never guess it. Without a code it checks the connection and says whether a code is needed. A Centauri Carbon (the first one) never uses an access code. This is not for finding printers (a3d_discover) and not for starting a print (a3d_print)."
+argv        = ["pair", "{printer}", "--code={access_code}", "--json"]
+seconds = 60
+reads = ["net"]
+writes = ["net"]
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer name, key or callsign, as a3d_discover reported it."
+  required    = true
+
+  [tools.params.access_code]
+  type        = "STRING"
+  description = "Only a code the user read off the printer's screen. Leave it out otherwise."
+  required    = false
+
+[[tools]]
+name        = "printers"
+description = """List the configured 3D printer fleet with their keys, status, \
+and addresses. Use when the user asks which printers exist or are set up."""
+argv        = ["fleet", "--json"]
+seconds = 90
+reads = ["net"]
+
+[[tools]]
+name        = "status"
+description = """Live telemetry from one printer: temperatures, print progress \
+and current state. Use for 'how's the print going' or 'is the printer busy'."""
+argv        = ["status", "--printer={printer}", "--json"]
+seconds = 90
+reads = ["net"]
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer name. Leave empty for the default printer."
+
+[[tools]]
+name        = "shelf"
+description = """List all filament spools in the offline shelf inventory — what \
+material is on hand and how much is left. Use for 'what filament do I have'."""
+argv        = ["spool", "--shelf", "--json"]
+seconds = 90
+reads = ["net"]
+
+[[tools]]
+name        = "spool"
+description = """Show the filament currently loaded in a printer's AMS slots. \
+Use for 'what filament is loaded' or 'what colour is in slot 2'."""
+argv        = ["spool", "--printer={printer}", "--slot={slot}", "--json"]
+seconds = 90
+reads = ["net"]
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer name. Leave empty for the default printer."
+
+  [tools.params.slot]
+  type        = "INTEGER"
+  description = "AMS slot, 1-4. Defaults to 1."
+
+[[tools]]
+name        = "load_spool"
+description = """Record the filament the user has on a printer, as they describe it: 'I have a brand new PETG spool on my Centauri Carbon 2', 'slot 2 is black PLA with about 300 grams left', 'I put the red PLA from the shelf back on'. One call per spool; for a multicolour printer, one call per slot. Call it the moment the user says what filament is on a printer, with the brand and material exactly as said, and the temperatures if they gave them; do not ask how much is left first. Every later print on that printer uses it. Use a3d_spool to read what is loaded, not this."""
+argv        = ["spool", "--load={material}", "--printer={printer}", "--slot={slot}", "--color={color}", "--grams={grams}", "--new={new}", "--size={size}", "--nozzle-temp={nozzle_temp}", "--bed-temp={bed_temp}", "--json"]
+seconds = 60
+writes = ["files"]
+danger = "undoable"
+
+  [tools.params.material]
+  type        = "STRING"
+  description = "The filament as they said it: 'PETG', 'PLA', 'Bambu Silk PLA'."
+  required    = true
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "The printer as they named it. Leave empty for the default printer."
+
+  [tools.params.slot]
+  type        = "INTEGER"
+  description = "Which slot, 1-4, on a multicolour printer. Leave empty for 1."
+
+  [tools.params.color]
+  type        = "STRING"
+  description = "The colour, only if they said one."
+
+  [tools.params.new]
+  type        = "BOOLEAN"
+  description = "true for a brand new, sealed spool."
+
+  [tools.params.grams]
+  type        = "NUMBER"
+  description = "Grams left on it, when it is not new."
+
+  [tools.params.size]
+  type        = "NUMBER"
+  description = "Grams a full spool of this kind holds, only if they said (e.g. 750). Defaults to 1000."
+
+  [tools.params.nozzle_temp]
+  type        = "INTEGER"
+  description = "Nozzle temperature for this filament, only if the user said one."
+
+  [tools.params.bed_temp]
+  type        = "INTEGER"
+  description = "Bed temperature for this filament, only if the user said one."
+
+[[tools]]
+name        = "filament"
+description = """Resolve any spool description ('AzureFilm HS Black Matte PLA', 'eSUN PLA+', 'Bambu Silk Red') to calibrated slicer preset temperatures, volumetric limits, and flow rules."""
+argv        = ["filament", "{query}", "--printer={printer}", "--json"]
+seconds = 90
+reads = ["net"]
+
+  [tools.params.query]
+  type        = "STRING"
+  description = "Filament brand, material, and finish (e.g. 'AzureFilm HS Black Matte PLA', 'Polymaker PolyTerra', 'eSUN PLA+')."
+  required    = true
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer to tune for. Leave empty for the default printer."
+
+[[tools]]
+name        = "vault"
+description = """Consolidated inventory overview of both online mounted AMS slots \
+and offline shelf spools. Use for full material audits."""
+argv        = ["vault", "--json"]
+seconds = 90
+reads = ["net"]
+
+[[tools]]
+name        = "doctor"
+description = "Check that a printer is healthy and reachable: network, mainboard, nozzle and bed thermistors, camera, and whether the spool holds enough filament. Use when the user asks 'is my printer okay', 'check the printer', 'why is it not working', 'is everything alright with the printer'."
+argv        = ["doctor", "--printer={printer}", "--json"]
+seconds = 90
+reads = ["net"]
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer name. Leave empty for the default printer."
+
+[[tools]]
+name        = "light"
+description = """Turn the printer's chamber light on or off. Use for 'turn on \
+the printer light' or 'lights off in the printer'."""
+argv        = ["light", "{state}", "--printer={printer}", "--json"]
+seconds = 90
+reads = ["net"]
+writes = ["printer"]
+danger = "undoable"
+
+  [tools.params.state]
+  type        = "STRING"
+  description = "Either 'on' or 'off'. Nothing else is accepted."
+  required    = true
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer name. Leave empty for the default printer."
+
+[[tools]]
+name        = "speed"
+description = """Set a printer's live PRINT SPEED MODE. Applies immediately and \
+works MID-PRINT, exactly like changing it on the printer's screen. Use for \
+'put the printer on silent mode', 'set it to sport', 'make it faster', 'slow the \
+print down', 'ludicrous mode', 'speed 2'. The four modes, slowest to fastest, \
+are silent, balanced, sport, ludicrous. 'quieter'/'slower' means silent; \
+'faster'/'quicker' means sport; 'fastest'/'max'/'full send' means ludicrous."""
+argv        = ["speed", "{mode}", "--printer={printer}", "--json"]
+seconds = 60
+reads = ["net"]
+writes = ["printer"]
+danger = "undoable"
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer name. Leave empty for the default printer."
+
+  [tools.params.mode]
+  type        = "STRING"
+  description = "One of silent, balanced, sport, ludicrous. A number 0-3 (0=silent, 1=balanced, 2=sport, 3=ludicrous) is also accepted; pass whichever the user said."
+  required    = true
+
+[[tools]]
+name        = "beacon"
+description = "Make a printer identify itself physically — flash its light, wave its toolhead, or chime — so the user can tell which machine is which. Use for 'which one is that', 'make that printer flash', 'find my printer', 'which one am I talking to', 'make it beep', 'make it sing'. Chiming is mode=chime on this tool; there is no separate tool for it."
+argv        = ["beacon", "{printer}", "--mode={mode}", "--json"]
+seconds = 90
+reads = ["net"]
+writes = ["printer"]
+danger = "undoable"
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer name or callsign. Leave empty for the default printer."
+
+  [tools.params.mode]
+  type        = "STRING"
+  description = "One of: spotlight, wave, chime, tap, display. Defaults to spotlight."
+
+[[tools]]
+name        = "alias"
+description = """Manage custom friendly printer names and callsigns (e.g. \
+'call the printer Zeus' or 'what is my printer called')."""
+argv        = ["alias", "{action}", "--name={name}", "--printer={printer}", "--json"]
+seconds = 90
+reads = ["net"]
+danger = "undoable"
+
+  [tools.params.action]
+  type        = "STRING"
+  description = "'list', 'set', or 'remove'. Defaults to 'list'."
+
+  [tools.params.name]
+  type        = "STRING"
+  description = "Friendly callsign name (e.g. Zeus, Hera, Titan)."
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer key or current name."
+
+[[tools]]
+name        = "canvas"
+description = """Record that a Centauri Carbon (the first one) has a CANVAS multi-filament \
+unit fitted, or that it was taken off. Use when the user says so ('my Carbon has a \
+CANVAS now'). A Centauri Carbon 2 or Centauri 2 reports its CANVAS itself: for those, \
+call a3d_discover instead."""
+argv        = ["canvas", "{printer}", "{state}", "--slots={slots}", "--json"]
+seconds = 60
+danger = "undoable"
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer, by name or key."
+  required    = true
+
+  [tools.params.state]
+  type        = "STRING"
+  description = "'on' if a CANVAS is fitted, 'off' if it was removed."
+  required    = true
+
+  [tools.params.slots]
+  type        = "INTEGER"
+  description = "Filament slots it adds. Omit for one CANVAS (4 slots)."
+
+[[tools]]
+name        = "remove"
+description = "Forget a printer so the eagle stops using it. Only when the user explicitly asks to remove or forget a printer, never to fix a printer that is offline or not answering. It asks first."
+argv        = ["fleet", "--remove", "{printer}", "--json"]
+seconds = 90
+reads = ["net"]
+danger = "undoable"
+confirm = true
+confirm_prompt = "That makes the eagle forget this printer, and it has to be found again before it can be used. Remove it?"
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer to remove, by name or key."
+  required    = true
+
+# The one tool here that moves matter.
+#
+# `a3d print` downloads a model, slices it, uploads it to a printer and starts
+# the print: hours of machine time and a spool of filament, on hardware in the
+# room. It is reached through a voice loop where a server-side VAD decides when
+# the sentence ended, over a microphone, in a house with other people in it.
+#
+# `confirm = true` makes it two-phase. The first call runs nothing and returns
+# a question for the eagle to SPEAK; only a call carrying the token that
+# question issued will start anything. The token is single-use, expires, and is
+# bound to these exact arguments — a yes for a keychain on CC1 cannot start a
+# benchy on CC2.
+#
+# `--no-start` is NOT passed: the user is being asked about a print that
+# actually prints. Slicing without starting would be a different tool with a
+# different question.
+[[tools]]
+name        = "print"
+description = """Download, slice and START A PHYSICAL 3D PRINT on a real \
+printer. Use only when the user explicitly asks to print something. This \
+consumes filament and hours of machine time; once started, only a3d_pause or a3d_stop halts it. The model can be a search phrase, a model id, or an absolute path to a file already on this computer -- it only ever handles 3D model files, and any other kind of file is file_controller. To fetch and show a model WITHOUT printing it, use a3d_browse."""
+argv        = ["print", "{query_or_id}", "--printer={printer}", "--filament={filament}", "--nozzle-temp={nozzle_temp}", "--bed-temp={bed_temp}", "--leveling={leveling}", "--want-purgex={purgex}", "--json"]
+seconds = 900
+reads = ["net"]
+writes = ["printer"]
+danger = "permanent"
+one_at_a_time = true
+
+confirm       = true
+# "on {printer}" rather than "on printer {printer}": `printer` is optional, and
+# an omitted optional now reads as "the default" rather than as a raw brace.
+# "on the default" is a sentence; "on printer the default" is not.
+confirm_prompt = "This will start a real print of '{query_or_id}' on {printer} with {filament}. It uses filament and takes hours; I can pause or stop it if you ask."
+
+  [tools.params.leveling]
+  type        = "BOOLEAN"
+  description = "Whether to run bed levelling before this print. true unless the user explicitly says to skip it. Omit entirely and it levels."
+  default     = true
+
+  [tools.params.purgex]
+  type        = "BOOLEAN"
+  description = "PurgeX is an OPTIONAL multi-colour purge optimiser that cuts wasted filament on colour changes. OMIT this for a normal print — the basic pipeline uses standard purge. Only pass true when the user has actually asked for PurgeX. On a multi-colour print it is worth MENTIONING that PurgeX is available, but never switch it on for them without asking."
+  default     = false
+
+  [tools.params.query_or_id]
+  type        = "STRING"
+  description = "The model to print, e.g. 'watch stand', or a model id."
+  required    = true
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer name. Leave empty for the default printer."
+
+  [tools.params.filament]
+  type        = "STRING"
+  description = "The filament on that printer, brand and material as the user said it, e.g. 'eSUN ASA+'. If you do not know it, call a3d_spool for that printer; if nothing is recorded, ask the user."
+  required    = true
+
+  [tools.params.nozzle_temp]
+  type        = "INTEGER"
+  description = "Nozzle temperature, only if the user said one for this print."
+
+  [tools.params.bed_temp]
+  type        = "INTEGER"
+  description = "Bed temperature, only if the user said one for this print."
+
+[[tools]]
+name        = "pause"
+description = """Pause the print running on a printer. It can be resumed. Use \
+for 'pause the print', 'hold on, pause it'. Says so if nothing is printing."""
+argv        = ["pause", "--printer={printer}", "--json"]
+seconds = 60
+reads = ["net"]
+writes = ["printer"]
+danger = "undoable"
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer name, or 'all' for every printer. Leave empty when the user did not name one; if several are busy, it says so and you ask which."
+
+[[tools]]
+name        = "resume"
+description = """Resume a paused print. Use for 'resume', 'carry on printing', \
+'unpause it'. Says so if the print is not paused."""
+argv        = ["resume", "--printer={printer}", "--json"]
+seconds = 60
+reads = ["net"]
+writes = ["printer"]
+danger = "undoable"
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer name, or 'all' for every printer. Leave empty when the user did not name one; if several are busy, it says so and you ask which."
+
+[[tools]]
+name        = "stop"
+description = """Stop the print running on a printer for good. It cannot be \
+resumed afterwards, so the part is lost. Use for 'stop the print', 'cancel it', \
+'abort'. To hold it and continue later, use a3d_pause instead."""
+argv        = ["stop", "--printer={printer}", "--json"]
+seconds = 60
+reads = ["net"]
+writes = ["printer"]
+danger = "permanent"
+confirm = true
+confirm_prompt = "That stops the print for good; it cannot be resumed."
+
+  [tools.params.printer]
+  type        = "STRING"
+  description = "Printer name, or 'all' for every printer. Leave empty when the user did not name one; if several are busy, it says so and you ask which."
+
+[events]
+listener = "a3d listen --fleet"
+
+# How much each event matters. Lifted verbatim from the hard-coded table in
+# core/ambient.py, which took it from a3d's own FleetSDCPStreamer — the module
+# raising an event is the one that knows what it costs a human to ignore it.
+#
+# Re-numbered into the harness's bands (fault 90-100, warning 70-89, asked
+# 40-69, routine 1-39) WITHOUT changing any pair's relative order, so
+# event-versus-event behaviour is identical. What the bands add is a slot for
+# cards: anything the user asked for sits at 50, which beats routine telemetry
+# and loses to hardware that needs a person.
+priority = { printer_error = 100, printer_paused = 95, spool_low_alert = 80, first_layer_passed = 35, print_complete = 30, print_progress = 25, purgex_savings_achieved = 20, printer_standby = 5 }

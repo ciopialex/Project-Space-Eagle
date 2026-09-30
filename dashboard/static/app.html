@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Aethelark 3D // Fleet Operations & Cybernetic Telemetry</title>
+  <link rel="stylesheet" href="/static/aethelark.css">
+  <script src="/static/crypto.js" defer></script>
+  <script src="/static/starfield.js" defer></script>
+  <script src="/static/dashboard.js" defer></script>
+</head>
+<body>
+  <canvas id="starfield"></canvas>
+  <div class="dashboard-container">
+    <header class="glass-panel" style="display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; margin-bottom: 16px;">
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <h2 style="font-family: var(--font-mono); font-size: 18px; letter-spacing: 1px; color: var(--accent);">AETHELARK 3D COMMAND</h2>
+        <span class="badge badge-live">FLEET SYNCHRONIZED</span>
+      </div>
+      <div style="display: flex; gap: 10px;">
+        <button onclick="Aethelark.wakeAgent()" class="btn btn-primary">TACTICAL WAKE</button>
+        <button onclick="logout()" class="btn">TERMINATE SESSION</button>
+      </div>
+    </header>
+
+    <main style="display: grid; grid-template-columns: 1fr 360px; gap: 16px; flex: 1; min-height: 0;">
+      <section class="glass-panel" style="display: flex; flex-direction: column; padding: 16px; min-height: 0;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <div style="font-size: 13px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px;">Live Subsystem Telemetry</div>
+          <span style="font-size: 11px; color: var(--text-dim);">STREAM PORT 8000 // DETERMINISTIC RUNTIME</span>
+        </div>
+        
+        <div id="feed" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px;">
+          <!-- Telemetry Feed -->
+        </div>
+
+        <form onsubmit="handleSendCommand(event)" style="display: flex; gap: 8px; margin-top: 14px;">
+          <input id="cmd-input" type="text" class="input-field" placeholder="Transmit G-Code or natural language intent..." autocomplete="off">
+          <button type="submit" class="btn btn-primary">TRANSMIT</button>
+        </form>
+      </section>
+
+      <aside style="display: flex; flex-direction: column; gap: 16px;">
+        <div class="glass-panel" style="padding: 16px;">
+          <div style="font-size: 13px; font-weight: 700; color: var(--text-muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px;">Physical Actuator Nodes</div>
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="background: rgba(0,0,0,0.25); padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--surface-border);">
+              <div style="display: flex; justify-content: space-between; font-weight: 600; font-size: 13px;">
+                <span>Centauri Carbon 1 (CC1)</span>
+                <span style="color: var(--success);">ONLINE</span>
+              </div>
+              <div style="display: flex; gap: 12px; margin-top: 6px; font-size: 11px; color: var(--text-muted);">
+                <span>Nozzle: 30.5°C</span>
+                <span>Bed: 29.9°C</span>
+                <span>Bambu Silk PLA (350g)</span>
+              </div>
+            </div>
+
+            <div style="background: rgba(0,0,0,0.25); padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--surface-border);">
+              <div style="display: flex; justify-content: space-between; font-weight: 600; font-size: 13px;">
+                <span>Centauri Carbon 2 (CC2)</span>
+                <span style="color: var(--success);">HEALTHY (0.85)</span>
+              </div>
+              <div style="display: flex; gap: 12px; margin-top: 6px; font-size: 11px; color: var(--text-muted);">
+                <span>Nozzle: 36.0°C</span>
+                <span>Bed: 32.0°C</span>
+                <span>Camera Stream Active</span>
+              </div>
+            </div>
+
+            <div style="background: rgba(0,0,0,0.25); padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--surface-border);">
+              <div style="display: flex; justify-content: space-between; font-weight: 600; font-size: 13px;">
+                <span>Centauri 2 Combo (AMS)</span>
+                <span style="color: var(--success);">HEALTHY (0.85)</span>
+              </div>
+              <div style="display: flex; gap: 12px; margin-top: 6px; font-size: 11px; color: var(--text-muted);">
+                <span>4-Slot Filament Multi-Material Multiplexer</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="glass-panel" style="padding: 16px; flex: 1;">
+          <div style="font-size: 13px; font-weight: 700; color: var(--text-muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px;">Volumetric Print Queue</div>
+          <div id="file-list" style="font-size: 12px; color: var(--text-dim);">No active print execution in progress</div>
+        </div>
+      </aside>
+    </main>
+  </div>
+  <div id="toast"></div>
+
+  <script>
+    function logout() {
+      localStorage.removeItem('aethelark_token');
+      localStorage.removeItem('aethelark_device_token');
+      window.location.href = '/login';
+    }
+
+    async function handleSendCommand(e) {
+      e.preventDefault();
+      const input = document.getElementById('cmd-input');
+      const text = input.value.trim();
+      if (!text) return;
+      try {
+        await Aethelark.sendCommand(text);
+        input.value = '';
+      } catch (err) {
+        Aethelark.showToast(err.message || 'Execution error');
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const tok = localStorage.getItem('aethelark_token');
+      if (!tok) {
+        window.location.href = '/login';
+        return;
+      }
+      Aethelark.connectWebSocket();
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,119 @@
+<div class="island-capsule collapsed">
+  <span class="mark {mark_class}">{mark_slot}</span>
+  <span class="cmid">
+    <span class="ctitle">{title}</span>
+    <span class="cdetail">{detail}</span>
+  </span>
+  <span class="badge {delta_dir}">{badge}</span>
+</div>
+
+<div class="island-glance glance">
+  <div class="qhead">
+    <span class="mark big {mark_class}">{mark_slot}</span>
+    <span class="who">
+      <span class="tick">{ticker}</span>
+      <span class="corp">{company_name}</span>
+    </span>
+    <span class="qprice">
+      <b>{price}</b>
+      <span class="qchg {delta_dir}">
+        <span class="arrow">{delta_arrow}</span>
+        {delta_abs} ({delta_pct})
+        <span class="qspan">1D</span>
+        <span class="atrade-delta" style="display:none;">{delta}</span>
+      </span>
+    </span>
+  </div>
+
+  <div class="spark">{sparkline_svg}</div>
+
+  <div class="ranges">
+    <button class="range" data-range="1D" aria-pressed="true">1D</button>
+    <button class="range" data-range="7D" aria-pressed="false">7D</button>
+    <button class="range" data-range="1M" aria-pressed="false">1M</button>
+    <button class="range" data-range="3M" aria-pressed="false">3M</button>
+    <button class="range" data-range="1Y" aria-pressed="false">1Y</button>
+    <button class="range" data-range="5Y" aria-pressed="false">5Y</button>
+  </div>
+
+  <div class="dwell"><i id="dwellbar"></i></div>
+
+  <span class="atrade-mark" style="display:none;"></span>
+  <div class="atrade-sub" style="display:none;">
+    <span>Prev close <b>{prev_close}</b></span>
+    <span>Chg <b class="{delta_dir}">{change_abs} ({delta_pct})</b></span>
+  </div>
+  <div class="atrade-range {delta_dir}" style="display:none;">
+    <div class="atrade-rail"></div>
+    <div class="atrade-fill" style="left:{range_left}%;width:{range_width}%"></div>
+  </div>
+</div>
+
+<div class="island-expanded exp">
+  <div class="crown">
+    <span class="mark big {mark_class}">{mark_slot}</span>
+    <span class="who">
+      <span class="tick">{ticker}</span>
+      <span class="corp">{company_name}</span>
+    </span>
+    <span class="rating">
+      <b>{verdict}</b>
+      <span class="why">{why}</span>
+      <span class="cov {coverage_tone}">{coverage_note}</span>
+    </span>
+    <span class="nowprice">
+      <b>{price}</b>
+      <span class="nowchg {delta_dir}">{delta_arrow} {delta_pct}</span>
+    </span>
+  </div>
+
+  <div class="gov {gov_shown}" style="--gtone:{gov_tone}">
+    <span class="gicon" aria-hidden="true">{gov_icon}</span>
+    <span class="gtext"><b>{gov_label}</b> — {gov_text}</span>
+  </div>
+
+  <!-- Same shape as .gov above: present in the DOM, shown only when the
+       payload actually carries the figures. `atrade insider` returns a whole
+       Form 4 ledger and the card had nowhere to put any of it. -->
+  <div class="insider {insider_shown}">
+    <span class="itext"><b>{insider_net}</b> — {insider_latest}</span>
+    <span class="icount">{insider_trade_count}</span>
+  </div>
+
+  <div class="stats">
+    {stat_items}
+  </div>
+
+  <div class="footline">
+    <span class="fcell">
+      <span class="fkey">Reward vs risk</span>
+      <span class="fval">{reward}</span>
+    </span>
+    <span class="fcell right">
+      <span class="fkey">Wrong below</span>
+      <span class="fval">{invalid}</span>
+    </span>
+  </div>
+
+  <div class="atrade-grid">
+    <div class="atrade-tile"><span class="k">Day High</span> <span class="v">{day_high}</span></div>
+    <div class="atrade-tile"><span class="k">Day Low</span> <span class="v">{day_low}</span></div>
+    <div class="atrade-tile"><span class="k">Volume</span> <span class="v">{volume}</span></div>
+    <div class="atrade-tile"><span class="k">Mkt Cap</span> <span class="v">{market_cap}</span></div>
+  </div>
+
+  <div class="stats skel" aria-hidden="true">
+    <div class="stat"><div class="body"><span class="nm">Fundamentals</span><span class="track"><i></i></span></div><span class="val"></span></div>
+    <div class="stat"><div class="body"><span class="nm">Macro</span><span class="track"><i></i></span></div><span class="val"></span></div>
+    <div class="stat"><div class="body"><span class="nm">News</span><span class="track"><i></i></span></div><span class="val"></span></div>
+    <div class="stat"><div class="body"><span class="nm">Sector position</span><span class="track"><i></i></span></div><span class="val"></span></div>
+    <div class="stat"><div class="body"><span class="nm">Insiders</span><span class="track"><i></i></span></div><span class="val"></span></div>
+    <div class="stat"><div class="body"><span class="nm">Supply chain</span><span class="track"><i></i></span></div><span class="val"></span></div>
+  </div>
+
+  <div class="depth">
+    <span class="dspin" aria-hidden="true"></span>
+    <span class="dtext live">Reading the filings</span>
+    <span class="dtext dead">No deeper read came back</span>
+  </div>
+</div>

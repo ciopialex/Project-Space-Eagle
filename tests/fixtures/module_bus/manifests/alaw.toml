@@ -1,0 +1,46 @@
+key = "alaw"
+binary = "alaw"
+description = "Aethelark-Law: Romanian Statutory Law, ANAF VIES & Corporate Tax Intelligence"
+output = "text"
+
+[[tools]]
+name = "tax"
+description = "Work out what a Romanian company owes in tax — micro-enterprise (1% or 3%), profit tax (16%) and dividend withholding (8%) — from its revenue and expenses. Use when the user asks 'how much tax do I owe', 'what would I pay on 500k revenue', 'is micro or profit tax better for me'."
+argv = ["tax", "--revenue={revenue}", "--expenses={expenses}"]
+seconds = 90
+reads = ["net"]
+
+[tools.params.revenue]
+type = "NUMBER"
+description = "Total revenue for the period, in RON."
+required = true
+
+[tools.params.expenses]
+type = "NUMBER"
+description = "Total deductible expenses for the period, in RON."
+required = false
+
+[[tools]]
+name = "anaf"
+description = "Look up a Romanian company by its fiscal code (CUI): checks the code is valid and asks ANAF whether it is VAT registered. Use when the user asks 'is this company real', 'check CUI 12345678', 'are they VAT registered'."
+argv = ["anaf", "{cui}"]
+seconds = 90
+reads = ["net"]
+
+[tools.params.cui]
+type = "STRING"
+description = "The company fiscal code (CUI), e.g. 12345678."
+required = true
+
+[[tools]]
+name        = "onrc_resolution"
+description = "Produce an official Sole Shareholder Resolution (Decizia Asociatului Unic) in the format Romanian ONRC accepts. Use when the user asks to 'draft a shareholder resolution', 'make the ONRC decision document', 'I need the decizia asociatului unic'."
+argv        = ["onrc-resolution", "--cui", "{cui}", "--shareholder", "{shareholder}", "--cnp", "{cnp}"]
+seconds = 90
+reads = ["net"]
+output      = "json"
+
+[tools.params]
+cui         = { type = "STRING", required = true, description = "The company fiscal code (CUI), e.g. 12345678." }
+shareholder = { type = "STRING", required = true, description = "Full name of the sole shareholder, as it should appear on the document." }
+cnp         = { type = "STRING", required = true, description = "The shareholder's Romanian personal numeric code (CNP), 13 digits." }

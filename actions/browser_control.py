@@ -1,0 +1,1471 @@
+
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import json
+import os
+import platform
+import shutil
+import subprocess
+import threading
+import webbrowser
+from pathlib import Path
+from typing import Optional
+
+from playwright.async_api import (
+    async_playwright,
+    BrowserContext,
+    Page,
+    Playwright,
+    TimeoutError as PlaywrightTimeout,
+)
+
+from core import user_paths
+_OS = platform.system()   # "Windows" | "Darwin" | "Linux"
+
+# Path to shared api_keys.json config
+_CONFIG_FILE = user_paths.api_keys_path()
+
+
+from actions.grounding.web.attach import DEBUG_PORT as _DEBUG_PORT
+from core.tool_result import ToolResult, settled
+
+
+def _read_config() -> dict:
+    """Read api_keys.json; returns {} on any error."""
+    try:
+        return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_config(data: dict) -> None:
+    """Write api_keys.json atomically."""
+    try:
+        _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        user_paths.write_private(_CONFIG_FILE, json.dumps(data, indent=4))
+    except Exception as e:
+        print(f"[Browser] Config write failed: {e}")
+
+def _normalize_url(url: str) -> str:
+    """
+    Bare words like "instagram" → "https://instagram.com"
+    Domains like "instagram.com" → "https://instagram.com"
+    Full URLs pass through unchanged.
+    """
+    url = url.strip()
+    if not url:
+        return "about:blank"
+    if "://" in url:
+        return url
+    # No dot at all → assume .com  (e.g. "instagram" → "instagram.com")
+    if "." not in url:
+        url = url + ".com"
+    return "https://" + url
+
+
+_AUTOMATION_BASE = Path.home() / ".aethelark_profiles"
+_LEGACY_AUTOMATION_BASE = Path.home() / ".jarvis_profiles"
+
+
+def _automation_base() -> Path:
+    """Root for Aethelark's persistent automation profiles (where a one-time
+    login like the WhatsApp QR is remembered). Renamed from the old
+    ~/.jarvis_profiles — we migrate the existing dir in place on first run so
+    accounts already signed in there keep working."""
+    try:
+        if _LEGACY_AUTOMATION_BASE.exists() and not _AUTOMATION_BASE.exists():
+            _LEGACY_AUTOMATION_BASE.rename(_AUTOMATION_BASE)
+            print(f"[Browser] migrated automation profiles → {_AUTOMATION_BASE}")
+    except Exception as e:
+        print(f"[Browser] profile migration skipped: {e}")
+    _AUTOMATION_BASE.mkdir(parents=True, exist_ok=True)
+    return _AUTOMATION_BASE
+
+
+def _real_profile_dir(browser: str) -> str:
+    home  = Path.home()
+    local = os.environ.get("LOCALAPPDATA", "")
+    roam  = os.environ.get("APPDATA", "")
+
+    candidates: list[Path] = []
+
+    if _OS == "Windows":
+        m = {
+            "chrome":   [Path(local) / "Google"          / "Chrome"          / "User Data"],
+            "chromium": [Path(local) / "Chromium"        / "User Data"],
+            "edge":     [Path(local) / "Microsoft"        / "Edge"            / "User Data"],
+            "brave":    [Path(local) / "BraveSoftware"    / "Brave-Browser"   / "User Data"],
+            "vivaldi":  [Path(local) / "Vivaldi"          / "User Data"],
+            "opera":    [Path(roam)  / "Opera Software"   / "Opera Stable",
+                         Path(local) / "Opera Software"   / "Opera Stable"],
+            "operagx":  [Path(roam)  / "Opera Software"   / "Opera GX Stable",
+                         Path(local) / "Opera Software"   / "Opera GX Stable"],
+        }
+        candidates = m.get(browser, [])
+
+    elif _OS == "Darwin":
+        lib = home / "Library" / "Application Support"
+        m = {
+            "chrome":   [lib / "Google"             / "Chrome"],
+            "chromium": [lib / "Chromium"],
+            "edge":     [lib / "Microsoft Edge"],
+            "brave":    [lib / "BraveSoftware"       / "Brave-Browser"],
+            "vivaldi":  [lib / "Vivaldi"],
+            "opera":    [lib / "com.operasoftware.Opera"],
+            "operagx":  [lib / "com.operasoftware.OperaGX"],
+        }
+        candidates = m.get(browser, [])
+
+    elif _OS == "Linux":
+        cfg = home / ".config"
+        snap = home / "snap"
+        m = {
+            "chrome":   [cfg / "google-chrome"],
+            # Snap Chromium keeps its profile inside its confined dir, NOT
+            # ~/.config/chromium — probe both so snap installs are found.
+            "chromium": [cfg / "chromium", cfg / "chromium-browser",
+                         snap / "chromium" / "common" / "chromium"],
+            "edge":     [cfg / "microsoft-edge"],
+            "brave":    [cfg / "BraveSoftware" / "Brave-Browser",
+                         snap / "brave" / "common" / "BraveSoftware" / "Brave-Browser"],
+            "vivaldi":  [cfg / "vivaldi"],
+            "opera":    [cfg / "opera", snap / "opera" / "common" / "opera"],
+            "operagx":  [cfg / "opera-gx"],
+        }
+        candidates = m.get(browser, [])
+
+    for p in candidates:
+        if p.exists():
+            print(f"[Browser] ✅ Real profile found for {browser}: {p}")
+            return str(p)
+
+    fallback = _automation_profile_dir(browser)
+    print(f"[Browser] ⚠️  Real profile not found for {browser}, using: {fallback}")
+    return fallback
+
+
+def _is_snap_browser(browser: str) -> bool:
+    """True if `browser` resolves to a snap-packaged binary. Snap confinement
+    changes where profiles must live, so callers branch on this."""
+    if _OS != "Linux":
+        return False
+    try:
+        spec = _resolve_browser(browser) or {}
+        exe = spec.get("exe") or ""
+        real = os.path.realpath(exe) if exe else ""
+    except Exception:
+        exe, real = "", ""
+    return "/snap/" in exe or "/snap/" in real
+
+
+def _automation_profile_dir(browser: str) -> str:
+    """The persistent Aethelark automation profile for a browser — where a
+    one-time login (e.g. the WhatsApp QR) is remembered. For snap browsers it
+    MUST live inside ~/snap/<browser>/common (the only place snap confinement
+    lets the browser write); hidden dirs under $HOME are blocked and fail with
+    'SingletonLock: Permission denied'."""
+    home = Path.home()
+    if _is_snap_browser(browser):
+        base = home / "snap" / browser / "common" / "aethelark-profile"
+    else:
+        base = _automation_base() / browser
+    base.mkdir(parents=True, exist_ok=True)
+    return str(base)
+
+def _firefox_profile_dir() -> Optional[str]:
+    home = Path.home()
+
+    if _OS == "Windows":
+        base = Path(os.environ.get("APPDATA", "")) / "Mozilla" / "Firefox"
+    elif _OS == "Darwin":
+        base = home / "Library" / "Application Support" / "Firefox"
+    else:
+        base = home / ".mozilla" / "firefox"
+
+    ini = base / "profiles.ini"
+    if not ini.exists():
+        return None
+
+    current: dict[str, str] = {}
+    default_path: Optional[str] = None
+
+    for line in ini.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            p = current.get("Path", "")
+            if p and current.get("Default") == "1":
+                is_rel = current.get("IsRelative", "1") == "1"
+                default_path = str(base / p) if is_rel else p
+            current = {}
+        elif "=" in line:
+            k, _, v = line.partition("=")
+            current[k.strip()] = v.strip()
+
+    p = current.get("Path", "")
+    if p and current.get("Default") == "1":
+        is_rel = current.get("IsRelative", "1") == "1"
+        default_path = str(base / p) if is_rel else p
+
+    if default_path and Path(default_path).exists():
+        print(f"[Browser] Firefox real profile: {default_path}")
+        return default_path
+    return None
+
+def _find_opera_windows() -> Optional[str]:
+    local  = os.environ.get("LOCALAPPDATA", "")
+    prog   = os.environ.get("PROGRAMFILES", "")
+    prog86 = os.environ.get("PROGRAMFILES(X86)", "")
+
+    candidates = [
+        Path(local)  / "Programs" / "Opera"    / "opera.exe",
+        Path(local)  / "Programs" / "Opera GX" / "opera.exe",
+        Path(prog)   / "Opera"    / "opera.exe",
+        Path(prog86) / "Opera"    / "opera.exe",
+    ]
+    for p in candidates:
+        if p.exists():
+            print(f"[Browser] Opera found at: {p}")
+            return str(p)
+
+    try:
+        import winreg
+        keys = [
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\opera.exe",
+            r"SOFTWARE\Clients\StartMenuInternet\OperaStable\shell\open\command",
+            r"SOFTWARE\Clients\StartMenuInternet\OperaGXStable\shell\open\command",
+            r"SOFTWARE\Clients\StartMenuInternet\opera\shell\open\command",
+        ]
+        for key_path in keys:
+            for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                try:
+                    k   = winreg.OpenKey(hive, key_path)
+                    val = winreg.QueryValue(k, None)
+                    winreg.CloseKey(k)
+                    exe = val.strip().strip('"').split('"')[0].split(" --")[0].strip()
+                    if exe and Path(exe).exists():
+                        print(f"[Browser] Opera found via registry: {exe}")
+                        return exe
+                except Exception:
+                    continue
+    except Exception as _e:
+        print(f"[browser_control.py] Non-fatal error at line 266: {_e}")
+
+    return shutil.which("opera") or None
+
+def _find_exe_windows(prog_name: str) -> Optional[str]:
+    try:
+        import winreg
+        paths_to_try = [
+            rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{prog_name}.exe",
+            rf"SOFTWARE\Clients\StartMenuInternet\{prog_name}\shell\open\command",
+        ]
+        for key_path in paths_to_try:
+            for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                try:
+                    k   = winreg.OpenKey(hive, key_path)
+                    val = winreg.QueryValue(k, None)
+                    winreg.CloseKey(k)
+                    exe = val.strip().strip('"').split('"')[0].split(" --")[0].strip()
+                    if exe and Path(exe).exists():
+                        return exe
+                except Exception:
+                    continue
+    except Exception as _e:
+        print(f"[browser_control.py] Non-fatal error at line 289: {_e}")
+    return None
+
+_BROWSER_SPECS: dict[str, dict] = {
+    "Windows": {
+        "chrome":   {"engine": "chromium", "channel": "chrome",  "bins": []},
+        "chromium": {"engine": "chromium", "channel": None,      "bins": ["chromium.exe"]},
+        "edge":     {"engine": "chromium", "channel": "msedge",  "bins": []},
+        "firefox":  {"engine": "firefox",  "channel": None,      "bins": ["firefox.exe"]},
+        "opera":    {"engine": "chromium", "channel": None,      "bins": ["opera.exe"],  "special": "opera_windows"},
+        "operagx":  {"engine": "chromium", "channel": None,      "bins": [],             "special": "opera_windows"},
+        "brave":    {"engine": "chromium", "channel": None,      "bins": ["brave.exe"]},
+        "vivaldi":  {"engine": "chromium", "channel": None,      "bins": ["vivaldi.exe"]},
+        "safari":   None,
+    },
+    "Darwin": {
+        "chrome":   {"engine": "chromium", "channel": "chrome",  "bins": []},
+        "chromium": {"engine": "chromium", "channel": None,      "bins": ["chromium"]},
+        "edge":     {"engine": "chromium", "channel": "msedge",  "bins": ["microsoft-edge"]},
+        "firefox":  {"engine": "firefox",  "channel": None,      "bins": ["firefox"]},
+        "opera":    {"engine": "chromium", "channel": None,      "bins": ["opera"]},
+        "operagx":  {"engine": "chromium", "channel": None,      "bins": ["opera"]},
+        "brave":    {"engine": "chromium", "channel": None,      "bins": ["brave browser", "brave"]},
+        "vivaldi":  {"engine": "chromium", "channel": None,      "bins": ["vivaldi"]},
+        "safari":   {"engine": "webkit",   "channel": None,      "bins": []},
+    },
+    "Linux": {
+        "chrome":   {"engine": "chromium", "channel": None,
+                     "bins": ["google-chrome", "google-chrome-stable"]},
+        "chromium": {"engine": "chromium", "channel": None,
+                     "bins": ["chromium-browser", "chromium", "/snap/bin/chromium"]},
+        "edge":     {"engine": "chromium", "channel": None,
+                     "bins": ["microsoft-edge", "microsoft-edge-stable"]},
+        "firefox":  {"engine": "firefox",  "channel": None, "bins": ["firefox"]},
+        "opera":    {"engine": "chromium", "channel": None, "bins": ["opera", "opera-stable"]},
+        "operagx":  {"engine": "chromium", "channel": None, "bins": ["opera", "opera-stable"]},
+        "brave":    {"engine": "chromium", "channel": None, "bins": ["brave-browser", "brave"]},
+        "vivaldi":  {"engine": "chromium", "channel": None, "bins": ["vivaldi-stable", "vivaldi"]},
+        "safari":   None,
+    },
+}
+
+_ALIASES: dict[str, str] = {
+    "google chrome":   "chrome",
+    "google-chrome":   "chrome",
+    "chromium-browser":"chromium",
+    "chromium browser":"chromium",
+    "microsoft edge":  "edge",
+    "ms edge":         "edge",
+    "msedge":          "edge",
+    "mozilla firefox": "firefox",
+    "opera gx":        "operagx",
+    "opera_gx":        "operagx",
+}
+
+
+def _resolve_browser(name: str) -> dict | None:
+    name   = _ALIASES.get(name.lower().strip(), name.lower().strip())
+    os_map = _BROWSER_SPECS.get(_OS, {})
+    spec   = os_map.get(name)
+    if spec is None:
+        return None
+
+    engine  = spec["engine"]
+    channel = spec.get("channel")
+    bins    = spec.get("bins", [])
+    exe     = None
+
+    if spec.get("special") == "opera_windows":
+        exe = _find_opera_windows()
+        if not exe:
+            print(f"[Browser] ⚠️  Opera executable not found on Windows.")
+        return {"engine": engine, "exe": exe, "channel": channel}
+
+    for b in bins:
+        found = shutil.which(b)
+        if found:
+            exe = found
+            break
+
+    if not exe and _OS == "Darwin":
+        app_names = {
+            "chrome":  ["Google Chrome.app"],
+            "chromium":["Chromium.app"],
+            "edge":    ["Microsoft Edge.app"],
+            "firefox": ["Firefox.app"],
+            "opera":   ["Opera.app", "Opera GX.app"],
+            "brave":   ["Brave Browser.app"],
+            "vivaldi": ["Vivaldi.app"],
+        }
+        for app in app_names.get(name, []):
+            app_dir = Path("/Applications") / app / "Contents" / "MacOS"
+            if app_dir.exists():
+                found_bins = list(app_dir.iterdir())
+                if found_bins:
+                    exe = str(found_bins[0])
+                    break
+
+    if not exe and _OS == "Windows" and not channel:
+        exe = _find_exe_windows(name)
+
+    return {"engine": engine, "exe": exe, "channel": channel}
+
+
+def _configured_default_browser() -> str | None:
+    """The user's chosen default browser from api_keys.json (set via the
+    'set_default' action or the classic UI). Normalized through _ALIASES.
+    Returns None when unset ('' / 'system default') so callers fall through to
+    the OS default."""
+    v = _read_config().get("default_browser", "").lower().strip()
+    v = _ALIASES.get(v, v)
+    return v or None
+
+
+def _detect_default_browser() -> str:
+    try:
+        if _OS == "Windows":
+            import winreg
+            k = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\Shell\Associations"
+                r"\UrlAssociations\http\UserChoice",
+            )
+            prog_id = winreg.QueryValueEx(k, "ProgId")[0].lower()
+            winreg.CloseKey(k)
+            for kw in ("edge", "firefox", "opera", "brave", "vivaldi", "chrome"):
+                if kw in prog_id:
+                    return kw
+        elif _OS == "Darwin":
+            out = subprocess.run(
+                ["defaults", "read",
+                 "com.apple.LaunchServices/com.apple.launchservices.secure",
+                 "LSHandlers"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.lower()
+            for kw in ("firefox", "opera", "brave", "vivaldi", "safari", "chrome", "edge"):
+                if kw in out:
+                    return kw
+        elif _OS == "Linux":
+            out = subprocess.run(
+                ["xdg-settings", "get", "default-web-browser"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.lower()
+            for kw in ("firefox", "opera", "brave", "vivaldi", "chromium", "chrome", "edge"):
+                if kw in out:
+                    return kw
+    except Exception as _e:
+        print(f"[browser_control.py] Non-fatal error at line 436: {_e}")
+    return "chrome"
+
+
+_DISPLAY_NAMES: dict[str, str] = {
+    "chrome": "Google Chrome", "chromium": "Chromium", "edge": "Microsoft Edge",
+    "firefox": "Firefox", "opera": "Opera", "operagx": "Opera GX",
+    "brave": "Brave", "vivaldi": "Vivaldi", "safari": "Safari",
+}
+# Single-glyph marks for the Settings browser picker (avoids shipping icon assets).
+_BROWSER_GLYPHS: dict[str, str] = {
+    "chrome": "C", "chromium": "◎", "edge": "e", "firefox": "◐",
+    "opera": "O", "operagx": "Ø", "brave": "◆", "vivaldi": "V", "safari": "S",
+}
+
+
+_BROWSERS_CACHE: list[dict] | None = None
+
+
+def list_browsers(refresh: bool = False) -> list[dict]:
+    """Every browser actually installed on this machine, for the Settings picker.
+    Each entry: id, name, glyph, is_default, is_snap, works (snap browsers still
+    work now that profiles are snap-safe, but we flag them so the UI can nudge
+    toward a real install when both exist).
+
+    Cached after the first call: the installed set and OS default don't change
+    within a session, and the probe shells out to `xdg-settings` — we don't want
+    to pay that (or block a caller) on every Settings open."""
+    global _BROWSERS_CACHE
+    if _BROWSERS_CACHE is not None and not refresh:
+        return _BROWSERS_CACHE
+    default = _detect_default_browser()
+    out: list[dict] = []
+    for bid in _BROWSER_SPECS.get(_OS, {}):
+        spec = _resolve_browser(bid)
+        if not spec:
+            continue
+        # Installed = we found a real executable, or Playwright can drive it via a
+        # managed channel (chrome/msedge on Win/Mac).
+        if not (spec.get("exe") or spec.get("channel")):
+            continue
+        out.append({
+            "id": bid,
+            "name": _DISPLAY_NAMES.get(bid, bid.title()),
+            "glyph": _BROWSER_GLYPHS.get(bid, bid[:1].upper()),
+            "is_default": bid == default,
+            "is_snap": _is_snap_browser(bid),
+        })
+    # Default first, then alphabetical — the recommended pick leads.
+    out.sort(key=lambda b: (not b["is_default"], b["name"]))
+    _BROWSERS_CACHE = out
+    return out
+
+
+_SEARCH_ENGINES: dict[str, str] = {
+    "google":     "https://www.google.com/search?q=",
+    "bing":       "https://www.bing.com/search?q=",
+    "duckduckgo": "https://duckduckgo.com/?q=",
+    "yandex":     "https://yandex.com/search/?text=",
+}
+
+_MAC_APP_NAMES: dict[str, str] = {
+    "chrome":  "Google Chrome",
+    "chromium":"Chromium",
+    "edge":    "Microsoft Edge",
+    "firefox": "Firefox",
+    "opera":   "Opera",
+    "operagx": "Opera GX",
+    "brave":   "Brave Browser",
+    "vivaldi": "Vivaldi",
+    "safari":  "Safari",
+}
+
+# Windows registry lookup names for browsers whose spec has no explicit binary
+_WIN_EXE_HINTS: dict[str, str] = {"chrome": "chrome", "chromium": "chromium", "edge": "msedge"}
+
+
+def _open_native(url: str, browser_name: Optional[str]) -> str:
+    """
+    Opens the user's REAL browser the normal way -- their own profile,
+    signed-in accounts and extensions. No automation is attached, so an
+    about:blank tab or an empty profile NEVER appears.
+    With no url the browser starts without one (its own start page or
+    restored session) -- exactly as if the user had opened it.
+    Works on Windows, macOS and Linux.
+    """
+    url = _normalize_url(url) if url and url.strip() else ""
+    if url == "about:blank":
+        url = ""
+
+    name = None
+    if browser_name:
+        name = _ALIASES.get(browser_name.lower().strip(), browser_name.lower().strip())
+    elif not url:
+        # No URL -> only a window opens, so the default browser's executable is needed
+        name = _detect_default_browser()
+
+    # Specific browser → launch its own executable, exactly like the user would.
+    if name:
+        if _OS == "Darwin":
+            app = _MAC_APP_NAMES.get(name)
+            if app:
+                cmd = ["open", "-a", app] + ([url] if url else [])
+                try:
+                    subprocess.run(cmd, check=True, timeout=10)
+                    return f"Opened in {name}: {url}" if url else f"Opened {name}."
+                except Exception as e:
+                    print(f"[Browser] 'open -a {app}' failed ({e}), trying binary…")
+
+        spec = _resolve_browser(name)
+        exe  = spec.get("exe") if spec else None
+        if not exe and _OS == "Windows":
+            if name in ("opera", "operagx"):
+                exe = _find_opera_windows()
+            else:
+                exe = _find_exe_windows(_WIN_EXE_HINTS.get(name, name))
+        if exe:
+            try:
+                subprocess.Popen(
+                    [exe, url] if url else [exe],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                return f"Opened in {name}: {url}" if url else f"Opened {name}."
+            except Exception as e:
+                print(f"[Browser] Native launch failed for {name}: {e}")
+        print(f"[Browser] '{name}' not found — falling back to default browser.")
+
+    if not url:
+        return "Could not find a browser to open."
+
+    # Default browser via the OS — exactly like the user clicking a link.
+    try:
+        if _OS == "Windows":
+            os.startfile(url)                       # ShellExecute → default browser
+        elif _OS == "Darwin":
+            subprocess.run(["open", url], check=True, timeout=10)
+        else:
+            subprocess.Popen(
+                ["xdg-open", url],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        return f"Opened in your default browser: {url}"
+    except Exception:
+        try:
+            if webbrowser.open(url):
+                return f"Opened in your default browser: {url}"
+        except Exception as _e:
+            print(f"[browser_control.py] Non-fatal error at line 583: {_e}")
+        return f"Could not open a browser for: {url}"
+
+
+class _BrowserSession:
+    """
+    A full session for one browser instance.
+    Every browser is opened on the real profile via launch_persistent_context.
+    """
+
+    def __init__(self, browser_name: str):
+        self.browser_name = browser_name
+        self._spec        = _resolve_browser(browser_name)
+
+        self._loop:    asyncio.AbstractEventLoop | None = None
+        self._thread:  threading.Thread | None          = None
+        self._ready    = threading.Event()
+
+        self._pw:      Playwright     | None = None
+        self._context: BrowserContext | None = None
+        self._page:    Page           | None = None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            daemon=True,
+            name=f"BrowserThread-{self.browser_name}",
+        )
+        self._thread.start()
+        self._ready.wait(timeout=20)
+
+    def _run_loop(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._async_init())
+        self._ready.set()
+        self._loop.run_forever()
+
+    async def _async_init(self):
+        self._pw = await async_playwright().start()
+
+    def run(self, coro, timeout: int = 60) -> str:
+        if not self._loop:
+            raise RuntimeError(f"Session for '{self.browser_name}' not started.")
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=timeout)
+
+    def close(self):
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(self._async_close(), self._loop).result(10)
+
+    async def _async_close(self):
+        if self._context:
+            try:
+                await self._context.close()
+            except Exception as _e:
+                print(f"[browser_control.py] Non-fatal error at line 641: {_e}")
+        if self._pw:
+            try:
+                await self._pw.stop()
+            except Exception as _e:
+                print(f"[browser_control.py] Non-fatal error at line 646: {_e}")
+        self._context = self._page = None
+
+    async def _adopt_page(self) -> Page:
+        """
+        launch_persistent_context already opens a first tab. Adopt it instead
+        of opening a new blank (about:blank) one, so the user never sees an
+        extra empty tab.
+        """
+        await asyncio.sleep(0.3)
+        pages = self._context.pages
+        return pages[0] if pages else await self._context.new_page()
+
+    async def _launch(self):
+        """
+        Starts the browser on the user's real profile.
+        Does nothing if the context is already open.
+        """
+        if self._context is not None:
+            return
+
+        if self._spec is None:
+            raise RuntimeError(
+                f"'{self.browser_name}' is not a browser I can control on "
+                f"{_OS}. Ask for one by name, such as Chrome or Firefox."
+            )
+
+        engine_name = self._spec["engine"]
+        exe         = self._spec["exe"]
+        channel     = self._spec["channel"]
+        engine_obj  = getattr(self._pw, engine_name)
+
+        if engine_name == "firefox":
+            profile = _firefox_profile_dir() or str(_automation_base() / "firefox")
+            kwargs: dict = {
+                "headless":    False,
+                "slow_mo":     0,
+                "viewport":    None,
+                "no_viewport": True,
+                "timeout":     25_000,
+            }
+            if exe:
+                kwargs["executable_path"] = exe
+            try:
+                self._context = await engine_obj.launch_persistent_context(profile, **kwargs)
+            except Exception as e:
+                print(f"[Browser] Firefox real profile failed ({e}), using Aethelark profile")
+                auto = str(_automation_base() / "firefox_automation")
+                Path(auto).mkdir(parents=True, exist_ok=True)
+                self._context = await engine_obj.launch_persistent_context(auto, **kwargs)
+
+            self._page = await self._adopt_page()
+            print(f"[Browser] ✅ Firefox launched")
+            return
+
+        if engine_name == "webkit":
+            safari_profile = str(_automation_base() / "safari")
+            Path(safari_profile).mkdir(parents=True, exist_ok=True)
+            kwargs = {
+                "headless":    False,
+                "slow_mo":     0,
+                "viewport":    None,
+                "no_viewport": True,
+                "timeout":     25_000,
+            }
+            self._context = await engine_obj.launch_persistent_context(safari_profile, **kwargs)
+            self._page = await self._adopt_page()
+            print(f"[Browser] ✅ Safari launched")
+            return
+
+        # Chrome/Chromium REFUSE automation on their live default profile (Chrome:
+        # "DevTools remote debugging requires a non-default data directory"), so a
+        # real-profile launch ALWAYS fails and wastes up to 25s before we fall back.
+        # Since it never actually drives the real profile anyway, go STRAIGHT to the
+        # persistent automation profile — that's where one-time logins (the WhatsApp
+        # QR) already live. Firefox/Edge keep the real-profile-first behaviour.
+        skip_real = self.browser_name in ("chrome", "chromium")
+        profile = (_automation_profile_dir(self.browser_name) if skip_real
+                   else _real_profile_dir(self.browser_name))
+
+        kwargs = {
+            "headless":    False,
+            "slow_mo":     0,
+            "viewport":    None,
+            "no_viewport": True,
+            "timeout":     25_000,
+            "args": [
+                "--start-maximized",
+                # Chrome publishes NOTHING of a page to the accessibility bus
+                # unless this is on. Measured on the user's own machine: the
+                # Chrome he was driving exposed ONE named node (the window
+                # frame) and zero page content, so `screen_find "search bar"`
+                # correctly returned NOT_FOUND — the search bar genuinely was
+                # not in the tree it was searching. With this flag the same
+                # page exposed 889 named nodes including
+                # ('entry', 'Address and search bar').
+                #
+                # That is the difference between a ~19ms exact structural
+                # lookup and a 5.8s vision guess that landed 650px away.
+                "--force-renderer-accessibility",
+                # A debug port makes this window reachable over CDP, so the
+                # eagle can act on it through the DOM instead of squinting at
+                # it. Without this, opening a page here THREW AWAY every
+                # structural tool: the MakerWorld run rendered the page
+                # perfectly and then had to guess at pixels, because
+                # web_agency cannot see into a browser it did not launch.
+                #
+                # Bound to localhost explicitly. A debug port is unrestricted
+                # control of this browser, including its cookies and every
+                # signed-in session in the profile — it must never be
+                # reachable off the machine.
+                f"--remote-debugging-port={_DEBUG_PORT}",
+                "--remote-debugging-address=127.0.0.1",
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--disable-default-apps",
+                "--no-default-browser-check",
+                # Suppress the yellow "unsupported command-line flag: --no-sandbox"
+                # infobar Playwright triggers (it launches Chromium with --no-sandbox
+                # by default). --test-type hides it without changing sandbox state,
+                # so the browser still launches reliably.
+                "--test-type",
+                "--disable-infobars",
+                # If a previous instance died uncleanly (GL crash / kill), Chrome
+                # otherwise shows a "Restore pages?" bubble that COVERS the UI and
+                # makes clicks hang until timeout. Suppress it.
+                "--hide-crash-restore-bubble",
+                "--disable-session-crashed-bubble",
+                # The automation browser doesn't need the GPU, and swiftshader GL was
+                # core-dumping on cleanup ("Failed to restore OpenGL context"). Disable
+                # GPU so it stays alive → the session is reusable → subsequent sends fast.
+                "--disable-gpu",
+            ],
+        }
+
+        if exe:
+            kwargs["executable_path"] = exe
+        elif channel:
+            kwargs["channel"] = channel
+
+        label = (
+            f"{self.browser_name}"
+            + (f"/{channel}" if channel else "")
+            + (f" @ {exe}" if exe else "")
+        )
+
+        try:
+            self._context = await engine_obj.launch_persistent_context(profile, **kwargs)
+            self._page = await self._adopt_page()
+            tag = "automation" if skip_real else "real"
+            print(f"[Browser] ✅ Launched [{label}] ({tag} profile) profile={profile}")
+            return
+        except Exception as e:
+            if skip_real:
+                # Already on the automation profile — nothing else to try.
+                raise RuntimeError(f"Could not launch {self.browser_name}: {e}") from e
+            print(f"[Browser] ⚠️  Real profile failed for {label}: {e}")
+
+        # Real profile locked/undriveable → the persistent Aethelark automation
+        # profile, where a one-time login stays signed in across sessions.
+        auto_profile = _automation_profile_dir(self.browser_name)
+        print(f"[Browser] Retrying with Aethelark profile: {auto_profile}")
+
+        try:
+            self._context = await engine_obj.launch_persistent_context(auto_profile, **kwargs)
+            self._page = await self._adopt_page()
+            print(f"[Browser] ✅ Launched [{label}] with Aethelark profile "
+                  f"(sign-ins persist across sessions)")
+        except Exception as e2:
+            raise RuntimeError(f"Could not launch {self.browser_name}: {e2}") from e2
+
+
+    async def _get_page(self) -> Page:
+        await self._launch()
+        try:
+            # If somehow page got closed, open a fresh one
+            if self._page is None or self._page.is_closed():
+                self._page = await self._context.new_page()
+                await asyncio.sleep(0.2)
+        except Exception as e:
+            # The persistent context/browser was closed (e.g. the user shut the
+            # window after the previous action). Drop the dead handles and relaunch
+            # a fresh browser so the tool RECOVERS instead of failing every
+            # subsequent call with "Target page, context or browser has been closed".
+            if "closed" in str(e).lower() or "target page" in str(e).lower():
+                print(f"[Browser] Context was closed — relaunching {self.browser_name}.")
+                try:
+                    if self._context is not None:
+                        await self._context.close()
+                except Exception as _e:
+                    print(f"[browser_control.py] Non-fatal error at line 791: {_e}")
+                self._context = None
+                self._page = None
+                await self._launch()
+                if self._page is None or self._page.is_closed():
+                    self._page = await self._context.new_page()
+                    await asyncio.sleep(0.2)
+            else:
+                raise
+        return self._page
+
+    async def go_to(self, url: str) -> str:
+
+        url      = _normalize_url(url)
+        page     = await self._get_page()
+        prev_url = page.url
+
+        async def _do_goto(p: Page) -> str:
+            """Attempt navigation and return the resulting URL (may still be blank)."""
+            try:
+                await p.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                await asyncio.sleep(0.3)
+            except PlaywrightTimeout:
+                pass   # page may have partially loaded — check URL below
+            except Exception as e:
+                print(f"[Browser] goto exception (non-fatal): {e}")
+            return p.url
+
+        result_url = await _do_goto(page)
+
+        if result_url in ("about:blank", "", None, prev_url) and prev_url in ("about:blank", "", None):
+            print(f"[Browser] Still blank after goto — retrying on new tab: {url}")
+            try:
+                new_page   = await self._context.new_page()
+                self._page = new_page
+                result_url = await _do_goto(new_page)
+            except Exception as e:
+                print(f"[Browser] New-tab retry failed: {e}")
+
+        if result_url and result_url not in ("about:blank", "", None):
+            return f"Opened: {result_url}"
+        return f"Could not open: {url}"
+
+    async def search(self, query: str, engine: str = "google") -> str:
+        base = _SEARCH_ENGINES.get(engine.lower(), _SEARCH_ENGINES["google"])
+        return await self.go_to(base + query.replace(" ", "+"))
+
+    async def click(self, selector: str = None, text: str = None) -> str:
+        page = await self._get_page()
+        try:
+            if text:
+                await page.get_by_text(text, exact=False).first.click(timeout=8_000)
+                return f"Clicked text: '{text}'"
+            if selector:
+                await page.click(selector, timeout=8_000)
+                return f"Clicked selector: {selector}"
+            return "No selector or text provided."
+        except PlaywrightTimeout:
+            return "Element not found (timeout)."
+        except Exception as e:
+            return f"Click error: {e}"
+
+    async def type_text(self, selector: str = None, text: str = "",
+                        clear_first: bool = True) -> str:
+        page = await self._get_page()
+        try:
+            el = page.locator(selector).first if selector else page.locator(":focus")
+            if clear_first:
+                await el.clear()
+            await el.type(text, delay=50)
+            return "Text typed."
+        except Exception as e:
+            return f"Type error: {e}"
+
+    async def scroll(self, direction: str = "down", amount: int = 500) -> str:
+        page = await self._get_page()
+        try:
+            y = amount if direction == "down" else -amount
+            await page.mouse.wheel(0, y)
+            return f"Scrolled {direction}."
+        except Exception as e:
+            return f"Scroll error: {e}"
+
+    async def press(self, key: str) -> str:
+        page = await self._get_page()
+        try:
+            await page.keyboard.press(key)
+            return f"Pressed: {key}"
+        except Exception as e:
+            return f"Key error: {e}"
+
+    async def get_text(self) -> str:
+        page = await self._get_page()
+        try:
+            text = await page.inner_text("body")
+            return text[:4_000]
+        except Exception as e:
+            return f"Could not get page text: {e}"
+
+    async def get_url(self) -> str:
+        page = await self._get_page()
+        return page.url
+
+    async def fill_form(self, fields: dict) -> str:
+        page    = await self._get_page()
+        results = []
+        for selector, value in fields.items():
+            try:
+                el = page.locator(selector).first
+                await el.clear()
+                await el.type(str(value), delay=40)
+                results.append(f"✓ {selector}")
+            except Exception as e:
+                results.append(f"✗ {selector}: {e}")
+        return "Form filled: " + ", ".join(results)
+
+    async def smart_click(self, description: str) -> str:
+        page = await self._get_page()
+        for role in ("button", "link", "searchbox", "textbox", "menuitem", "tab"):
+            try:
+                loc = page.get_by_role(role, name=description)
+                if await loc.count() > 0:
+                    await loc.first.click(timeout=5_000)
+                    return f"Clicked ({role}): '{description}'"
+            except Exception as _e:
+                print(f"[browser_control.py] Non-fatal error at line 916: {_e}")
+        for attempt in (
+            lambda: page.get_by_text(description, exact=False).first.click(timeout=5_000),
+            lambda: page.get_by_placeholder(description, exact=False).first.click(timeout=5_000),
+            lambda: page.locator(
+                f'[alt*="{description}" i],[title*="{description}" i],'
+                f'[aria-label*="{description}" i]'
+            ).first.click(timeout=5_000),
+        ):
+            try:
+                await attempt()
+                return f"Clicked: '{description}'"
+            except Exception as _e:
+                print(f"[browser_control.py] Non-fatal error at line 929: {_e}")
+        return f"Could not find element: '{description}'"
+
+    async def smart_type(self, description: str, text: str) -> str:
+        page = await self._get_page()
+        candidates = [
+            ("placeholder", page.get_by_placeholder(description, exact=False)),
+            ("label",       page.get_by_label(description, exact=False)),
+            ("role",        page.get_by_role("textbox", name=description)),
+            ("searchbox",   page.get_by_role("searchbox")),
+            ("combobox",    page.get_by_role("combobox", name=description)),
+        ]
+        for method, loc in candidates:
+            try:
+                el = loc.first
+                if await el.count() == 0:
+                    continue
+                await el.clear()
+                await el.type(text, delay=50)
+                return f"Typed into ({method}): '{description}'"
+            except Exception:
+                continue
+        return f"Could not find input: '{description}'"
+
+    async def new_tab(self, url: str = "") -> str:
+        page = await self._get_page()
+        ctx  = page.context
+        new  = await ctx.new_page()
+        self._page = new
+        if url:
+            return await self.go_to(url)
+        return "New tab opened."
+
+    async def close_tab(self) -> str:
+        page = self._page
+        if page and not page.is_closed():
+            ctx   = page.context
+            await page.close()
+            pages = ctx.pages
+            self._page = pages[-1] if pages else None
+            return "Tab closed."
+        return "No active tab to close."
+
+    async def screenshot(self, path: str = None) -> str:
+        page = await self._get_page()
+        try:
+            save_path = path or str(Path.home() / "Desktop" / "aethelark_screenshot.png")
+            await page.screenshot(path=save_path, full_page=False)
+            return f"Screenshot saved: {save_path}"
+        except Exception as e:
+            return f"Screenshot error: {e}"
+
+    async def back(self) -> str:
+        page = await self._get_page()
+        try:
+            await page.go_back(timeout=10_000)
+            return f"Navigated back: {page.url}"
+        except Exception as e:
+            return f"Back error: {e}"
+
+    async def forward(self) -> str:
+        page = await self._get_page()
+        try:
+            await page.go_forward(timeout=10_000)
+            return f"Navigated forward: {page.url}"
+        except Exception as e:
+            return f"Forward error: {e}"
+
+    async def reload(self) -> str:
+        page = await self._get_page()
+        try:
+            await page.reload(timeout=15_000)
+            return f"Page reloaded: {page.url}"
+        except Exception as e:
+            return f"Reload error: {e}"
+
+class _SessionRegistry:
+    """Holds every active browser session."""
+
+    def __init__(self):
+        self._sessions:        dict[str, _BrowserSession] = {}
+        self._active_browser:  str                        = ""
+        self._lock             = threading.Lock()
+        self._last_native_url: str                        = ""
+
+    def has(self, browser_name: str | None = None) -> bool:
+        """Is there an active automation session for this browser (or any)?"""
+        with self._lock:
+            if not browser_name:
+                return bool(self._sessions)
+            name = _ALIASES.get(browser_name.lower().strip(), browser_name.lower().strip())
+            return name in self._sessions
+
+    def note_native_url(self, url: str) -> None:
+        self._last_native_url = url
+
+    def pop_native_url(self) -> str:
+        """The URL last opened natively, once (consumed so it is not opened twice)."""
+        url, self._last_native_url = self._last_native_url, ""
+        return url
+
+    def _get_or_create(self, browser_name: str) -> _BrowserSession:
+        with self._lock:
+            if browser_name not in self._sessions:
+                sess = _BrowserSession(browser_name)
+                sess.start()
+                self._sessions[browser_name] = sess
+                print(f"[Registry] New session: {browser_name}")
+            return self._sessions[browser_name]
+
+    def get(self, browser_name: str | None = None) -> _BrowserSession:
+        if not browser_name:
+            browser_name = (self._active_browser
+                            or _configured_default_browser()
+                            or _detect_default_browser())
+        browser_name = _ALIASES.get(browser_name.lower().strip(), browser_name.lower().strip())
+        sess = self._get_or_create(browser_name)
+        self._active_browser = browser_name
+        return sess
+
+    def switch(self, browser_name: str) -> str:
+        browser_name = _ALIASES.get(browser_name.lower().strip(), browser_name.lower().strip())
+        self._get_or_create(browser_name)
+        self._active_browser = browser_name
+        return f"Active browser → {browser_name}"
+
+    def close_one(self, browser_name: str) -> str:
+        with self._lock:
+            sess = self._sessions.pop(browser_name, None)
+        if sess:
+            sess.close()
+            if self._active_browser == browser_name:
+                self._active_browser = ""
+            return f"{browser_name} closed."
+        return f"No active session for: {browser_name}"
+
+    def close_all(self) -> str:
+        with self._lock:
+            names    = list(self._sessions.keys())
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+            self._active_browser = ""
+        for s in sessions:
+            try:
+                s.close()
+            except Exception as _e:
+                print(f"[browser_control.py] Non-fatal error at line 1079: {_e}")
+        return "All browsers closed: " + (", ".join(names) if names else "none")
+
+    def list_sessions(self) -> str:
+        with self._lock:
+            if not self._sessions:
+                return "No active browser sessions."
+            lines = []
+            for name in self._sessions:
+                marker = " ◀ active" if name == self._active_browser else ""
+                lines.append(f"  • {name}{marker}")
+            return "Open browsers:\n" + "\n".join(lines)
+
+
+_registry = _SessionRegistry()
+
+
+#: Prose these branches produce that is a REFUSAL rather than a result. Each
+#: one is a decision the function already made; the string just never said so.
+_FAILED_PREFIXES = (
+    "unknown browser action", "unknown action", "please specify",
+    "browser error", "no url", "could not", "failed", "not found",
+    "no browser",
+    # `click`/`type`'s own session-level refusals (`BrowserSession.click`,
+    # `.type_text`) — resurrected as reachable by the `selector` fallback fix
+    # but never exercised against this list, so all four read as ok=True.
+    "no selector", "element not found", "type error", "click error",
+)
+
+#: Phrases that mark a refusal from the MIDDLE of a sentence. "Browser action
+#: 'go_to' timed out (60s)" starts with a perfectly ordinary word.
+#:
+#: A bare "timeout" marker used to live here too, added to catch "Type
+#: error: Timeout 30000ms exceeded." and "Element not found (timeout).".
+#: Both are already caught by the "type error"/"element not found" PREFIXES
+#: above, and an ANYWHERE-substring "timeout" also matches a perfectly
+#: ordinary search query ("playwright timeout error"), URL
+#: (".../docs/timeout"), or link text ("Timeout settings") that never
+#: touched a refusal path — those came back ok=False live. Removed rather
+#: than narrowed, since nothing legitimate depended on it.
+_FAILED_ANYWHERE = (
+    "timed out", "could not", "did not", "is not installed",
+)
+
+
+def _is_refusal(result) -> bool:
+    """True when `result` is prose a session produced to describe a refusal
+    rather than a result — the shared predicate behind `_verdict` and the
+    `click`/`type` dispatch below, so both read the SAME markers instead of
+    the dispatch quietly trusting a string `_verdict` would have rejected."""
+    text = str(result or "").strip()
+    low = text.lower()
+    return (not text
+            or any(low.startswith(pfx) for pfx in _FAILED_PREFIXES)
+            or any(mark in low for mark in _FAILED_ANYWHERE))
+
+
+def _verdict(result: str):
+    """One place where browser_control's prose becomes a verdict.
+
+    There are eight return points, not one, so the boundary is a function
+    rather than a spot at the bottom - the first attempt at this migration
+    only converted the last return and left seven reporting nothing.
+    """
+    text = str(result or "").strip()
+    if _is_refusal(text):
+        return ToolResult.failure(
+            text or "The browser did nothing.",
+            guidance=("Nothing happened in the browser. Do not tell the user "
+                      "the page is open. Known actions: go_to, switch, "
+                      "get_url, press, close_tab, screenshot, back, forward, "
+                      "reload."))
+    return settled(text)
+
+
+#: Every action past this point in `browser_control` needs a real, physically
+#: controllable browser window — this is the set checked BEFORE one is opened,
+#: so an unrecognised action (a typo, a stale name) is refused instead of
+#: silently earning itself a browser window first. Kept in sync with the
+#: elif chain below by `test_browser_control_contract.py`.
+_INTERACTIVE_ACTIONS = frozenset({
+    "click", "type", "scroll", "fill_form", "smart_click", "smart_type",
+    "get_text", "get_url", "press", "close_tab", "screenshot", "back",
+    "forward", "reload", "look",
+})
+
+
+def browser_control(
+    parameters:    dict = None,
+    response=None,
+    player=None,
+    session_memory=None,
+) -> ToolResult:
+    """Drive the user's own browser. Returns a ToolResult.
+
+    Migrated because a bare string blocked a real mission: it opened
+    youtube.com correctly and reported `? no status`, so the mission runner -
+    which treats "no verdict" as failure on purpose, since a wrong reading
+    advances past a step that never happened - marked the step failed and
+    stopped the goal. A working tool that cannot say so is worse than a slow
+    one.
+    """
+    params  = parameters or {}
+    action  = params.get("action", "").lower().strip()
+    browser = params.get("browser", "").lower().strip() or None
+    result  = "Unknown action."
+    failed  = False
+
+    if action == "switch":
+        target = browser or params.get("target", "").lower().strip()
+        result = _registry.switch(target) if target else "Please specify a browser."
+        _log(player, result)
+        return _verdict(result)
+
+    # Persist the user's preferred browser so every later action (navigation,
+    # interactive control, WhatsApp Web, etc.) uses it by default.
+    if action in ("set_default", "set_default_browser"):
+        target = (browser or params.get("target", "")).lower().strip()
+        target = _ALIASES.get(target, target)
+        cfg = _read_config()
+        if target in ("", "system", "system default", "default", "os"):
+            cfg.pop("default_browser", None)
+            _write_config(cfg)
+            result = "Default browser reset to your system default."
+        else:
+            cfg["default_browser"] = target
+            _write_config(cfg)
+            _registry._active_browser = target  # take effect immediately
+            result = f"Default browser set to {target}."
+        _log(player, result)
+        return _verdict(result)
+
+    if action == "list_browsers":
+        result = _registry.list_sessions()
+        _log(player, result)
+        return _verdict(result)
+
+    if action == "close_all":
+        result = _registry.close_all()
+        _log(player, result)
+        return _verdict(result)
+
+    if action == "close":
+        target = browser or _registry._active_browser
+        result = _registry.close_one(target) if target else "No browser specified."
+        _log(player, result)
+        return _verdict(result)
+
+    # ── Navigation: go_to / search / new_tab ────────────────────────────────
+    # Resolution order for target browser:
+    #   1. Explicitly requested browser (from model parameters)
+    #   2. Last active browser session in the registry
+    #   3. User-configured default_browser in api_keys.json
+    #   4. OS default (xdg-open / open / startfile)
+    if action in ("go_to", "search", "new_tab"):
+        # Resolve target browser using the 3-tier fallback
+        target_browser = browser
+        if not target_browser:
+            target_browser = _registry._active_browser
+        if not target_browser:
+            cfg_default = _read_config().get("default_browser", "").lower().strip()
+            target_browser = _ALIASES.get(cfg_default, cfg_default) or None
+
+        if target_browser and _registry.has(target_browser):
+            sess = _registry.get(target_browser)
+            try:
+                if action == "search":
+                    result = sess.run(sess.search(params.get("query", ""),
+                                                  params.get("engine", "google")))
+                elif action == "new_tab":
+                    result = sess.run(sess.new_tab(params.get("url", "")))
+                else:
+                    result = sess.run(sess.go_to(params.get("url", "")))
+            except concurrent.futures.TimeoutError:
+                result = f"Browser action '{action}' timed out (60s)."
+            except Exception as e:
+                result = f"Browser error ({action}): {e}"
+            _log(player, result)
+            return _verdict(result)
+
+        if action == "search":
+            base    = _SEARCH_ENGINES.get(params.get("engine", "google").lower(),
+                                          _SEARCH_ENGINES["google"])
+            nav_url = base + params.get("query", "").replace(" ", "+")
+        else:
+            nav_url = params.get("url", "").strip()
+
+        result = _open_native(nav_url, target_browser)
+        if result.startswith("Opened") and nav_url:
+            _registry.note_native_url(_normalize_url(nav_url))
+        _log(player, result)
+        return _verdict(result)
+
+    # ── Interactive actions (click / type / read…) ───────────────────────────
+    # These need a browser that can actually be driven, so only here does an
+    # automation window open -- and it goes straight to the page the user last
+    # visited rather than waiting on a blank one.
+    #
+    # Checked BEFORE the browser is ever touched. `_registry.get()` LAUNCHES a
+    # real, visible Chrome window if none is open yet — so an unrecognised
+    # action fell all the way through to here first, opened one anyway, and
+    # only discovered a page down that nothing matched `action`. A person
+    # watching their screen saw a browser flash open and close for a typo
+    # in an action name, which this function was always going to refuse.
+    if action not in _INTERACTIVE_ACTIONS:
+        result = f"Unknown browser action: '{action}'"
+        _log(player, result)
+        return ToolResult.failure(
+            result,
+            guidance=("Nothing happened in the browser. Do not tell the user "
+                      "the page is open. Known actions: go_to, switch, "
+                      "get_url, press, close_tab, screenshot, back, forward, "
+                      "reload."))
+
+    # `look` is read-only and must stay that way: it is answered entirely by
+    # `user_look()`, which already asks for the user's window with
+    # `create=False` and returns cleanly if none is open. Handled here,
+    # BEFORE `_registry.get(browser)` below — which unconditionally LAUNCHES
+    # a visible Chrome window if none exists — because that call runs before
+    # the action-specific branch further down ever gets a look at `action`.
+    # Left in the elif chain, a plain "what's on this page" question with no
+    # browser open opened an empty visible window and then reported "0
+    # controls" as a failure: a live-reachable bug once Task 5's prompt
+    # guidance started routing read-only questions to `look`.
+    if action == "look":
+        from actions.grounding.web.user_actions import user_look
+        r = user_look()
+        _log(player, r.message)
+        return r
+
+    try:
+        sess = _registry.get(browser)
+    except Exception as e:
+        result = f"Could not start browser session: {e}"
+        _log(player, result)
+        return _verdict(result)
+
+    try:
+        last = _registry.pop_native_url()
+        if last:
+            try:
+                sess.run(sess.go_to(last))
+            except Exception as e:
+                print(f"[Browser] Could not resume last page ({last}): {e}")
+
+        if action == "click":
+            # `description` is the DOM-exact path (`user_click`), and is
+            # what browser_control's own tool declaration has documented
+            # `click` as taking since Task 1. But `selector` is STILL
+            # documented (main.py) as the way to target an element for
+            # click/type, and predates `description` entirely — a caller
+            # following the tool's own documented interface may pass only
+            # `selector`. Gate on `description` being actually present:
+            # a caller who used `selector` as documented must get the
+            # selector-based path, not an empty-description DOM lookup that
+            # can only ever fail (`find_node("")` matches nothing).
+            desc = (params.get("description") or "").strip()
+            if desc:
+                from actions.grounding.web.user_actions import user_click
+                r = user_click(desc)
+                _log(player, r.message)
+                return r
+            result = sess.run(sess.click(params.get("selector"), params.get("text")))
+            # The selector path was DEAD CODE until the fallback above was
+            # fixed, so it was never checked against a verdict: `click()`'s
+            # own refusals ("No selector or text provided.", "Element not
+            # found (timeout).") are ordinary prose, not exceptions, so
+            # `failed` was never set for them and they fell through to
+            # `settled()` below as ok=True.
+            if _is_refusal(result):
+                failed = True
+        elif action == "type":
+            # Same gating as click, and higher-stakes: `user_type` with no
+            # `description` falls through to `focus_and_type`'s
+            # best-guess-at-a-text-field heuristic, which can silently type
+            # into a COMPLETELY DIFFERENT field than the one `selector`
+            # named while still reporting ok=True. A caller who passed only
+            # `selector` must reach the selector-based path, never the
+            # DOM-guess path — that is exactly the "reported success, text
+            # landed nowhere/wrong place" failure this whole plan exists to
+            # eliminate.
+            desc = (params.get("description") or "").strip()
+            selector = (params.get("selector") or "").strip()
+            if desc:
+                from actions.grounding.web.user_actions import user_type
+                r = user_type(desc, params.get("text", ""))
+                _log(player, r.message)
+                return r
+            if not selector:
+                # Neither `description` nor `selector`: refuse outright.
+                # `BrowserSession.type_text` falls through to
+                # `page.locator(":focus")` — a guess at whatever element
+                # currently has focus, which can silently type into the
+                # wrong field while still reporting success. A request that
+                # names no target gets no guess.
+                result = "Type error: no description or selector given — refusing to guess a focused field."
+                failed = True
+            else:
+                result = sess.run(sess.type_text(
+                    selector, params.get("text", ""), params.get("clear_first", True)))
+                if _is_refusal(result):
+                    failed = True
+        elif action == "scroll":
+            result = sess.run(sess.scroll(params.get("direction", "down"), int(params.get("amount", 500))))
+        elif action == "fill_form":
+            result = sess.run(sess.fill_form(params.get("fields", {})))
+        elif action == "smart_click":
+            result = sess.run(sess.smart_click(params.get("description", "")))
+        elif action == "smart_type":
+            result = sess.run(sess.smart_type(params.get("description", ""), params.get("text", "")))
+        elif action == "get_text":
+            result = sess.run(sess.get_text())
+        elif action == "get_url":
+            result = sess.run(sess.get_url())
+        elif action == "press":
+            result = sess.run(sess.press(params.get("key", "Enter")))
+        elif action == "close_tab":
+            result = sess.run(sess.close_tab())
+        elif action == "screenshot":
+            result = sess.run(sess.screenshot(params.get("path")))
+        elif action == "back":
+            result = sess.run(sess.back())
+        elif action == "forward":
+            result = sess.run(sess.forward())
+        elif action == "reload":
+            result = sess.run(sess.reload())
+        else:
+            result = f"Unknown browser action: '{action}'"
+            failed = True
+
+    except concurrent.futures.TimeoutError:
+        result = f"Browser action '{action}' timed out (60s)."
+        failed = True
+    except Exception as e:
+        result = f"Browser error ({action}): {e}"
+        failed = True
+
+    _log(player, result)
+    # `failed` is authoritative here: the timeout and exception handlers KNOW.
+    # Prose matching below is only for the seven early returns, which have no
+    # flag to hand over - "Browser action 'go_to' timed out (60s)" gives itself
+    # away in the middle of the sentence, not at the start, which is exactly
+    # why guessing from prose is the thing this contract exists to replace.
+    if failed:
+        return ToolResult.failure(
+            result,
+            guidance=("Nothing happened in the browser. Do not tell the user "
+                      "the page is open. Known actions: go_to, switch, "
+                      "get_url, press, close_tab, screenshot, back, forward, "
+                      "reload."))
+    if result == "Unknown action.":
+        return ToolResult.failure(
+            result,
+            guidance=("Nothing happened in the browser. Do not tell the user "
+                      "the page is open. Known actions: go_to, switch, "
+                      "get_url, press, close_tab, screenshot, back, forward, "
+                      "reload."))
+    return settled(result)
+
+
+def _log(player, text: str):
+    short = str(text)[:80]
+    print(f"[Browser] {short}")
+    if player:
+        player.write_log(f"[browser] {short[:60]}")

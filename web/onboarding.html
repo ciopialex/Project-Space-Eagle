@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aethelark — Setup</title>
+<style>
+@font-face{font-family:'Manrope';src:url(../assets/fonts/Manrope-Variable.ttf) format('truetype');font-weight:200 800;font-display:swap}
+:root{
+  --text:#EDEDF2;--text2:#B9B9C2;--muted:#85858F;--faint:#5C5C66;
+  --silver-hi:#F2F2F7;--green:#4EE08A;--red:#FF6B78;
+  --stroke:rgba(210,210,220,.14);--ease:cubic-bezier(.22,1,.36,1);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:transparent;color:var(--text);
+  font-family:'Manrope',-apple-system,'Segoe UI',sans-serif;font-weight:400;overflow:hidden;user-select:none;
+  -webkit-font-smoothing:antialiased}
+.frame{position:fixed;inset:0;display:grid;place-items:center;
+  background:radial-gradient(120% 90% at 50% 30%,#16161c,#09090c 55%,#040405)}
+.quit{position:fixed;top:18px;right:20px;width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
+  color:var(--muted);cursor:pointer;background:rgba(255,255,255,.035);box-shadow:inset 0 0 0 1px var(--stroke);z-index:20;font-size:14px}
+.quit:hover{color:#fff}
+.card{position:relative;width:min(560px,92vw);min-height:500px;border-radius:28px;padding:52px 56px 40px;
+  background:linear-gradient(180deg,rgba(24,24,30,.94),rgba(10,10,14,.96));
+  box-shadow:0 40px 100px rgba(0,0,0,.65),inset 0 1px 0 rgba(255,255,255,.06);
+  display:flex;flex-direction:column}
+.screen{display:none;flex:1;flex-direction:column;align-items:center;text-align:center}
+.screen.active{display:flex;animation:enter .5s var(--ease) both}
+@keyframes enter{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.mark{width:76px;height:76px;margin:6px auto 28px;display:grid;place-items:center;border-radius:24px;
+  background:linear-gradient(160deg,#23232b,#101014);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 18px 40px rgba(0,0,0,.5)}
+.mark img{width:46px;filter:drop-shadow(0 0 14px rgba(236,236,242,.35))}
+h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing:-.01em}
+.sub{font-size:15px;line-height:1.65;color:var(--text2);max-width:400px;margin:0 auto 30px}
+.grow{flex:1}
+.btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;height:50px;border:0;border-radius:14px;cursor:pointer;
+  font-family:inherit;font-size:15px;font-weight:600;color:#0B0B0E;
+  background:linear-gradient(180deg,#F4F4F8,#C9C9D1);box-shadow:0 12px 30px rgba(220,220,230,.14),inset 0 1px 0 rgba(255,255,255,.7);
+  transition:transform .18s var(--ease),opacity .2s}
+.btn:hover{transform:translateY(-1px)}
+.btn:disabled{opacity:.35;cursor:default;transform:none}
+.btn.ghost{background:transparent;color:var(--text2);box-shadow:inset 0 0 0 1px var(--stroke)}
+.btn.ghost:hover{color:#fff}
+.link{background:none;border:0;color:var(--text2);font-family:inherit;font-size:14px;cursor:pointer;
+  padding:8px 10px;border-radius:9px;text-decoration:underline;text-underline-offset:3px;text-decoration-color:rgba(200,200,210,.35)}
+.link:hover{color:#fff}
+.row{display:flex;gap:12px;width:100%;margin-top:10px}
+.field-wrap{position:relative;width:100%;margin-bottom:10px}
+.field{width:100%;height:52px;border:0;border-radius:14px;padding:0 64px 0 18px;
+  background:rgba(255,255,255,.045);color:var(--text);font-family:inherit;font-size:15px;
+  box-shadow:inset 0 0 0 1px var(--stroke);outline:none;transition:box-shadow .2s}
+.field:focus{box-shadow:inset 0 0 0 1.5px rgba(236,236,242,.55)}
+.field::placeholder{color:var(--faint)}
+.field.center{text-align:center;padding:0 18px}
+.reveal{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:0;
+  color:var(--muted);font-family:inherit;font-size:12px;cursor:pointer;padding:6px 8px;border-radius:7px}
+.reveal:hover{color:#fff}
+.status{min-height:22px;font-size:13.5px;color:var(--muted);margin:4px 0 14px;line-height:1.5}
+.status.ok{color:var(--green)}.status.err{color:var(--red)}
+.spin{display:inline-block;width:13px;height:13px;border-radius:50%;border:2px solid rgba(255,255,255,.18);
+  border-top-color:#fff;animation:rot .8s linear infinite;vertical-align:-2px;margin-right:8px}
+@keyframes rot{to{transform:rotate(360deg)}}
+.hint{font-size:12.5px;color:var(--faint);line-height:1.6;max-width:400px;margin:14px auto 0}
+
+/* The microphone check: a ring that grows with the voice. */
+.orb{position:relative;width:150px;height:150px;margin:6px auto 26px;display:grid;place-items:center}
+.orb .ring{position:absolute;inset:0;border-radius:50%;
+  background:radial-gradient(circle,rgba(78,224,138,.28),rgba(78,224,138,.05) 60%,transparent 70%);
+  transform:scale(.55);opacity:.35;transition:transform .09s linear,opacity .2s}
+.orb .core{width:74px;height:74px;border-radius:50%;display:grid;place-items:center;
+  background:linear-gradient(160deg,#23232b,#101014);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 12px 28px rgba(0,0,0,.5)}
+.orb .core svg{width:28px;height:28px;color:var(--text2);transition:color .3s}
+.orb.heard .core svg{color:var(--green)}
+.orb.heard .ring{opacity:.8}
+.device{font-size:12px;color:var(--faint);margin-top:-8px;margin-bottom:12px;min-height:16px}
+
+.dots{display:flex;gap:7px;justify-content:center;margin-top:26px}
+.dot{width:6px;height:6px;border-radius:50%;background:rgba(210,210,220,.18);transition:all .3s var(--ease)}
+.dot.on{background:var(--silver-hi);width:18px;border-radius:3px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="quit" id="quit" title="Quit">✕</div>
+<div class="frame">
+  <div class="card">
+
+    <section class="screen active" data-step="welcome">
+      <div class="mark"><img src="../assets/images/eagle_white.png" alt=""></div>
+      <h1>Aethelark</h1>
+      <p class="sub">A voice for your computer. Just ask.</p>
+      <div class="grow"></div>
+      <button class="btn" onclick="go('key')">Get started</button>
+    </section>
+
+    <section class="screen" data-step="key">
+      <div class="mark"><img src="../assets/images/eagle_white.png" alt=""></div>
+      <h1 id="key-title">Connect Gemini</h1>
+      <p class="sub" id="key-sub">Aethelark thinks with Google's Gemini. A key is free and takes about a minute to create.</p>
+      <div class="field-wrap">
+        <input class="field" id="api-key" type="password" placeholder="Paste your Gemini API key"
+               autocomplete="off" spellcheck="false" oninput="keyChanged()" onkeydown="if(event.key==='Enter')checkKey()">
+        <button class="reveal" id="reveal" onclick="toggleReveal()">Show</button>
+      </div>
+      <div class="status" id="key-status"></div>
+      <button class="link" onclick="openUrl('https://aistudio.google.com/apikey')">Get a free key from Google AI Studio</button>
+      <div class="grow"></div>
+      <div class="row">
+        <button class="btn ghost" id="key-back" onclick="go('welcome')">Back</button>
+        <button class="btn" id="key-next" disabled onclick="checkKey()">Continue</button>
+      </div>
+    </section>
+
+    <section class="screen" data-step="name">
+      <div class="mark"><img src="../assets/images/eagle_white.png" alt=""></div>
+      <h1>What should I call you?</h1>
+      <p class="sub">I'll use it when I talk to you. You can change it later.</p>
+      <div class="field-wrap">
+        <input class="field center" id="name-input" placeholder="Your name" maxlength="40"
+               autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')go('mic')">
+      </div>
+      <div class="grow"></div>
+      <div class="row">
+        <button class="btn ghost" onclick="go('key')">Back</button>
+        <button class="btn" onclick="go('mic')">Continue</button>
+      </div>
+    </section>
+
+    <section class="screen" data-step="mic">
+      <h1>Say hello</h1>
+      <p class="sub" id="mic-sub">Let's make sure I can hear you. Say anything.</p>
+      <div class="orb" id="orb"><div class="ring" id="ring"></div>
+        <div class="core"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="21"/></svg></div>
+      </div>
+      <div class="device" id="mic-device"></div>
+      <div class="status" id="mic-status">Listening…</div>
+      <div class="grow"></div>
+      <div class="row">
+        <button class="btn ghost" id="mic-retry" onclick="startMic()" style="display:none">Try again</button>
+        <button class="btn" id="mic-next" disabled onclick="go('printer')">Continue</button>
+      </div>
+      <button class="link" id="mic-skip" onclick="go('printer')">Skip for now</button>
+    </section>
+
+    <section class="screen" data-step="printer">
+      <h1>Do you have a 3D printer?</h1>
+      <p class="sub">If you do, I can find models, slice them and watch your prints. It takes a few more minutes to set up. If you don't, skip it. You can add it later in Settings.</p>
+      <div class="grow"></div>
+      <div class="row">
+        <button class="btn ghost" onclick="answerPrinter(false)">No</button>
+        <button class="btn" onclick="answerPrinter(true)">Yes, set it up</button>
+      </div>
+    </section>
+
+    <section class="screen" data-step="done">
+      <div class="mark"><img src="../assets/images/eagle_white.png" alt=""></div>
+      <h1 id="done-title">You're all set.</h1>
+      <p class="sub">I live in the small bar at the top of your screen. Just start talking. Double-click the bar to open the full window.</p>
+      <p class="sub" id="done-printer" style="display:none">I'm setting up your 3D printer support in the background. It will be ready in a few minutes.</p>
+      <div id="aec" style="display:none">
+        <p class="sub">Want to cut in while I'm talking, at a normal voice? That needs echo cancellation, which changes your computer's default microphone and speakers.</p>
+        <button class="btn ghost" id="aec-on" onclick="enableAec()">Turn it on</button>
+        <div class="status" id="aec-status"></div>
+      </div>
+      <div class="grow"></div>
+      <button class="btn" onclick="finish()">Start</button>
+    </section>
+
+    <div class="dots" id="dots"></div>
+  </div>
+</div>
+
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script>
+(function(){
+  var bridge = null;
+  var ORDER = ['welcome', 'key', 'name', 'mic', 'printer', 'done'];
+  var state = {api_key: '', key_ok: false, user_name: '', mode: 'setup'};
+  var step = 'welcome';
+
+  function $(id){ return document.getElementById(id); }
+
+  function renderDots(){
+    var steps = state.mode === 'key' ? ['key'] : ORDER;
+    $('dots').innerHTML = steps.map(function(s){
+      return '<span class="dot' + (ORDER.indexOf(s) <= ORDER.indexOf(step) ? ' on' : '') + '"></span>';
+    }).join('');
+    $('dots').style.display = steps.length > 1 ? '' : 'none';
+  }
+
+  window.go = function(to){
+    if (to === 'mic' && step !== 'mic') setTimeout(startMic, 250);
+    if (step === 'mic' && to !== 'mic' && bridge && bridge.stop_mic_check) bridge.stop_mic_check();
+    document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('active'); });
+    document.querySelector('.screen[data-step="' + to + '"]').classList.add('active');
+    step = to;
+    if (to === 'name') {
+      var n = $('name-input'); setTimeout(function(){ n.focus(); }, 60);
+    }
+    if (to === 'key') setTimeout(function(){ $('api-key').focus(); }, 60);
+    if (to === 'done') {
+      var nm = ($('name-input').value || '').trim();
+      $('done-title').textContent = nm ? ("You're all set, " + nm + ".") : "You're all set.";
+    }
+    renderDots();
+  };
+
+  window.openUrl = function(u){ if (bridge && bridge.open_url) bridge.open_url(u); };
+
+  window.toggleReveal = function(){
+    var f = $('api-key'), shown = f.type === 'text';
+    f.type = shown ? 'password' : 'text';
+    $('reveal').textContent = shown ? 'Show' : 'Hide';
+  };
+
+  window.keyChanged = function(){
+    state.key_ok = false;
+    var v = ($('api-key').value || '').trim();
+    $('key-next').disabled = !(v.length >= 10 || (state.has_key && !v));
+    var st = $('key-status'); st.className = 'status'; st.textContent = '';
+  };
+
+  window.checkKey = function(){
+    var v = ($('api-key').value || '').trim();
+    if (!v && state.has_key && state.mode !== 'key') { go('name'); return; }
+    if (v.length < 10 || !bridge) return;
+    state.api_key = v;
+    $('key-next').disabled = true;
+    var st = $('key-status');
+    st.className = 'status';
+    st.innerHTML = '<span class="spin"></span>Checking with Google…';
+    bridge.validate_key(v);
+  };
+
+  function startMic(){
+    var orb = $('orb'); orb.classList.remove('heard');
+    $('mic-status').className = 'status';
+    $('mic-status').textContent = 'Listening…';
+    $('mic-retry').style.display = 'none';
+    $('mic-next').disabled = true;
+    if (bridge && bridge.start_mic_check) bridge.start_mic_check();
+  }
+  window.startMic = startMic;
+
+  window.enableAec = function(){
+    $('aec-on').disabled = true;
+    $('aec-status').className = 'status';
+    $('aec-status').textContent = 'Turning it on…';
+    if (bridge && bridge.enable_echo_cancel) bridge.enable_echo_cancel();
+  };
+
+  window.answerPrinter = function(has){
+    state.has_printer = !!has;
+    $('done-printer').style.display = has ? '' : 'none';
+    go('done');
+  };
+  window.finish = function(){
+    state.user_name = ($('name-input').value || '').trim();
+    if (bridge && bridge.complete) bridge.complete(JSON.stringify(state));
+  };
+
+  // Python -> page
+  window.onboarding = {
+    startAt: function(opts){
+      opts = opts || {};
+      state.mode = opts.mode || 'setup';
+      if (opts.user_name) $('name-input').value = opts.user_name;
+      if (opts.aec_offer) $('aec').style.display = '';
+      state.has_key = !!opts.has_key;
+      if (state.has_key && state.mode !== 'key') {
+        $('key-sub').textContent = 'Your key is saved. Paste a new one only if you want to replace it.';
+        $('key-next').disabled = false;
+      }
+      if (state.mode === 'key') {
+        $('key-title').textContent = 'Update your Gemini key';
+        $('key-sub').textContent = opts.reason || 'Google turned the current key down. Paste a new one to continue.';
+        $('key-back').style.display = 'none';
+        $('quit').title = 'Close';
+      }
+      go(opts.step || 'welcome');
+    },
+    setKeyResult: function(r){
+      r = r || {};
+      var st = $('key-status');
+      if (r.ok) {
+        state.key_ok = true;
+        st.className = 'status ok'; st.textContent = 'Connected.';
+        setTimeout(function(){
+          if (state.mode === 'key') { finish(); } else { go('name'); }
+        }, 550);
+      } else {
+        st.className = 'status err'; st.textContent = r.message || "That key didn't work.";
+        $('key-next').disabled = false;
+      }
+    },
+    setAec: function(r){
+      r = r || {};
+      $('aec-status').className = 'status ' + (r.ok ? 'ok' : 'err');
+      $('aec-status').textContent = r.message || (r.ok ? 'Done.' : 'That did not work.');
+      if (!r.ok) $('aec-on').disabled = false;
+    },
+    setMic: function(m){
+      m = m || {};
+      if (m.device) $('mic-device').textContent = m.device;
+      if (m.level != null) {
+        var s = 0.55 + Math.min(1, Math.max(0, m.level)) * 0.6;
+        $('ring').style.transform = 'scale(' + s.toFixed(3) + ')';
+        $('ring').style.opacity = String(0.35 + Math.min(1, m.level) * 0.6);
+      }
+      if (m.state === 'heard') {
+        $('orb').classList.add('heard');
+        $('mic-status').className = 'status ok';
+        $('mic-status').textContent = 'I can hear you.';
+        $('mic-next').disabled = false;
+      } else if (m.state === 'quiet') {
+        $('mic-status').className = 'status';
+        $('mic-status').textContent = "I didn't hear anything. Check your microphone, then try again.";
+        $('mic-retry').style.display = '';
+      } else if (m.state === 'error') {
+        $('mic-status').className = 'status err';
+        $('mic-status').textContent = m.message || 'No microphone was found.';
+        $('mic-retry').style.display = '';
+      }
+    }
+  };
+
+  $('quit').onclick = function(){ if (bridge && bridge.quit) bridge.quit(); };
+
+  // Drag the frameless window from anywhere that is not a control.
+  var drag = false;
+  document.addEventListener('mousedown', function(e){
+    if (e.button !== 0 || e.target.closest('button,input,.quit')) return;
+    drag = true; if (bridge && bridge.begin_drag) bridge.begin_drag(e.screenX, e.screenY);
+  });
+  document.addEventListener('mousemove', function(e){ if (drag && bridge && bridge.drag_to) bridge.drag_to(e.screenX, e.screenY); });
+  document.addEventListener('mouseup', function(){ drag = false; });
+
+  renderDots();
+  if (typeof QWebChannel !== 'undefined' && typeof qt !== 'undefined') {
+    new QWebChannel(qt.webChannelTransport, function(ch){
+      bridge = ch.objects.pybridge;
+      if (bridge && bridge.onboard_ready) bridge.onboard_ready();
+    });
+  }
+})();
+</script>
+</body>
+</html>

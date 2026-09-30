@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Aethelark 3D // Terminal Access Authorization</title>
+  <meta name="description" content="Local cryptographic hardware authentication gate for Aethelark 3D agent runtime.">
+  <meta name="theme-color" content="#07080b">
+  <link rel="stylesheet" href="/static/aethelark.css">
+  <script src="/static/crypto.js" defer></script>
+  <script src="/static/starfield.js" defer></script>
+  <script src="/static/dashboard.js" defer></script>
+</head>
+<body data-page="auth-terminal" data-security-level="airgapped-local">
+  <canvas id="starfield"></canvas>
+  <div class="login-container" role="main" aria-label="Authentication Form Container">
+    <div class="glass-panel" style="max-width: 440px; margin: auto; padding: 36px 28px; text-align: center;" data-panel="auth-box">
+      <div style="margin-bottom: 24px;" data-section="terminal-header">
+        <h1 style="font-family: var(--font-mono); font-size: 24px; letter-spacing: 2px; color: var(--accent);">AETHELARK 3D TERMINAL</h1>
+        <p style="color: var(--text-muted); font-size: 13px; margin-top: 6px;">Autonomous Edge Runtime & Physical Fleet Controller</p>
+      </div>
+
+      <form id="login-form" onsubmit="handleLogin(event)" style="display: flex; flex-direction: column; gap: 18px;" data-action="authenticate">
+        <div>
+          <label for="pin-input" style="display: block; text-align: left; font-size: 12px; color: var(--text-dim); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px;">Hardware Pairing PIN</label>
+          <input id="pin-input" type="text" maxlength="6" class="input-field pin-input" placeholder="••••••" autocomplete="off" autofocus required aria-required="true" aria-describedby="auth-instructions">
+        </div>
+        <button id="login-btn" type="submit" class="btn btn-primary" style="width: 100%; padding: 14px;" data-testid="auth-submit-btn">AUTHORIZE CLIENT</button>
+      </form>
+
+      <div id="auth-instructions" style="margin-top: 24px; display: flex; flex-direction: column; gap: 8px; font-size: 11px; color: var(--text-dim); text-align: left; background: rgba(0,0,0,0.3); padding: 12px; border-radius: var(--radius-sm);" data-info="security-summary">
+        <div>🔒 <strong>Session Security:</strong> Constant-time HMAC verification</div>
+        <div>🛰️ <strong>Local Subnet:</strong> Zero telemetry leaves your local network</div>
+        <div>⚡ <strong>One-Time Key:</strong> Generated securely on host startup</div>
+      </div>
+    </div>
+  </div>
+  <div id="toast" role="alert" aria-live="polite"></div>
+
+  <script>
+    async function handleLogin(e) {
+      e.preventDefault();
+      const input = document.getElementById('pin-input');
+      const btn = document.getElementById('login-btn');
+      const val = input.value.trim();
+      if (!val) return;
+
+      btn.disabled = true;
+      btn.textContent = 'CONNECTING...';
+
+      try {
+        await Aethelark.loginWithPin(val);
+        window.location.href = '/';
+      } catch (err) {
+        input.classList.add('shake');
+        setTimeout(() => input.classList.remove('shake'), 500);
+        Aethelark.showToast(err.message || 'Authentication failed');
+        btn.disabled = false;
+        btn.textContent = 'AUTHORIZE CLIENT';
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      const input = document.getElementById('pin-input');
+      if (input) {
+        input.addEventListener('input', (e) => {
+          e.target.value = e.target.value.toUpperCase().replace(/[^A-HJ-KM-NP-Z2-9]/g, '');
+        });
+      }
+      const ok = await Aethelark.checkDeviceLogin();
+      if (ok) {
+        window.location.href = '/';
+      }
+    });
+  </script>
+</body>
+</html>

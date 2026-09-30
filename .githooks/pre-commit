@@ -1,0 +1,6 @@
+#!/bin/sh
+# Refuses a commit that would record this machine's secrets or identity.
+# Enable in a clone with:  git config core.hooksPath .githooks
+root="$(git rev-parse --show-toplevel)"
+py="$root/.venv/bin/python"; [ -x "$py" ] || py=python3
+exec "$py" "$root/tools/secret_scan.py" --staged

@@ -1,0 +1,18 @@
+# The modules `eagle install <name>` knows by name.
+#
+# A listing, not a registry: anything installable by pip works as well, by path
+# or git URL (`eagle install ~/src/my-module`, `eagle install
+# git+https://github.com/you/your-module`). What makes something a module is
+# that it ships a manifest and a `register` command -- not that it is named here.
+
+[modules.trade]
+title   = "Aethelark-Trade"
+about   = "Stocks and companies: prices, a full analysis, insiders, owners."
+source  = "git+https://github.com/ciopialex/Aethelark-Trade"
+aliases = ["atrade", "aethelark-trade", "stocks"]
+
+[modules.3d]
+title   = "Aethelark-3D"
+about   = "For Elegoo 3D printers: find models, slice with ElegooSlicer, print and watch it."
+source  = "git+https://github.com/ciopialex/Aethelark-3D"
+aliases = ["a3d", "aethelark-3d", "printing", "3d-printing"]

@@ -1,0 +1,270 @@
+# Aethelark-Trade module socket for the Space-Eagle Module Bus.
+#
+# THIS FILE IS THE SOURCE, NOT AN ARTEFACT. `atrade register` copies it, and
+# nothing generates it: the card sizes and `shows` field lists below exist
+# nowhere else. Edit it directly.
+#
+# Schema per Space-Eagle/core/module_bus/manifest.py:
+#   top level -> key, binary, description, output
+#   tools     -> [[tools]] array of tables with name/description/argv
+
+key = "atrade"
+binary = "atrade"
+description = "Aethelark-Trade: stocks and companies, from SEC filings, prices and news"
+output = "json"
+
+instructions = """
+Stocks and companies use these tools.
+- A share price, or how a company is doing today: atrade_quote. It is instant.
+- Whether a company is worth owning, or a full picture of one: atrade_analyze. It takes a few seconds; say you're looking.
+- Two companies side by side: atrade_compare. Insider buying and selling: atrade_insider. Who holds big stakes: atrade_owners. Executive pay: atrade_governance.
+- The user's watchlist: atrade_watchlist, atrade_watch, atrade_unwatch. Their brokerage account: atrade_portfolio.
+- If a tool says an email is needed for SEC filings, ask the user which email to use, call atrade_contact with it, then ask the tool again.
+- Say what the numbers say. Never promise returns or tell the user what to do with their money.
+- atrade_quote is a share price; it is never about the cost of a 3D print.
+"""
+
+examples = ["How is Nvidia doing today?", "Is Apple a good buy right now?"]
+
+[[tools]]
+name = "quote"
+description = "FAST current price and today's move for one company. Use this for 'what's Nvidia doing', 'how's Tesla today', 'what's the price of Apple', 'is AMD up or down'. Prefer this over analyze whenever the question is only about price or today's move — it answers instantly."
+argv = ["quote", "{ticker}", "--json"]
+seconds = 90
+reads = ["net"]
+
+[tools.params.ticker]
+type = "STRING"
+description = "Stock ticker symbol (e.g. NVDA, AAPL, TSLA)"
+required = true
+
+[[tools]]
+# MEASURED 2026-09-07, uncached, four tickers: NVDA 2.67s, MSFT 2.78s,
+# PLTR 2.42s, KO 5.05s. Every comment in this tree still says "34-35s against
+# live SEC filings" — that was true on 2026-09-03 and is now off by 14x. The
+# whole prefetch-during-the-capsule design was built for that number.
+#
+# The 180s budget stays. Headroom costs nothing and the documented failure
+# here is a timeout set too SHORT: the 30s default once killed this tool four
+# seconds before it would have answered, every time, silently, leaving the
+# seven-layer card empty. A slow SEC day should not reintroduce that.
+name = "analyze"
+description = "Thorough verdict on whether a company is worth owning, scored layer by layer: fundamentals, macro, news, sector position, insiders, supply chain. Takes a few seconds. Use for 'is Nvidia a good buy', 'tell me about Palantir', 'should I invest in Tesla', 'what do you think of AMD'. Do NOT use for a plain price question — use quote for that."
+argv = ["analyze", "{ticker}", "--json"]
+seconds = 180
+reads = ["web"]
+
+[tools.params.ticker]
+type = "STRING"
+description = "Stock ticker symbol (e.g. NVDA, AAPL, TSLA)"
+required = true
+
+[[tools]]
+name = "governance"
+description = "Whether a company's CEO is paid in line with what shareholders actually earned, from the SEC proxy statement. Use for 'is the CEO overpaid', 'how much does Intel's CEO make', 'is management aligned', 'do they treat shareholders well', 'what about the boss'."
+argv = ["governance", "{ticker}", "--json"]
+seconds = 60
+reads = ["web"]
+
+[tools.params.ticker]
+type = "STRING"
+description = "Stock ticker symbol (e.g. NVDA, AAPL, TSLA)"
+required = true
+
+[[tools]]
+name = "compare"
+description = "Head-to-head comparison of two companies, layer by layer. Use for 'X or Y', 'which is better', 'X versus Y'."
+argv = ["compare", "{ticker_a}", "{ticker_b}", "--json"]
+seconds = 300
+reads = ["web"]
+
+[tools.params.ticker_a]
+type = "STRING"
+description = "First ticker symbol"
+required = true
+
+[tools.params.ticker_b]
+type = "STRING"
+description = "Second ticker symbol"
+required = true
+
+[[tools]]
+name = "leaderboard"
+description = "Rank the companies ALREADY ANALYSED on this machine by how attractive they look: quality, cheapness and insider buying combined. It surveys nothing new -- a company is in it only after the user asked about it. Use for 'what should I buy', 'which of those looks best', 'any bargains'. If nothing has been analysed yet, say so and offer to analyse a company they name."
+argv = ["leaderboard", "--json"]
+seconds = 600
+reads = ["web"]
+
+[[tools]]
+# MEASURED 2026-09-07: AMD over the default 180 days is 182 filings and
+# 47,586 characters against the bus ceiling of 16,000, so two thirds of it is
+# cut before the model reads it. Rows come back newest-first, which does not
+# save it -- filings cluster, and 77% of the dollar value, including the
+# largest single sale, fell on the far side of the cut.
+#
+# `--days` has always existed on the binary and was never declared here, so
+# the model had no way to ask for less. Declaring it does not fix a busy
+# ledger; it gives the model a way out and the description tells it one
+# exists. An element whose placeholder has no value is dropped whole
+# (build_argv), so omitting `days` produces exactly the argv this tool sent
+# before.
+name = "insider"
+description = "Latest SEC Form 4 and Form 144 insider transaction ledger for one company. Use for 'are insiders buying X', 'who is selling X'. Covers the last 180 days unless you set days. If the answer comes back cut short, call it again with days set to 30 or 60."
+argv = ["insider", "{ticker}", "--days={days}", "--json"]
+seconds = 90
+reads = ["net"]
+
+[tools.params.ticker]
+type = "STRING"
+description = "Stock ticker symbol"
+required = true
+
+[tools.params.days]
+type = "INTEGER"
+description = "How many days back to look. Defaults to 180. Use 30 or 60 for a company with heavy insider trading."
+
+[[tools]]
+name = "watchlist"
+description = "The user's own followed companies with live prices. Use for 'how's my watchlist', 'show my stocks', 'what am I following', 'how are my picks doing'. This is their personal list, not the whole market."
+argv = ["watchlist", "--json"]
+seconds = 90
+reads = ["net"]
+
+[[tools]]
+name = "watch"
+description = "Start following a company. Use for 'add Palantir to my watchlist', 'follow Nvidia', 'keep an eye on ASML', 'track Tesla for me'."
+argv = ["watch", "{ticker}", "--json"]
+seconds = 90
+reads = ["net"]
+danger = "undoable"
+
+[tools.params.ticker]
+type = "STRING"
+description = "Stock ticker symbol (e.g. NVDA, AAPL, TSLA)"
+required = true
+
+[[tools]]
+name = "unwatch"
+description = "Stop following a company. Use for 'remove Intel from my watchlist', 'unfollow Tesla', 'stop tracking AMD', 'drop Qualcomm'."
+argv = ["unwatch", "{ticker}", "--json"]
+seconds = 90
+reads = ["net"]
+danger = "undoable"
+
+[tools.params.ticker]
+type = "STRING"
+description = "Stock ticker symbol (e.g. NVDA, AAPL, TSLA)"
+required = true
+
+[[tools]]
+name = "portfolio"
+description = "Live Alpaca account equity, cash, buying power and open positions. Use for 'how is my portfolio', 'what do I own', 'my positions'."
+argv = ["portfolio", "--json"]
+seconds = 90
+reads = ["net"]
+
+[[tools]]
+name = "owners"
+description = "Who holds five percent or more of a company, and which of them are activists pushing for change rather than passive holders. From SEC Schedule 13D and 13G filings. Use for 'who owns Nvidia', 'who are the big holders', 'is anyone activist in this', 'who has a stake'. This is who owns it, NOT whether to buy it -- use analyze for that."
+argv = ["owners", "{ticker}", "--json"]
+seconds = 90
+reads = ["net"]
+
+[tools.params.ticker]
+type = "STRING"
+description = "Stock ticker symbol (e.g. NVDA, AAPL, TSLA)"
+required = true
+
+[[tools]]
+name = "contact"
+description = "Save the email address SEC requires before its filings can be read. Use ONLY after another tool said an email is needed, and only with the address the user just gave you -- never guess one. Pass it as they said it; 'ana dot pop at gmail dot com' is fine."
+argv = ["contact", "{email}", "--json"]
+seconds = 60
+danger = "undoable"
+
+[tools.params.email]
+type = "STRING"
+description = "The user's email address."
+required = true
+
+
+# The listener writes this module's latest Dynamic Island event for the host.
+[events]
+listener = "atrade listen"
+
+# ── The screen ───────────────────────────────────────────────────────────────
+# Three cards, all stages of one island/template.html (.island-capsule /
+# .island-glance / .island-expanded). The sizes are read out of web/pill.html's
+# GEOM table; how long a card stays up and which card a click leads to are the
+# island's own.
+#
+# `shows` is the list of payload fields each card draws. It is also what the
+# eagle is told it is looking at, so a field missing from here is invisible to
+# the model however prominently the card renders it.
+[island]
+about = "ticker"      # what makes two answers the same card
+first = "small"
+css   = "style.css"
+
+# How long a stored answer stays worth handing back. NOT the dwell -- that is
+# the island's own clock, about how long someone reads. This is about whether
+# the number is still true.
+#
+# A share price is the fastest-rotting thing this module returns. Sixty seconds
+# is a market minute: long enough that clicking into a card you asked about
+# seconds ago is instant, short enough that a price cannot be served as current
+# after the market has moved. The card store keeps answers between turns, so
+# without this a quote fetched before lunch could be painted as live after it.
+#
+# The governance and insider figures on the same card come from filings and are
+# good for months. They are refetched with the price rather than tracked
+# separately, because one number per module is the whole schema and a refetch
+# that merges loses nothing.
+fresh_for = 60
+
+  [island.cards.small]
+  size    = { w = 320, h = 62 }
+  # Fetched, in this order, while the capsule is read, so a click into the
+  # scorecard opens on the layers and the pay row instead of a spinner. The
+  # harness used to carry this list for this module in a table of its own.
+  prefetch = ["analyze", "governance"]
+  shows   = ["ticker", "company_name", "price", "previous_close", "change",
+             "change_pct", "day_high", "day_low", "volume", "market_cap",
+             "_series",
+             # The capsule is the card that OPENS, and `_card_is_drawable`
+             # asks only about that one -- a drilldown nobody can see the top
+             # of is a card of em dashes with a click in front of it. So an
+             # insider answer has to be drawable HERE or it never reaches the
+             # screen, whatever the expanded card can do with it.
+             "insider_net_usd", "insider_trade_count",
+             # A comparison, same reason. Without these the capsule was judged
+             # drawable on ticker_a's price -- which the module bundles in --
+             # and then drew a comparison as one company's quote.
+             "compare_winner", "compare_against"]
+
+  # `_series` keeps its underscore deliberately: the card draws the chart, the
+  # eagle never sees it. Measured 2026-09-05 it was 4,312 of a quote's 4,542
+  # characters — 487 numbers the model cannot read a graph from.
+  [island.cards.medium]
+  size    = { w = 440, h = 236 }
+  shows   = ["ticker", "company_name", "price", "change_pct", "_series"]
+
+  [island.cards.large]
+  size    = { w = 440, h = 364 }
+  # `gov_label` and `gov_text` were drawn by this card and declared by nothing.
+  # `shows` is also what the eagle is told it is looking at, so a governance
+  # verdict sat on screen that the model had no idea was there -- and the same
+  # list is what the host reads to decide whether an answer can be drawn at
+  # all. Measured 2026-09-07.
+  shows   = ["ticker", "company_name", "verdict", "reason", "composite_score",
+             "coverage", "asymmetry_ratio", "invalidation_level",
+             "liar_filter_status", "liar_filter_detail", "layers",
+             "gov_label", "gov_text",
+             # `atrade insider` returns a whole Form 4 ledger and none of it
+             # was declared here, so `_card_is_drawable` counted an insider
+             # answer as carrying nothing beyond the ticker the question
+             # already supplied -- and refused it the screen. Asked after a
+             # quote it inherited that card's drawability and looked fine;
+             # asked FIRST, "who has been selling Nvidia" ran the tool,
+             # returned 46 filings and $1.06B, and put nothing on screen.
+             "insider_net_usd", "insider_trade_count", "insider_latest"]

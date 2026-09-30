@@ -1,0 +1,210 @@
+#!/bin/bash
+# Aethelark launcher. THIS FILE IS THE SOURCE; install.sh renders it to
+# ~/.local/bin/eagle with @AETHELARK_HOME@ replaced. Editing the copy there is
+# undone by the next install.
+#
+# Aethelark — launches the web shell (native pill + QWebEngine dashboard +
+# voice/swarm backend). `python main.py` does nothing: the QPainter cockpit it
+# used to launch was deleted on 2026-08-28.
+#
+# This launcher exists to guarantee one thing: typing `eagle` runs the code that
+# is on disk right now. An eagle already running keeps its own copy of every
+# prompt, tool description and card template in memory from when it started,
+# so it is stopped before the new one starts -- otherwise two islands sit on
+# the desktop and the stale one keeps talking.
+#
+# It is also the module door:
+#   eagle install <module>   eagle remove <module>   eagle modules   eagle update
+# A module installs its own manifest and card files into ~/.aethelark/modules;
+# this launcher never copies module files anywhere. (It used to sync copies
+# carried in this repo over the installed ones on every launch, which silently
+# reverted every module update.)
+set -euo pipefail
+
+REPO=@AETHELARK_HOME@
+
+ARGS=()
+for arg in "$@"; do
+    # --no-sync is accepted and ignored: there is nothing to sync any more.
+    [ "$arg" = "--no-sync" ] || ARGS+=("$arg")
+done
+
+cd "$REPO"
+
+# 0. The launcher is itself a COPY. `~/.local/bin/eagle` is rendered from
+#    packaging/eagle by install.sh, so every improvement to this file sat
+#    unused until somebody remembered to re-run the installer — the same "two
+#    copies and the wrong one wins" that the manifest sync below exists to
+#    stop. It should not apply to everything except the thing doing the
+#    syncing.
+#
+#    EAGLE_RELAUNCHED bounds it to a single re-exec, so a substitution that
+#    somehow never converges cannot spin.
+SELF="$(readlink -f "$0")"
+if [ -z "${EAGLE_RELAUNCHED:-}" ] && [ -f "$REPO/packaging/eagle" ]; then
+    # The token is built from two halves on purpose. install.sh renders this
+    # file with `sed "s#@AETHELARK_HOME@#$HOME_DIR#g"` over the WHOLE file — so
+    # writing the placeholder literally here meant the installer rewrote the
+    # very pattern this line searches for. The rendered launcher then looked
+    # for the repo path, matched nothing, and wrote the unrendered template
+    # back over itself; the next run died on `cd @AETHELARK_HOME@`.
+    # Split, it never appears contiguously for the installer to find.
+    _PH='@AETHELARK''_HOME@'
+    RENDERED="$(mktemp)"
+    sed "s|$_PH|$REPO|g" "$REPO/packaging/eagle" > "$RENDERED"
+    if ! cmp -s "$RENDERED" "$SELF"; then
+        cat "$RENDERED" > "$SELF"
+        chmod +x "$SELF"
+        rm -f "$RENDERED"
+        echo "eagle: launcher was stale — updated from the repo, re-running"
+        EAGLE_RELAUNCHED=1 exec "$SELF" "$@"
+    fi
+    rm -f "$RENDERED"
+fi
+
+# Module management needs no window and must not stop a running eagle: the
+# running one picks up what is installed on its own.
+case "${ARGS[0]:-}" in
+    update)
+        # The app first, then its modules. `eagle update` used to update only
+        # the modules, and the app itself only by re-running the installer.
+        #
+        # Only a checkout the installer made is reset: install.sh leaves
+        # .aethelark-install in it. Anything else -- a developer's working
+        # copy, with commits that exist nowhere else -- is told to use git,
+        # because `reset --hard` on it would destroy that work.
+        if [ -f "$REPO/.aethelark-install" ]; then
+            BRANCH="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+            echo "eagle: updating the app ($BRANCH)…"
+            if git -C "$REPO" fetch --quiet --depth 1 origin "$BRANCH"; then
+                git -C "$REPO" reset --hard --quiet FETCH_HEAD
+                UV="$(command -v uv || true)"
+                [ -z "$UV" ] && [ -x "$HOME/.local/bin/uv" ] && UV="$HOME/.local/bin/uv"
+                [ -z "$UV" ] && [ -x "$HOME/.cargo/bin/uv" ] && UV="$HOME/.cargo/bin/uv"
+                CONSTRAINTS=()
+                [ -f "$REPO/constraints.txt" ] && CONSTRAINTS=(-c "$REPO/constraints.txt")
+                if [ -n "$UV" ]; then
+                    "$UV" pip install --quiet --python "$REPO/.venv/bin/python" \
+                        -r "$REPO/requirements.txt" ${CONSTRAINTS[@]+"${CONSTRAINTS[@]}"}
+                else
+                    "$REPO/.venv/bin/python" -m pip install --quiet \
+                        -r "$REPO/requirements.txt" ${CONSTRAINTS[@]+"${CONSTRAINTS[@]}"}
+                fi
+                echo "eagle: the app is at $(git -C "$REPO" log -1 --format='%h %s' | cut -c1-72)"
+            else
+                echo "eagle: could not reach the app's repository, so the app was not updated." >&2
+            fi
+        else
+            echo "eagle: $REPO is a development checkout, not one the installer made -- update it with git. Updating modules only."
+        fi
+        exec "$REPO/.venv/bin/python" -m core.module_bus.installer update "${ARGS[@]:1}"
+        ;;
+    install|remove|uninstall|modules|bundle)
+        sub="${ARGS[0]}"; [ "$sub" = "uninstall" ] && sub=remove
+        exec "$REPO/.venv/bin/python" -m core.module_bus.installer "$sub" "${ARGS[@]:1}"
+        ;;
+esac
+
+# 1. Nothing older than this launch keeps running.
+#    Matched on the interpreter+script pair so this never matches an editor or
+#    a grep that merely has the filename on its command line.
+if [ -z "${ARGS[*]+x}" ] || [ ${#ARGS[@]} -eq 0 ]; then
+    OLD=$(pgrep -f '^[^ ]*python3? .*aethelark_web\.py' || true)
+    if [ -n "$OLD" ]; then
+        echo "eagle: an older eagle is running (pid $(echo "$OLD" | tr '\n' ' ' | sed 's/ $//')) — stopping it, it has the old code in memory"
+        # shellcheck disable=SC2086
+        kill $OLD 2>/dev/null || true
+        for _ in $(seq 20); do
+            pgrep -f '^[^ ]*python3? .*aethelark_web\.py' >/dev/null || break
+            sleep 0.25
+        done
+        # shellcheck disable=SC2046
+        kill -9 $(pgrep -f '^[^ ]*python3? .*aethelark_web\.py' || true) 2>/dev/null || true
+
+        # The main process exiting is not the end of it. QtWebEngine runs the
+        # renderer and GPU work in separate QtWebEngineProcess children, and
+        # they release the OpenGL context slightly after their parent is gone.
+        # Starting the new eagle inside that window was observed once to kill
+        # it outright: "Failed to restore OpenGL context after clean-up", after
+        # a clean connect. Wait for the children rather than assume a delay.
+        for _ in $(seq 40); do
+            pgrep -f 'QtWebEngineProcess.*aethelark_web\.py' >/dev/null || break
+            sleep 0.25
+        done
+        sleep 0.5
+    fi
+fi
+
+# 2. A module that promises what it cannot deliver does not load, and the
+#     reason belongs here rather than in a log nobody opens. Cheap: it parses
+#     three TOML files and stats what they name.
+"$REPO/.venv/bin/python" - <<'EAGLE_CHECK' 2>/dev/null || true
+import sys
+sys.path.insert(0, ".")
+try:
+    from core.module_bus import default_manifest_dirs, load_manifests
+    problems = []
+    load_manifests(default_manifest_dirs(),
+                   on_error=lambda p, e: problems.append(f"{p}: {e}"))
+    for line in problems:
+        print(f"eagle: MODULE REFUSED — {line}")
+except Exception:
+    pass
+EAGLE_CHECK
+
+# 3. A log that survives a launch with no terminal. From the desktop icon or
+#    at login, stdout went nowhere, so the one record that finds bugs here --
+#    "eagle > ~/eagle.log 2>&1" -- existed only when someone remembered to type
+#    it. Same directory as the rest of the user's data (core/user_paths.py).
+#    In a terminal the output still shows; it is copied, not taken.
+if [ -n "${AETHELARK_DATA_DIR:-}" ]; then
+    LOG_DIR="$AETHELARK_DATA_DIR/logs"
+elif [ "$(uname -s)" = "Darwin" ]; then
+    LOG_DIR="$HOME/Library/Application Support/Aethelark/logs"
+else
+    LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/aethelark/logs"
+fi
+# People who installed the eagle get no log file: what they say and hear is not
+# written to their disk. A checkout the installer did not make (a developer's)
+# keeps it. EAGLE_LOG=1 turns it on for an installed one, for a bug report.
+LOGGING=1
+if [ -f "$REPO/.aethelark-install" ] && [ -z "${EAGLE_LOG:-}" ]; then
+    LOGGING=""
+fi
+if [ -n "$LOGGING" ] && mkdir -p "$LOG_DIR" 2>/dev/null; then
+    LOG="$LOG_DIR/eagle.log"
+    # One previous run's worth kept, so a crash is still there after a relaunch.
+    if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 5000000 ]; then
+        mv -f "$LOG" "$LOG.1"
+    fi
+    if [ -t 1 ]; then
+        exec > >(tee -a "$LOG") 2>&1
+    else
+        exec >>"$LOG" 2>&1
+    fi
+    echo "=== $(date '+%Y-%m-%d %H:%M:%S') ==="
+fi
+
+# 4. Say what is being launched, so old and new are told apart at a glance.
+# `git diff --quiet` sees only UNSTAGED edits to tracked files, so a tree with
+# staged changes or a brand-new untracked file reported itself as clean and the
+# commit line was then a lie about what was about to run. --porcelain covers
+# all three.
+if [ -n "$LOGGING" ]; then
+    DIRTY=""
+    [ -z "$(git status --porcelain 2>/dev/null)" ] || DIRTY=" +uncommitted"
+    echo "eagle: launching $(git log -1 --format='%h %s' 2>/dev/null | cut -c1-72)$DIRTY"
+fi
+
+source .venv/bin/activate
+
+# An installed eagle opens like any app: the terminal is handed back and nothing
+# is printed or kept. `eagle --doctor` and other flags still run in the terminal.
+if [ -z "$LOGGING" ] && [ ${#ARGS[@]} -eq 0 ]; then
+    setsid nohup python3 aethelark_web.py >/dev/null 2>&1 </dev/null &
+    echo "eagle: opening"
+    exit 0
+fi
+# ${ARGS[@]+...}: macOS runs bash 3.2, where an empty array under `set -u`
+# aborts -- i.e. plain `eagle`, the most common way to start it.
+exec python3 aethelark_web.py ${ARGS[@]+"${ARGS[@]}"}

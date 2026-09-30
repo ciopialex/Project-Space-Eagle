@@ -1,0 +1,101 @@
+<style>
+  .ae-dl{--bg:#07090c;--ink:#e8ecf2;--dim:#8a94a3;--line:#1c2230;--amber:#e0a33c;
+    background:var(--bg);color:var(--ink);font-family:ui-sans-serif,-apple-system,"Segoe UI",Inter,system-ui,sans-serif;
+    padding:56px 20px;border-radius:14px;text-align:center}
+  .ae-dl *{box-sizing:border-box}
+  .ae-dl h2{font-size:clamp(24px,4vw,36px);font-weight:600;letter-spacing:-.02em;margin:0 0 10px}
+  .ae-dl p.sub{color:var(--dim);margin:0 auto 34px;max-width:44ch;line-height:1.6;font-size:15px}
+  .ae-os{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-bottom:30px}
+  .ae-os button{background:#0d1117;border:1px solid var(--line);color:var(--dim);
+    border-radius:12px;padding:20px 26px;min-width:126px;cursor:pointer;
+    display:flex;flex-direction:column;align-items:center;gap:11px;
+    font:inherit;font-size:13.5px;transition:.16s}
+  .ae-os button:hover{border-color:#3a4658;color:var(--ink);transform:translateY(-2px)}
+  .ae-os button[aria-selected=true]{border-color:var(--amber);color:var(--ink);background:#12161d}
+  .ae-os svg{width:32px;height:32px;fill:currentColor}
+  .ae-cmd{max-width:620px;margin:0 auto;text-align:left}
+  .ae-row{display:flex;align-items:stretch;background:#0d1117;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .ae-row code{flex:1;padding:15px 17px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:13.5px;color:var(--ink);overflow-x:auto;white-space:nowrap;line-height:1.5}
+  .ae-row button{background:#161c26;border:0;border-left:1px solid var(--line);color:var(--dim);
+    padding:0 19px;cursor:pointer;font:inherit;font-size:12.5px;letter-spacing:.04em;transition:.16s}
+  .ae-row button:hover{background:#1d2531;color:var(--ink)}
+  .ae-row button.ok{color:var(--amber)}
+  .ae-hint{color:var(--dim);font-size:13px;margin:13px 2px 0;line-height:1.65}
+  .ae-hint b{color:#b9c2cf;font-weight:600}
+  .ae-beta{display:inline-block;background:#2a1f0c;color:var(--amber);border:1px solid #4a3a15;
+    border-radius:5px;padding:1px 7px;font-size:10.5px;letter-spacing:.06em;margin-left:7px;vertical-align:2px}
+  .ae-foot{color:#5d6774;font-size:12.5px;margin-top:26px}
+  .ae-foot a{color:#8a94a3}
+</style>
+
+<div class="ae-dl">
+  <h2>Install Aethelark</h2>
+  <p class="sub">Pick your system, paste one line into a terminal. It installs everything &mdash; then you just type <code style="color:#e0a33c">eagle</code>.</p>
+
+  <div class="ae-os" role="tablist">
+    <button role="tab" data-os="mac" aria-selected="false">
+      <svg viewBox="0 0 24 24"><path d="M16.36 12.66c-.02-2.3 1.88-3.4 1.96-3.46-1.07-1.56-2.73-1.78-3.32-1.8-1.41-.14-2.76.83-3.48.83-.72 0-1.82-.81-3-.79-1.54.02-2.96.9-3.75 2.28-1.6 2.78-.41 6.89 1.15 9.14.76 1.1 1.67 2.34 2.86 2.3 1.15-.05 1.58-.74 2.97-.74 1.39 0 1.78.74 3 .72 1.24-.02 2.02-1.12 2.78-2.23.87-1.28 1.23-2.52 1.25-2.58-.03-.01-2.4-.92-2.42-3.67zM14.1 5.6c.63-.77 1.06-1.83.94-2.9-.91.04-2.02.61-2.67 1.37-.58.68-1.09 1.77-.95 2.81 1.02.08 2.05-.52 2.68-1.28z"/></svg>
+      macOS
+    </button>
+    <button role="tab" data-os="linux" aria-selected="false">
+      <svg viewBox="0 0 24 24"><path d="M12.3 2c-1.9 0-3.2 1.5-3.2 3.6 0 .9.1 1.7.1 2.4 0 .8-.6 1.5-1.3 2.6-.8 1.2-1.6 2.5-1.9 4.2-.2.9-.1 1.7.2 2.3-.4.4-.7.9-.7 1.4 0 .4.2.8.5 1 .6.5 1.7.6 2.9.8 1 .2 1.8.5 2.5.9.4.2.9.4 1.4.4s1-.2 1.4-.4c.7-.4 1.5-.7 2.5-.9 1.2-.2 2.3-.3 2.9-.8.3-.2.5-.6.5-1 0-.5-.3-1-.7-1.4.3-.6.4-1.4.2-2.3-.3-1.7-1.1-3-1.9-4.2-.7-1.1-1.3-1.8-1.3-2.6 0-.7.1-1.5.1-2.4C15.5 3.5 14.2 2 12.3 2zm-1.5 3.3c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9zm3 0c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9zm-1.5 2.4c.8 0 1.6.5 1.6.9 0 .3-.3.5-.7.7-.3.2-.6.4-.9.4s-.6-.2-.9-.4c-.4-.2-.7-.4-.7-.7 0-.4.8-.9 1.6-.9z"/></svg>
+      Linux
+    </button>
+    <button role="tab" data-os="win" aria-selected="false">
+      <svg viewBox="0 0 24 24"><path d="M3 5.5l7.2-1v6.9H3V5.5zm0 13l7.2 1v-6.8H3v5.8zm8 1.2L21 21V12.4h-10v7.3zm0-14.4v7.1h10V3l-10 1.3z"/></svg>
+      Windows<span class="ae-beta">BETA</span>
+    </button>
+  </div>
+
+  <div class="ae-cmd">
+    <div class="ae-row">
+      <code id="ae-line">curl -fsSL https://get.aethelark.com | bash</code>
+      <button id="ae-copy" type="button">COPY</button>
+    </div>
+    <p class="ae-hint" id="ae-hint"></p>
+  </div>
+
+  <p class="ae-foot">Free and open source. You supply your own free
+    <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">Google Gemini API key</a>
+    &mdash; the app walks you through it on first run.</p>
+</div>
+
+<script>
+(function () {
+  var CMD = {
+    mac:   { c: 'curl -fsSL https://get.aethelark.com | bash',
+             h: 'Open <b>Terminal</b> &mdash; press <b>Cmd + Space</b>, type <b>Terminal</b>, hit Enter. Paste the line above and press Enter.' },
+    linux: { c: 'curl -fsSL https://get.aethelark.com | bash',
+             h: 'Open a terminal with <b>Ctrl + Alt + T</b>, paste, press Enter. You will be asked for your password once, to install the Qt system libraries pip cannot provide.' },
+    win:   { c: 'irm https://get.aethelark.com/install.ps1 | iex',
+             h: 'Right-click <b>Start</b> &rarr; <b>Terminal</b>. Paste the line above and press Enter. <b>Windows support is beta</b> &mdash; it has not yet been tested on a real Windows machine, so please report anything broken.' }
+  };
+  var root  = document.currentScript.parentNode,
+      tabs  = root.querySelectorAll('.ae-os button'),
+      line  = root.querySelector('#ae-line'),
+      hint  = root.querySelector('#ae-hint'),
+      copy  = root.querySelector('#ae-copy');
+
+  function pick(os) {
+    tabs.forEach(function (t) { t.setAttribute('aria-selected', String(t.dataset.os === os)); });
+    line.textContent = CMD[os].c;
+    hint.innerHTML   = CMD[os].h;
+    copy.textContent = 'COPY';
+    copy.classList.remove('ok');
+  }
+  tabs.forEach(function (t) { t.addEventListener('click', function () { pick(t.dataset.os); }); });
+
+  copy.addEventListener('click', function () {
+    var done = function () { copy.textContent = 'COPIED'; copy.classList.add('ok');
+                             setTimeout(function () { copy.textContent = 'COPY'; copy.classList.remove('ok'); }, 1800); };
+    if (navigator.clipboard) { navigator.clipboard.writeText(line.textContent).then(done, done); }
+    else { var r = document.createRange(); r.selectNode(line);
+           var s = getSelection(); s.removeAllRanges(); s.addRange(r);
+           try { document.execCommand('copy'); } catch (e) {} s.removeAllRanges(); done(); }
+  });
+
+  var ua = navigator.userAgent;
+  pick(/Win/i.test(ua) ? 'win' : /Mac|iPhone|iPad/i.test(ua) ? 'mac' : 'linux');
+})();
+</script>

@@ -1,0 +1,164 @@
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Python caching
+__pycache__/
+*.py[cod]
+*$py.class
+
+# User configurations (private keys & tokens)
+config/api_keys.json
+config/google_token.json
+
+# The WHOLE certs directory, not an extension list.
+#
+# This was `config/certs/*.key` and `*.crt`, which is the same partial-family
+# mistake that put memory/long_term.bak in a public repo: the rule named the
+# extensions someone thought of. core/prompt.txt's own operational rule names
+# ".key, .pem" and a .pem was not covered — nor .p12, .pfx, .jks, or a key
+# with no extension at all. Nothing in this directory is ever publishable, so
+# the directory is the rule.
+config/certs/
+
+# Environment files. Named in core/prompt.txt's refuse-list and ignored
+# nowhere, which is the whole of how a secret file reaches a commit.
+.env
+.env.*
+!.env.example
+
+# Backups and half-written files. `memory/*` covers the ones that actually
+# leaked, but a .bak is a copy of whatever it was next to, and the rule should
+# not depend on where the copy landed.
+*.bak
+*.tmp
+
+
+# Local databases and runtime state.
+#
+# Every file in memory/ that is not code is the user's private life: names of
+# family and partners, habits, projects. install.sh git-clones into
+# ~/.aethelark, so every installation is a git checkout and anything not
+# ignored here is one `git add -A` away from being published. Naming
+# long_term.json alone was not enough - memory_manager.py writes a sibling
+# long_term.bak on every save, and that .bak reached the public repo with real
+# personal data in it.
+#
+# So: ignore the whole directory and re-admit the code explicitly. A new
+# runtime file cannot leak by being forgotten; it has to be allow-listed.
+memory/*
+!memory/*.py
+memory/__pycache__/
+
+# Whatever the user drops into the dashboard. dashboard/server.py creates
+# BASE_DIR/uploads at runtime, so these are their files, in a git checkout,
+# for the same reason memory/ was.
+uploads/
+dashboard/__pycache__/
+config/__pycache__/
+actions/__pycache__/
+
+# Coverage artifacts. Written into the repo root by `pytest --cov`.
+.coverage
+.coverage.*
+htmlcov/
+
+# IDEs & System files
+.vscode/
+.idea/
+.DS_Store
+scratch/
+
+# Secrets — OAuth tokens & TLS keys (must never be committed)
+config/google_token.json
+config/certs/*.key
+config/certs/*.crt
+
+# debug screenshots
+screenshot_*.png
+
+# agent workspaces: worktrees and per-plan scratch. Both are scratch that must
+# never be committed back into the repository they are checked out from.
+.claude/worktrees/
+.superpowers/
+
+# Screenshots the vision tool writes into the repo root — these are
+# pictures of the user's actual screen and must never be committed.
+screenshot*.png
+
+# Internal developer docs — architecture, specs, plans, roadmap, audits.
+# This repo is PUBLIC (curl-install distribution): only genuinely
+# user-facing docs (readme.md, Aethelark_Google_Setup.md,
+# packaging/README.md) belong in the tracked tree. Everything that exists
+# to help build the codebase, not use it, stays local-only.
+Aethelark_Architecture.md
+Aethelark_Specifications.md
+Aethelark_Vision.md
+CURRENT_STATUS.md
+# docs/ was a blanket ignore, which hid the module contract from the code it
+# describes: seven card keys were added on 2026-09-03 and the interface that
+# documents them could not be committed in the same change. An untracked
+# contract is not a contract, it is a note.
+#
+# `docs/*` rather than `docs/`, because git does not descend into an excluded
+# directory and the negations below would never be reached.
+docs/*
+# The product, in the operator's own words, dated and attributed. This outranks
+# BEHAVIOR_SPEC.md, which an AI generated and whose rules mostly trace to
+# nothing. A vision that cannot travel with the code is not a vision, it is a
+# conversation nobody can find again.
+# The interface a module author writes against. Must version with the card.
+!docs/MODULE_CONTRACT.md
+# What the product must do, and how to check it. These two are the spec a test
+# author works from and are useless apart.
+!docs/BEHAVIOR_SPEC.md
+!docs/TEST_SETUP.md
+# The 2.0 half of the spec, split out of BEHAVIOR_SPEC.md on 2026-09-04 so a
+# session reading the 1.0 spec does not pay to read unbuilt sections too.
+!docs/BEHAVIOR_SPEC_2.0.md
+#
+# These three were local while the repository was public: SHIP_1.0.md itemises
+# where the product currently says untrue things, TWO_POINT_OH.md is unshipped
+# strategy, and DECISIONS.md carries candid assessments. The repository went
+# private on 2026-09-03, and being untracked meant nothing could recover them
+# from an over-eager edit. Tracked as of 2026-09-04 so they can be trimmed
+# reversibly. If this repository is ever made public again, these three come
+# out first.
+!docs/SHIP_1.0.md
+!docs/DECISIONS.md
+!docs/TWO_POINT_OH.md
+
+# Internal handoff/state notes — same rule as the docs above: this exists to
+# help build the codebase, not to install or use it. Public repo.
+HANDOFF.md
+
+# Rewrite planning notes. Names the upstream author and the inherited line
+# count, and describes commercial and repo-migration plans — none of which is
+# something a person installing this needs, and all of which is something the
+# public should not be handed. Local-only.
+NON_DERIVATIVE_ROADMAP.txt
+Module_Software_Factory.txt
+
+# Session logs. CLAUDE.md tells anyone debugging this to run
+#   eagle > ~/eagle.log 2>&1
+# and then read it — those logs are the tool that found nearly every real bug
+# here. The path in that instruction is ~, but the natural place to run it from
+# is the repository, and a redirect does not care which directory it is in.
+#
+# A voice-session log is the entire conversation: what the user said, what the
+# eagle said back, every tool argument, and whatever an API error quoted back
+# at us. Nothing of the sort is tracked today, and CLAUDE.md records that
+# internal material has reached git history here once already. That was
+# recoverable only because the repository was private at the time.
+*.log
+*.jsonl
+!tests/fixtures/agent_stream/*.jsonl
+boot.log
+eagle.log
+
+# Marks a checkout install.sh made, which `eagle update` may reset.
+.aethelark-install
+
+# Local, uncommitted instructions and notes for whoever works here.
+CLAUDE.local.md

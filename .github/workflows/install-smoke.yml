@@ -1,0 +1,156 @@
+name: install-smoke
+
+# Installs the eagle the way a user does, on a machine that has never seen it,
+# and checks that what a user is promised is there: the `eagle` command, the
+# modules door, `eagle update`, and an app that opens.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unix:
+    name: install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The installer clones a branch; a pull request checks out a detached
+      # merge commit, so the code under test is put on a branch first.
+      - name: Put the code under test on a branch
+        run: git checkout -B ci-under-test
+
+      - name: Install the way a user does
+        env:
+          AETHELARK_REPO: file://${{ github.workspace }}
+          AETHELARK_BRANCH: ci-under-test
+          AETHELARK_NO_LAUNCH: "1"
+          AETHELARK_SKIP_BROWSER: "1"
+        run: bash install.sh
+
+      - name: The eagle command and the app are there
+        run: |
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          test -x "$HOME/.local/bin/eagle"
+          "$HOME/.aethelark/app/.venv/bin/python" -c \
+            "import PyQt6.QtWebEngineWidgets, google.genai, sounddevice; print('imports ok')"
+
+      - name: eagle --doctor
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          eagle --doctor || true
+
+      - name: Trade arrived with the install, and Get is idempotent
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          eagle modules | tee modules.txt
+          grep -i "Aethelark-Trade" modules.txt
+          eagle install trade
+
+      - name: eagle update
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          eagle update
+
+      - name: It opens, and keeps no log
+        if: runner.os == 'Linux'
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          sudo apt-get install -y -qq xvfb >/dev/null
+          xvfb-run -a bash -c '
+            eagle
+            sleep 25
+            pgrep -f "^python3 aethelark_web.py" >/dev/null || { echo "the eagle is not running"; exit 1; }
+            pkill -f "^python3 aethelark_web.py" || true'
+          test ! -e "$HOME/.local/share/aethelark/logs" || { echo "an installed eagle wrote a log"; exit 1; }
+
+      - name: It opens (macOS, offscreen)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          QT_QPA_PLATFORM=offscreen eagle
+          sleep 25
+          pgrep -f "aethelark_web.py" >/dev/null || { echo "the eagle is not running"; exit 1; }
+          pkill -f "aethelark_web.py" || true
+
+  windows:
+    name: install (windows, PowerShell 5.1, no git)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Put the code under test on a branch
+        run: git checkout -B ci-under-test
+
+      # A stock Windows machine has no git. It is taken off PATH so the
+      # installer has to bring its own.
+      - name: Install the way a user does
+        env:
+          AETHELARK_BRANCH: ci-under-test
+          AETHELARK_NO_LAUNCH: "1"
+          AETHELARK_SKIP_BROWSER: "1"
+        run: |
+          $src = "file:///" + ($env:GITHUB_WORKSPACE -replace '\\', '/')
+          $env:AETHELARK_REPO = $src
+          $env:Path = (($env:Path -split ';') | Where-Object { $_ -notmatch '[\\/]Git[\\/]' }) -join ';'
+          if (Get-Command git -ErrorAction SilentlyContinue) { throw "git is still on PATH" }
+          Get-Content install.ps1 -Raw | Invoke-Expression
+
+      - name: The eagle command, shortcuts and uninstall entry are there
+        run: |
+          Add-Content $env:GITHUB_PATH "$env:LOCALAPPDATA\Aethelark\bin"
+          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.local\bin"
+          if (-not (Test-Path "$env:LOCALAPPDATA\Aethelark\git\cmd\git.exe")) { throw "the portable git was not installed" }
+          foreach ($f in @(
+              "$env:LOCALAPPDATA\Aethelark\bin\eagle.cmd",
+              "$env:LOCALAPPDATA\Aethelark\bin\eagle.ps1")) {
+            if (-not (Test-Path $f)) { throw "missing: $f" }
+          }
+          foreach ($where in "Programs", "Desktop") {
+            $dir = [Environment]::GetFolderPath($where)
+            if (-not $dir) { Write-Host "no $where folder on this runner: shortcut skipped"; continue }
+            if (-not (Test-Path (Join-Path $dir "Aethelark.lnk"))) { throw "missing the $where shortcut" }
+          }
+          if (-not (Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Aethelark")) { throw "no uninstall entry" }
+          & "$env:LOCALAPPDATA\Aethelark\app\.venv\Scripts\python.exe" -c "import PyQt6.QtWebEngineWidgets, google.genai, sounddevice; print('imports ok')"
+
+      - name: eagle --doctor
+        run: eagle --doctor
+        continue-on-error: true
+
+      - name: Trade arrived with the install
+        run: |
+          eagle modules | Tee-Object modules.txt
+          if (-not (Select-String -Path modules.txt -Pattern "Aethelark-Trade" -Quiet)) { throw "Trade is not installed" }
+
+      - name: eagle update
+        run: eagle update
+
+      - name: It opens, and keeps no log
+        run: |
+          eagle
+          Start-Sleep -Seconds 25
+          $p = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "aethelark_web\.py" }
+          if (-not $p) { throw "the eagle is not running" }
+          $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          if (Test-Path "$env:LOCALAPPDATA\Aethelark\logs") { throw "an installed eagle wrote a log" }
+
+      - name: Uninstall
+        run: |
+          & "$env:LOCALAPPDATA\Aethelark\bin\uninstall.ps1"
+          if (Test-Path "$env:LOCALAPPDATA\Aethelark\app") { throw "the app is still there" }
