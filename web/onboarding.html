@@ -78,6 +78,11 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
 .dot{width:6px;height:6px;border-radius:50%;background:rgba(210,210,220,.18);transition:all .3s var(--ease)}
 .dot.on{background:var(--silver-hi);width:18px;border-radius:3px}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  .hint{font-size:12.5px;line-height:1.5;color:var(--dim,#9aa4b2);margin:-4px 0 0;max-width:34ch;text-align:center}
+  .hint b{color:var(--ink,#eef1f6);font-weight:600}
+  .modprog{width:100%;display:flex;flex-direction:column;gap:6px;margin:4px 0 14px;font-size:13px;color:var(--dim,#9aa4b2);text-align:left}
+  .modprog b{color:var(--ink,#eef1f6);font-weight:600}
+  .modprog .bad{color:#e57373}
   .modlist{display:flex;flex-direction:column;gap:10px;margin:6px 0 22px;width:100%}
   .mod{text-align:left;display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border:1px solid rgba(255,255,255,.12);border-radius:14px;cursor:pointer;line-height:1.4;font-size:13px;color:var(--dim,#9aa4b2)}
   .mod b{color:var(--ink,#eef1f6);font-weight:600}
@@ -95,7 +100,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       <h1>Aethelark</h1>
       <p class="sub">A voice for your computer. Just ask.</p>
       <div class="grow"></div>
-      <button class="btn" onclick="go('key')">Get started</button>
+      <button class="btn" onclick="go('modules')">Get started</button>
     </section>
 
     <section class="screen" data-step="key">
@@ -108,10 +113,11 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
         <button class="reveal" id="reveal" onclick="toggleReveal()">Show</button>
       </div>
       <div class="status" id="key-status"></div>
-      <button class="link" onclick="openUrl('https://aistudio.google.com/apikey')">Get a free key from Google AI Studio</button>
+      <button class="link" onclick="openUrl('https://aistudio.google.com/apikey')">No key yet? Get a free one from Google</button>
+      <p class="hint" id="key-hint">Sign in with Google, click <b>Create API key</b>, then <b>Copy</b>. Come back here and I'll find it.</p>
       <div class="grow"></div>
       <div class="row">
-        <button class="btn ghost" id="key-back" onclick="go('welcome')">Back</button>
+        <button class="btn ghost" id="key-back" onclick="go('modules')">Back</button>
         <button class="btn" id="key-next" disabled onclick="checkKey()">Continue</button>
       </div>
     </section>
@@ -143,9 +149,9 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       <div class="grow"></div>
       <div class="row">
         <button class="btn ghost" id="mic-retry" onclick="startMic()" style="display:none">Try again</button>
-        <button class="btn" id="mic-next" disabled onclick="go('modules')">Continue</button>
+        <button class="btn" id="mic-next" disabled onclick="go('done')">Continue</button>
       </div>
-      <button class="link" id="mic-skip" onclick="go('modules')">Skip for now</button>
+      <button class="link" id="mic-skip" onclick="go('done')">Skip for now</button>
     </section>
 
     <section class="screen" data-step="modules">
@@ -160,7 +166,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       <div class="mark"><img src="../assets/images/eagle_white.png" alt=""></div>
       <h1 id="done-title">You're all set.</h1>
       <p class="sub">I live in the small bar at the top of your screen. Just start talking. Double-click the bar to open the full window.</p>
-      <p class="sub" id="done-modules" style="display:none">I'm adding what you chose in the background. It will be ready in a few minutes.</p>
+      <div class="modprog" id="done-modules" style="display:none"></div>
       <div id="aec" style="display:none">
         <p class="sub">Want to cut in while I'm talking, at a normal voice? That needs echo cancellation, which changes your computer's default microphone and speakers.</p>
         <button class="btn ghost" id="aec-on" onclick="enableAec()">Turn it on</button>
@@ -178,7 +184,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
 <script>
 (function(){
   var bridge = null;
-  var ORDER = ['welcome', 'key', 'name', 'mic', 'modules', 'done'];
+  var ORDER = ['welcome', 'modules', 'key', 'name', 'mic', 'done'];
   var state = {api_key: '', key_ok: false, user_name: '', mode: 'setup'};
   var step = 'welcome';
 
@@ -194,7 +200,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
   }
 
   window.go = function(to){
-    if (to === 'modules' && !(state.offer && state.offer.length)) { to = 'done'; }
+    if (to === 'modules' && !(state.offer && state.offer.length)) { to = 'key'; }
     if (to === 'mic' && step !== 'mic') setTimeout(startMic, 250);
     if (step === 'mic' && to !== 'mic' && bridge && bridge.stop_mic_check) bridge.stop_mic_check();
     document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('active'); });
@@ -258,9 +264,8 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
   window.answerModules = function(){
     var picked = [];
     document.querySelectorAll('#modlist input:checked:not(:disabled)').forEach(function(i){ picked.push(i.value); });
-    state.modules = picked;
-    $('done-modules').style.display = picked.length ? '' : 'none';
-    go('done');
+    if (picked.length && bridge && bridge.start_modules) bridge.start_modules(JSON.stringify(picked));
+    go('key');
   };
   window.finish = function(){
     state.user_name = ($('name-input').value || '').trim();
@@ -293,6 +298,28 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
         $('quit').title = 'Close';
       }
       go(opts.step || 'welcome');
+    },
+    setModuleProgress: function(m){
+      m = m || {};
+      state.prog = state.prog || {};
+      state.prog[m.name] = m;
+      var box = $('done-modules'), rows = [];
+      Object.keys(state.prog).forEach(function(k){
+        var p = state.prog[k], what = p.state === 'ready' ? 'ready'
+          : p.state === 'failed' ? '<span class="bad">did not install: ' + esc(p.step) + ' You can add it in Settings.</span>'
+          : esc(p.step || 'adding…');
+        rows.push('<div><b>' + esc(p.title) + '</b> &mdash; ' + what + '</div>');
+      });
+      box.innerHTML = rows.join('');
+      box.style.display = rows.length ? '' : 'none';
+    },
+    clipboardKey: function(k){
+      // A key copied from Google's page: use it, if the field is empty and this is the key screen.
+      var f = $('api-key');
+      if (step !== 'key' || (f.value || '').trim() || state.key_ok) return;
+      f.value = k;
+      keyChanged();
+      checkKey();
     },
     setKeyResult: function(r){
       r = r || {};

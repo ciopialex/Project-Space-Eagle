@@ -45,7 +45,7 @@ from PyQt6.QtWebChannel import QWebChannel
 
 from ui import load_app_fonts, _metrics, make_spring_curve
 from memory.memory_manager import load_memory
-from core import setup_wishes, user_paths
+from core import user_paths
 
 BASE = pathlib.Path(__file__).resolve().parent
 DASHBOARD_HTML = BASE / "web" / "dashboard.html"
@@ -2637,6 +2637,8 @@ class OnboardBridge(QObject):
     def validate_key(self, key): self._win.validate_key(key)
     @pyqtSlot(str)
     def open_url(self, url): self._win.open_url(url)
+    @pyqtSlot(str)
+    def start_modules(self, names_json): self._win.start_modules(names_json)
     @pyqtSlot()
     def start_mic_check(self): self._win.start_mic_check()
     @pyqtSlot()
@@ -2676,6 +2678,7 @@ class OnboardingWindow(QMainWindow):
         self._mode = mode
         self._reason = reason
         self._validated_key = ""
+        self._last_clip = ""
         self._mic_stop = threading.Event()
         self._mic_thread = None
         self.setWindowTitle("Aethelark — Setup")
@@ -2717,6 +2720,10 @@ class OnboardingWindow(QMainWindow):
             except Exception as e:
                 print(f"[onboarding] could not list the modules: {e}")
         self.push("startAt", start)
+        if self._mode != "key":
+            self._clip_timer = QTimer(self)
+            self._clip_timer.timeout.connect(self._watch_clipboard)
+            self._clip_timer.start(800)
 
         # The one expensive full scan of the machine, persisted so later
         # launches load it in a millisecond. Off-thread: nvidia-smi and lspci
@@ -2760,6 +2767,42 @@ class OnboardingWindow(QMainWindow):
         from PyQt6.QtGui import QDesktopServices
         if str(url).startswith("https://"):
             QDesktopServices.openUrl(QUrl(str(url)))
+
+    def start_modules(self, names_json: str):
+        """The modules the user ticked are added now, while they get a key and
+        finish setup; the last screen shows where each one got to."""
+        from core import setup_modules
+        from core.module_bus import installer
+        try:
+            chosen = [str(n) for n in json.loads(names_json or "[]")]
+            shop = installer.shop()
+        except Exception as e:
+            print(f"[onboarding] could not start the modules: {e}")
+            return
+        titles = {m["name"]: m["title"] for m in shop}
+        installed = {m["name"] for m in shop if m["installed"]}
+
+        def report(name, state, step):
+            self.push("setModuleProgress", {"name": name, "title": titles.get(name, name),
+                                            "state": state, "step": step})
+
+        def install(name, progress):
+            installer.install(name, interactive=False,
+                              progress=lambda m: progress(m.rstrip("…").strip() + "…"))
+
+        threading.Thread(
+            target=setup_modules.install_chosen, daemon=True, name="setup-modules",
+            kwargs=dict(names=[n for n in chosen if n in titles], installed=installed,
+                        install=install, report=report)).start()
+
+    def _watch_clipboard(self):
+        """Someone who has just copied a key from Google's page should not have
+        to paste it. Only a string shaped exactly like a Gemini key leaves here."""
+        import re
+        text = (QApplication.clipboard().text() or "").strip()
+        if text != self._last_clip and re.fullmatch(r"AIza[0-9A-Za-z_\-]{35}", text):
+            self._last_clip = text
+            self.push("clipboardKey", text)
 
     def validate_key(self, key: str):
         def _work():
@@ -2834,6 +2877,8 @@ class OnboardingWindow(QMainWindow):
     # ── finishing ──────────────────────────────────────────────────────
     def complete(self, payload):
         self.stop_mic_check()
+        if getattr(self, "_clip_timer", None):
+            self._clip_timer.stop()
         try:
             data = json.loads(payload or "{}")
         except Exception:
@@ -2848,8 +2893,6 @@ class OnboardingWindow(QMainWindow):
         if name:
             cfg["user_name"] = name
         cfg.setdefault("user_name", "")
-        for name in data.get("modules") or []:
-            setup_wishes.add_wish(cfg, setup_wishes.INSTALL + str(name))
         cfg.setdefault("auth_provider", "guest")
         if cfg.get("gemini_api_key"):
             cfg["onboarded"] = True
@@ -2873,20 +2916,6 @@ class OnboardingWindow(QMainWindow):
 def _launch_main_app():
     ui = WebShellUI("face.png")
 
-    # What was ticked in setup is added once, here, through the same path as the
-    # Get button in Settings; the install lock runs them one at a time.
-    def _add_ticked_modules():
-        cfg = _config()
-        names = setup_wishes.take_installs(cfg)
-        if not names:
-            return
-        try:
-            user_paths.write_private(API_KEYS, json.dumps(cfg, indent=4))
-        except Exception as e:
-            print(f"[setup] could not record the module choice: {e}")
-        for i, name in enumerate(names):
-            QTimer.singleShot(2500 + 200 * i, lambda n=name: ui.install_module(n))
-
     def _say_if_update_is_ready():
         from core.update_check import newer_version
         if newer_version(BASE):
@@ -2894,8 +2923,6 @@ def _launch_main_app():
 
     QTimer.singleShot(20000, lambda: threading.Thread(
         target=_say_if_update_is_ready, daemon=True, name="update-check").start())
-
-    _add_ticked_modules()
 
     def runner():
         ui.wait_for_api_key()
