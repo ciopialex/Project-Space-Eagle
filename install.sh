@@ -19,7 +19,8 @@
 #   AETHELARK_APP=<dir>      where the app goes (default ~/.aethelark/app)
 #   AETHELARK_REPO=<url|dir> where to get it from
 #   AETHELARK_BRANCH=<name>  which branch (default main)
-#   AETHELARK_MODULES=<list> modules to add, comma separated (default trade; none skips)
+#   AETHELARK_MODULES=<list> modules to add during the install, comma separated
+#                            (default none: the app's first-run screen offers them)
 #   AETHELARK_NO_LAUNCH=1    install, but do not start the eagle
 #   AETHELARK_SKIP_BROWSER=1 skip the eagle's own browser (~150 MB)
 set -euo pipefail
@@ -402,13 +403,13 @@ DESKTOP
   fi
 fi
 
-if [ "${AETHELARK_MODULES:-trade}" != "none" ]; then
+# Modules are chosen on the app's first-run screen, which lists whatever the
+# catalog offers. Naming some here adds them during the install instead, for a
+# script or CI; `bundle` leaves alone any module the user removed.
+if [ -n "${AETHELARK_MODULES:-}" ] && [ "${AETHELARK_MODULES}" != "none" ]; then
   step 96 "Adding the modules…"
-  # Not fatal: the eagle works without them and Settings can add them later.
-  # `bundle` leaves alone any module the user removed, so re-running this
-  # installer to update never puts one back.
   # shellcheck disable=SC2046
-  "$BIN_DIR/eagle" bundle $(printf '%s' "${AETHELARK_MODULES:-trade}" | tr ',' ' ') >/dev/null 2>&1 || true
+  "$BIN_DIR/eagle" bundle $(printf '%s' "$AETHELARK_MODULES" | tr ',' ' ') >/dev/null 2>&1 || true
 fi
 
 step 100 "Ready."
@@ -420,7 +421,7 @@ cat <<BANNER
    ${BONE}Aethelark is installed.${RESET}
 
    ${SLATE}Next time, just type${RESET} ${AMBER}eagle${RESET} ${SLATE}in any terminal, or open it from your apps.${RESET}
-   ${SLATE}Add a module:${RESET} ${AMBER}eagle install trade${RESET} ${SLATE}(stocks) or${RESET} ${AMBER}eagle install 3d${RESET} ${SLATE}(3D printing).${RESET}
+   ${SLATE}Choose what it can do on first run, or any time in Settings → Modules.${RESET}
    ${DIM}You'll need a free Gemini API key — the app walks you through it.${RESET}
 
 BANNER

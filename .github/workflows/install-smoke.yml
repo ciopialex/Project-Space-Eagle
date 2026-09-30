@@ -36,6 +36,7 @@ jobs:
           AETHELARK_BRANCH: ci-under-test
           AETHELARK_NO_LAUNCH: "1"
           AETHELARK_SKIP_BROWSER: "1"
+          AETHELARK_MODULES: trade
         run: bash install.sh
 
       - name: The eagle command and the app are there
@@ -50,7 +51,7 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           eagle --doctor || true
 
-      - name: Trade arrived with the install, and Get is idempotent
+      - name: A module named in the install arrives, and Get is idempotent
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           eagle modules | tee modules.txt
@@ -104,6 +105,7 @@ jobs:
           AETHELARK_BRANCH: ci-under-test
           AETHELARK_NO_LAUNCH: "1"
           AETHELARK_SKIP_BROWSER: "1"
+          AETHELARK_MODULES: trade
         run: |
           $src = "file:///" + ($env:GITHUB_WORKSPACE -replace '\\', '/')
           $env:AETHELARK_REPO = $src

@@ -22,3 +22,15 @@ def take_wish(cfg: dict, wish: str) -> bool:
     wishes.discard(wish)
     cfg[KEY] = sorted(wishes)
     return True
+
+
+INSTALL = "install:"
+
+
+def take_installs(cfg: dict) -> list[str]:
+    """The modules the user ticked in setup, each returned once and then forgotten."""
+    wishes = list(cfg.get(KEY) or [])
+    names = [w[len(INSTALL):] for w in wishes if w.startswith(INSTALL)]
+    if names:
+        cfg[KEY] = sorted(w for w in wishes if not w.startswith(INSTALL))
+    return names

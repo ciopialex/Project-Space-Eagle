@@ -22,7 +22,7 @@ irm https://get.aethelark.com/install.ps1 | iex
 It takes 5–15 minutes and needs no admin rights (Linux asks for your password
 once, to install system libraries). You don't need Python: the installer brings
 its own. When it finishes, the eagle opens and asks for a free Gemini key, your
-name, a microphone check, and whether you have a 3D printer.
+name, a microphone check, and which modules you want.
 
 You get an app icon (Desktop and Start Menu on Windows, app menu and Desktop on
 Linux, Applications on macOS) and an `eagle` command in any terminal.
@@ -45,10 +45,10 @@ The eagle's abilities beyond the basics are modules, separate programs it calls:
 
 | Module | What it does |
 |---|---|
-| [Aethelark-Trade](https://github.com/ciopialex/Aethelark-Trade) | Stocks and companies from SEC filings: prices, analysis, insiders, owners. Installed with the eagle. |
-| [Aethelark-3D](https://github.com/ciopialex/Aethelark-3D) | Elegoo 3D printers: find models, slice, print, watch. Installed if you say you have a printer. |
+| [Aethelark-Trade](https://github.com/ciopialex/Aethelark-Trade) | Stocks and companies from SEC filings: prices, analysis, insiders, owners. |
+| [Aethelark-3D](https://github.com/ciopialex/Aethelark-3D) | Elegoo 3D printers: find models, slice, print, watch. |
 
-Add or remove one in **Settings → Modules**. Every module adds tools the model
+You choose which to add on first run (none are required), and can add or remove one any time in **Settings → Modules**. Every module adds tools the model
 has to choose between, so remove the ones you don't use. From a terminal:
 `eagle install <module>`, `eagle remove <module>`, `eagle modules`.
 

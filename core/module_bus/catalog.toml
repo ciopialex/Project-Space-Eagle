@@ -10,6 +10,7 @@ title   = "Aethelark-Trade"
 about   = "Stocks and companies: prices, a full analysis, insiders, owners."
 source  = "git+https://github.com/ciopialex/Aethelark-Trade"
 aliases = ["atrade", "aethelark-trade", "stocks"]
+default = true     # ticked in setup
 
 [modules.3d]
 title   = "Aethelark-3D"

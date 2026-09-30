@@ -330,6 +330,7 @@ def shop() -> list[dict]:
         hit = next((have[k] for k in have if k.lower() in names), None)
         out.append({"name": name, "title": str(entry.get("title") or name),
                     "about": str(entry.get("about") or ""),
+                    "default": bool(entry.get("default")),
                     "installed": bool(hit and hit.get("ready")),
                     "key": (hit or {}).get("key", ""),
                     "tools": (hit or {}).get("tools", 0)})

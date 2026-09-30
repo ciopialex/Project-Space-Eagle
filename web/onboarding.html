@@ -78,6 +78,11 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
 .dot{width:6px;height:6px;border-radius:50%;background:rgba(210,210,220,.18);transition:all .3s var(--ease)}
 .dot.on{background:var(--silver-hi);width:18px;border-radius:3px}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  .modlist{display:flex;flex-direction:column;gap:10px;margin:6px 0 22px;width:100%}
+  .mod{text-align:left;display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border:1px solid rgba(255,255,255,.12);border-radius:14px;cursor:pointer;line-height:1.4;font-size:13px;color:var(--dim,#9aa4b2)}
+  .mod b{color:var(--ink,#eef1f6);font-weight:600}
+  .mod i{font-style:normal;font-size:11px;opacity:.7;margin-left:6px}
+  .mod input{margin-top:3px;accent-color:#e0a33c;width:16px;height:16px}
 </style>
 </head>
 <body>
@@ -138,26 +143,24 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       <div class="grow"></div>
       <div class="row">
         <button class="btn ghost" id="mic-retry" onclick="startMic()" style="display:none">Try again</button>
-        <button class="btn" id="mic-next" disabled onclick="go('printer')">Continue</button>
+        <button class="btn" id="mic-next" disabled onclick="go('modules')">Continue</button>
       </div>
-      <button class="link" id="mic-skip" onclick="go('printer')">Skip for now</button>
+      <button class="link" id="mic-skip" onclick="go('modules')">Skip for now</button>
     </section>
 
-    <section class="screen" data-step="printer">
-      <h1>Do you have a 3D printer?</h1>
-      <p class="sub">If you do, I can find models, slice them and watch your prints. It takes a few more minutes to set up. If you don't, skip it. You can add it later in Settings.</p>
+    <section class="screen" data-step="modules">
+      <h1>What should I be able to do?</h1>
+      <p class="sub">I can do a lot already. These add more. Take only what you want, and change it any time in Settings.</p>
+      <div class="modlist" id="modlist"></div>
       <div class="grow"></div>
-      <div class="row">
-        <button class="btn ghost" onclick="answerPrinter(false)">No</button>
-        <button class="btn" onclick="answerPrinter(true)">Yes, set it up</button>
-      </div>
+      <button class="btn" onclick="answerModules()">Continue</button>
     </section>
 
     <section class="screen" data-step="done">
       <div class="mark"><img src="../assets/images/eagle_white.png" alt=""></div>
       <h1 id="done-title">You're all set.</h1>
       <p class="sub">I live in the small bar at the top of your screen. Just start talking. Double-click the bar to open the full window.</p>
-      <p class="sub" id="done-printer" style="display:none">I'm setting up your 3D printer support in the background. It will be ready in a few minutes.</p>
+      <p class="sub" id="done-modules" style="display:none">I'm adding what you chose in the background. It will be ready in a few minutes.</p>
       <div id="aec" style="display:none">
         <p class="sub">Want to cut in while I'm talking, at a normal voice? That needs echo cancellation, which changes your computer's default microphone and speakers.</p>
         <button class="btn ghost" id="aec-on" onclick="enableAec()">Turn it on</button>
@@ -175,11 +178,12 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
 <script>
 (function(){
   var bridge = null;
-  var ORDER = ['welcome', 'key', 'name', 'mic', 'printer', 'done'];
+  var ORDER = ['welcome', 'key', 'name', 'mic', 'modules', 'done'];
   var state = {api_key: '', key_ok: false, user_name: '', mode: 'setup'};
   var step = 'welcome';
 
   function $(id){ return document.getElementById(id); }
+  function esc(t){ return String(t == null ? '' : t).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
 
   function renderDots(){
     var steps = state.mode === 'key' ? ['key'] : ORDER;
@@ -190,6 +194,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
   }
 
   window.go = function(to){
+    if (to === 'modules' && !(state.offer && state.offer.length)) { to = 'done'; }
     if (to === 'mic' && step !== 'mic') setTimeout(startMic, 250);
     if (step === 'mic' && to !== 'mic' && bridge && bridge.stop_mic_check) bridge.stop_mic_check();
     document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('active'); });
@@ -250,9 +255,11 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
     if (bridge && bridge.enable_echo_cancel) bridge.enable_echo_cancel();
   };
 
-  window.answerPrinter = function(has){
-    state.has_printer = !!has;
-    $('done-printer').style.display = has ? '' : 'none';
+  window.answerModules = function(){
+    var picked = [];
+    document.querySelectorAll('#modlist input:checked:not(:disabled)').forEach(function(i){ picked.push(i.value); });
+    state.modules = picked;
+    $('done-modules').style.display = picked.length ? '' : 'none';
     go('done');
   };
   window.finish = function(){
@@ -268,6 +275,13 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       if (opts.user_name) $('name-input').value = opts.user_name;
       if (opts.aec_offer) $('aec').style.display = '';
       state.has_key = !!opts.has_key;
+      state.offer = (opts.modules || []);
+      $('modlist').innerHTML = state.offer.map(function(m){
+        var d = m.installed ? ' disabled' : '', c = m.checked ? ' checked' : '';
+        return '<label class="mod"><input type="checkbox" value="' + esc(m.name) + '"' + c + d + '>' +
+               '<span><b>' + esc(m.title) + '</b>' + (m.installed ? ' <i>installed</i>' : '') +
+               '<br>' + esc(m.about) + '</span></label>';
+      }).join('');
       if (state.has_key && state.mode !== 'key') {
         $('key-sub').textContent = 'Your key is saved. Paste a new one only if you want to replace it.';
         $('key-next').disabled = false;

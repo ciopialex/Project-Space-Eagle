@@ -2707,6 +2707,15 @@ class OnboardingWindow(QMainWindow):
                  "aec_offer": self._offer_echo_cancel()}
         if self._mode == "key":
             start.update(step="key", reason=self._reason)
+        else:
+            try:
+                from core.module_bus import installer
+                start["modules"] = [
+                    {"name": m["name"], "title": m["title"], "about": m["about"],
+                     "installed": m["installed"], "checked": m["installed"] or m["default"]}
+                    for m in installer.shop()]
+            except Exception as e:
+                print(f"[onboarding] could not list the modules: {e}")
         self.push("startAt", start)
 
         # The one expensive full scan of the machine, persisted so later
@@ -2839,8 +2848,8 @@ class OnboardingWindow(QMainWindow):
         if name:
             cfg["user_name"] = name
         cfg.setdefault("user_name", "")
-        if data.get("has_printer"):
-            setup_wishes.add_wish(cfg, "install:3d")
+        for name in data.get("modules") or []:
+            setup_wishes.add_wish(cfg, setup_wishes.INSTALL + str(name))
         cfg.setdefault("auth_provider", "guest")
         if cfg.get("gemini_api_key"):
             cfg["onboarded"] = True
@@ -2864,8 +2873,20 @@ class OnboardingWindow(QMainWindow):
 def _launch_main_app():
     ui = WebShellUI("face.png")
 
-    # An answer given in setup ("I have a 3D printer") is acted on once, here,
-    # through the same path as the Get button in Settings.
+    # What was ticked in setup is added once, here, through the same path as the
+    # Get button in Settings; the install lock runs them one at a time.
+    def _add_ticked_modules():
+        cfg = _config()
+        names = setup_wishes.take_installs(cfg)
+        if not names:
+            return
+        try:
+            user_paths.write_private(API_KEYS, json.dumps(cfg, indent=4))
+        except Exception as e:
+            print(f"[setup] could not record the module choice: {e}")
+        for i, name in enumerate(names):
+            QTimer.singleShot(2500 + 200 * i, lambda n=name: ui.install_module(n))
+
     def _say_if_update_is_ready():
         from core.update_check import newer_version
         if newer_version(BASE):
@@ -2874,13 +2895,7 @@ def _launch_main_app():
     QTimer.singleShot(20000, lambda: threading.Thread(
         target=_say_if_update_is_ready, daemon=True, name="update-check").start())
 
-    cfg = _config()
-    if setup_wishes.take_wish(cfg, "install:3d"):
-        try:
-            user_paths.write_private(API_KEYS, json.dumps(cfg, indent=4))
-        except Exception as e:
-            print(f"[setup] could not record the printer answer: {e}")
-        QTimer.singleShot(2500, lambda: ui.install_module("3d"))
+    _add_ticked_modules()
 
     def runner():
         ui.wait_for_api_key()

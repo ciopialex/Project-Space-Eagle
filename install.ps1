@@ -10,7 +10,8 @@
 #   AETHELARK_APP=<dir>       where the app goes
 #   AETHELARK_REPO=<url|dir>  where to get it from
 #   AETHELARK_BRANCH=<name>   which branch (default main)
-#   AETHELARK_MODULES=<list>  modules to add, comma separated (default trade; none skips)
+#   AETHELARK_MODULES=<list>  modules to add during the install, comma separated
+#                             (default none: the app's first-run screen offers them)
 #   AETHELARK_NO_LAUNCH=1     install, but do not start the eagle
 #   AETHELARK_SKIP_BROWSER=1  skip the eagle's own browser (~150 MB)
 
@@ -26,7 +27,7 @@ $EagleHome = Join-Path $env:LOCALAPPDATA "Aethelark"
 $AppDir    = if ($env:AETHELARK_APP) { $env:AETHELARK_APP } elseif ($env:AETHELARK_HOME) { $env:AETHELARK_HOME } else { Join-Path $EagleHome "app" }
 $BinDir    = Join-Path $EagleHome "bin"
 $PyVer     = "3.12"
-$Modules   = if ($env:AETHELARK_MODULES) { $env:AETHELARK_MODULES } else { "trade" }
+$Modules   = if ($env:AETHELARK_MODULES) { $env:AETHELARK_MODULES } else { "" }
 
 # MinGit, pinned by hash: the portable git used when the machine has none.
 $MinGitVer = "2.47.1"
@@ -219,7 +220,7 @@ try {
   Set-ItemProperty -Path $key -Name UninstallString -Value "powershell -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $BinDir 'uninstall.ps1')`""
 } catch {}
 
-if ($Modules -ne "none") {
+if ($Modules -and $Modules -ne "none") {
   Show-Crest 95 "Adding the modules..."
   # `bundle` leaves alone any module the user removed.
   $names = @($Modules -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
