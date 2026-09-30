@@ -9,7 +9,7 @@ dashboard.push(...) per the message contract in Aethelark_Web_Pivot_Plan.md.
 This is the ONLY entry point. The QPainter cockpit that main.py used to launch
 was deleted on 2026-08-28: main.py is a library exposing AethelarkLive, and
 ui.py is down to the fonts, metrics and spring curve this file imports.
-install.sh and packaging/aethelark.spec both exec this file.
+The installed `eagle` command execs this file.
 
 Run:  .venv/bin/python aethelark_web.py
 """
