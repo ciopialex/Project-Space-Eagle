@@ -3,9 +3,9 @@
 #
 #   curl -fsSL https://get.aethelark.com | bash
 #
-# Installs a private Python runtime via uv (no Homebrew, no Xcode, no sudo
-# except for Linux system libraries), puts the app in ~/.aethelark/app, links an
-# `eagle` command onto PATH, and launches it. Modules are added afterwards with
+# Installs a private Python runtime via uv (no Homebrew, no Xcode, and no sudo
+# except on Linux when a system library is missing), puts the app in
+# ~/.aethelark/app, links an `eagle` command onto PATH, and launches it. Modules are added afterwards with
 # `eagle install <module>`.
 #
 # Layout. ~/.aethelark is the eagle's home: installed modules, their
@@ -122,23 +122,30 @@ die() { cleanup; printf '\n %sInstall failed:%s %s\n\n' "$RED" "$RESET" "$1" >&2
 OS="$(uname -s)"
 [ "$OS" = "Darwin" ] || [ "$OS" = "Linux" ] || die "Unsupported OS: $OS"
 
-step 0 "Starting…"
-printf '%s[?25l' "$ESC"
-animate & ANIM_PID=$!
-
 # Linux: PyQt6 wheels and the audio library link against system libraries pip
-# cannot supply. Package names differ between releases (libasound2 became
-# libasound2t64 in Ubuntu 24.04), and apt refuses an entire install when one
-# name is unknown -- which, behind `|| true`, used to mean none of these were
-# installed at all. So only names this system actually has are requested.
+# cannot supply. This runs BEFORE the animation, which redraws the whole screen
+# many times a second and would wipe a password prompt. Nothing is asked when
+# nothing is missing, which on a desktop that already has a browser and an audio
+# player is usually the case.
+#
+# Package names differ between releases (libasound2 became libasound2t64 in
+# Ubuntu 24.04), and a name that only exists as a virtual package passes
+# `apt-cache show` and then fails the whole install, so each name is tested for
+# an installable candidate, and a failed batch falls back to one at a time.
+PKG=""; WANT=""
 if [ "$OS" = "Linux" ]; then
-  step 4 "Installing system libraries (may ask for your password)…"
   if command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update -qq >/dev/null 2>&1 || true
+    PKG=apt
     WANT="libegl1 libnss3 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
-          libxcb-keysyms1 libxcb-shape0 libgl1 libportaudio2 libasound2t64 \
-          libasound2 git curl gir1.2-atspi-2.0 libcairo2-dev pkg-config \
-          build-essential"
+          libxcb-keysyms1 libxcb-shape0 libgl1 libportaudio2 \
+          git curl gir1.2-atspi-2.0 libcairo2-dev pkg-config build-essential"
+    # libasound2t64 replaced libasound2 (Ubuntu 24.04). They are alternatives,
+    # not a pair: installing both can conflict, so exactly one is wanted.
+    policy="$(apt-cache policy libasound2t64 2>/dev/null || true)"
+    case "$policy" in
+      *"Candidate: "[!\(]*) WANT="$WANT libasound2t64" ;;
+      *)                    WANT="$WANT libasound2" ;;
+    esac
     # PyGObject (how the eagle sees an app's buttons) is built from source
     # against whichever girepository generation this release ships.
     if apt-cache show libgirepository-2.0-dev >/dev/null 2>&1; then
@@ -146,28 +153,69 @@ if [ "$OS" = "Linux" ]; then
     else
       WANT="$WANT libgirepository1.0-dev"
     fi
-    # A name that only exists as a virtual package (libasound2 on Ubuntu 24.04)
-    # passes `apt-cache show` and then fails the whole install, so the test is
-    # for an installable candidate, not for the name.
-    HAVE=""
-    for pkg in $WANT; do
-      if apt-cache policy "$pkg" 2>/dev/null | grep -qE 'Candidate: [^(]'; then HAVE="$HAVE $pkg"; fi
-    done
-    # shellcheck disable=SC2086
-    if ! sudo apt-get install -y -qq --no-install-recommends $HAVE >"$STATE.apt.log" 2>&1; then
-      # One package that cannot install must not cost the rest.
-      for pkg in $HAVE; do
-        sudo apt-get install -y -qq --no-install-recommends "$pkg" >>"$STATE.apt.log" 2>&1 || true
-      done
-    fi
   elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y -q portaudio libxkbcommon-x11 xcb-util-cursor \
-      xcb-util-wm xcb-util-keysyms nss mesa-libEGL git curl >/dev/null 2>&1 || true
+    PKG=dnf
+    WANT="portaudio libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms nss mesa-libEGL git curl"
   elif command -v pacman >/dev/null 2>&1; then
-    sudo pacman -S --needed --noconfirm portaudio libxkbcommon-x11 \
-      xcb-util-cursor xcb-util-wm xcb-util-keysyms nss git curl >/dev/null 2>&1 || true
+    PKG=pacman
+    WANT="portaudio libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms nss git curl"
   fi
 fi
+
+syslibs_missing() {
+  case "$PKG" in
+    # Matched as strings, not through `| grep -q`: under `pipefail` a pipeline
+    # whose reader exits early can fail at random when the writer is killed.
+    apt) for pkg in $WANT; do
+           policy="$(apt-cache policy "$pkg" 2>/dev/null || true)"
+           case "$policy" in *"Candidate: "[!\(]*) ;; *) continue ;; esac
+           status="$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)"
+           case "$status" in *"install ok installed"*) ;; *) printf '%s ' "$pkg" ;; esac
+         done ;;
+    dnf) for pkg in $WANT; do rpm -q "$pkg" >/dev/null 2>&1 || printf '%s ' "$pkg"; done ;;
+    pacman) for pkg in $WANT; do pacman -Q "$pkg" >/dev/null 2>&1 || printf '%s ' "$pkg"; done ;;
+  esac
+}
+
+if [ -n "$PKG" ]; then
+  MISSING="$(syslibs_missing)"
+  if [ -n "${MISSING// /}" ]; then
+    SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+    case "$PKG" in
+      apt)    MANUAL="sudo apt-get install -y $MISSING" ;;
+      dnf)    MANUAL="sudo dnf install -y $MISSING" ;;
+      pacman) MANUAL="sudo pacman -S --needed $MISSING" ;;
+    esac
+    if [ -n "$SUDO" ] && ! sudo -n true 2>/dev/null; then
+      COUNT="$(printf '%s' "$MISSING" | wc -w | tr -d ' ')"
+      NOUN="libraries"; [ "$COUNT" = "1" ] && NOUN="library"
+      printf '\n  Aethelark needs %s small system %s (display and audio).\n' "$COUNT" "$NOUN"
+      printf '  Linux will ask for your password once. Aethelark never sees it.\n\n'
+      sudo -v || die "permission to install system libraries was not given.
+   Run this once, then run the installer again:
+       $MANUAL"
+    fi
+    printf '  Installing them…\n'
+    case "$PKG" in
+      apt)
+        $SUDO apt-get update -qq >/dev/null 2>&1 || true
+        # shellcheck disable=SC2086
+        if ! $SUDO apt-get install -y -qq --no-install-recommends $MISSING >"$STATE.apt.log" 2>&1; then
+          for pkg in $MISSING; do
+            $SUDO apt-get install -y -qq --no-install-recommends "$pkg" >>"$STATE.apt.log" 2>&1 || true
+          done
+        fi ;;
+      dnf)    # shellcheck disable=SC2086
+              $SUDO dnf install -y -q $MISSING >"$STATE.apt.log" 2>&1 || true ;;
+      pacman) # shellcheck disable=SC2086
+              $SUDO pacman -S --needed --noconfirm $MISSING >"$STATE.apt.log" 2>&1 || true ;;
+    esac
+  fi
+fi
+
+step 0 "Starting…"
+printf '%s[?25l' "$ESC"
+animate & ANIM_PID=$!
 
 step 12 "Fetching the runtime…"
 if ! command -v uv >/dev/null 2>&1; then
