@@ -286,6 +286,8 @@ _SIGNED_OUT_PHRASES = (
     "sign in to", "log in to", "sign in for", "please sign in", "please log in",
     "conecteaza-te pentru", "conectati-va pentru", "autentifica-te pentru",
     "inicia sesion para", "iniciar sesion para", "accede para",
+    "scan this qr code", "link with phone number", "log in with phone number",
+    "log in by phone number", "scan to log in",
 )
 
 _SIGNED_OUT_REASON = (
@@ -300,8 +302,9 @@ def signed_out_reason(nodes: Iterable[object]) -> str:
     is not evidence of a wall, it is evidence of a website.
     """
     for node in nodes or ():
-        folded = " ".join(_label_words(str(getattr(node, "name", "") or "")))
-        if any(phrase.replace("-", " ") in folded
+        raw_name = str(getattr(node, "name", "") or "").lower()
+        folded = " ".join(_label_words(raw_name))
+        if any(phrase.replace("-", " ") in folded or phrase in raw_name
                for phrase in _SIGNED_OUT_PHRASES):
             return _SIGNED_OUT_REASON
     return ""

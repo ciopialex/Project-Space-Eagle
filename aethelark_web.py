@@ -1772,22 +1772,10 @@ class WebShellUI(QObject):
             print(f"[aethelark_web] disconnect_google failed: {e}")
 
     def link_whatsapp(self):
-        # Opens WhatsApp Web in the shared browser session so the user can scan
-        # the QR once; the login then persists in that profile. Non-blocking.
+        # Opens WhatsApp Web in the eagle's own browser so the user can scan the QR
+        # once; the login persists in the profile used by send_message. Non-blocking.
         self.write_log("NET: Opening WhatsApp Web — scan the QR once to link.")
-        def _flow():
-            try:
-                from actions.browser_control import _registry
-                sess = _registry.get(None)
-                async def _open(s):
-                    page = await s._get_page()
-                    await page.goto("https://web.whatsapp.com/",
-                                    wait_until="domcontentloaded", timeout=45_000)
-                    return "opened"
-                sess.run(_open(sess), timeout=60)
-            except Exception as e:
-                self.write_log(f"ERR: WhatsApp link — {e}")
-        threading.Thread(target=_flow, daemon=True).start()
+        self.browser_sign_in("web.whatsapp.com")
 
     def rerun_onboarding(self):
         # Re-open the full ignition flow. on_done just refreshes the panel — the

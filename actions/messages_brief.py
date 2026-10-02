@@ -312,8 +312,54 @@ async def _wa_read_unread(sess, max_items: int = 8) -> dict:
     return out
 
 
+_UNREAD_JS = r"""(maxItems) => {
+    const rows = [...document.querySelectorAll('#pane-side [role="row"], #pane-side [role="listitem"]')];
+    if (!rows.length) return null;
+    const items = [];
+    let total = 0;
+    for (const r of rows.slice(0, 40)) {
+        const badge = r.querySelector('[aria-label*="unread" i]');
+        let count = 0;
+        if (badge) {
+            const m = (badge.getAttribute('aria-label') || '').match(/(\d+)/);
+            count = m ? parseInt(m[1], 10) : 1;
+        }
+        if (count > 0) {
+            const titleEl = r.querySelector('span[title]');
+            const who = titleEl ? (titleEl.getAttribute('title') || 'Someone') : 'Someone';
+            total += count;
+            items.push({who, preview: count + ' new'});
+            if (items.length >= maxItems) break;
+        }
+    }
+    const titleMatch = (document.title || '').match(/\((\d+)\)/);
+    const titleTotal = titleMatch ? parseInt(titleMatch[1], 10) : 0;
+    return {
+        total: total || titleTotal || items.length,
+        items: items
+    };
+}"""
+
+
 def _whatsapp_unread(max_items: int = 8) -> dict:
-    """Blocking wrapper — reuses browser_control's session registry."""
+    """Read unread WhatsApp chats via the eagle's browser, falling back to browser_control."""
+    try:
+        from actions.messaging.whatsapp import WhatsAppWeb
+        wa = WhatsAppWeb()
+        state = wa.ready()
+        if state == "signed_out":
+            return {"source": "WhatsApp", "ok": False, "count": 0, "items": [],
+                    "note": "WhatsApp Web isn't logged in — open it once and scan the QR."}
+        if state is None:
+            data = wa.browser.call(lambda p: p.evaluate(_UNREAD_JS, max_items))
+            if data is not None:
+                items = data.get("items") or []
+                count = data.get("total") or len(items)
+                note = "" if count > 0 else "No unread WhatsApp chats detected."
+                return {"source": "WhatsApp", "ok": True, "count": count, "items": items, "note": note}
+    except Exception:
+        pass
+
     try:
         from actions.browser_control import _registry
         sess = _registry.get(None)

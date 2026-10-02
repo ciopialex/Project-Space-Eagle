@@ -189,3 +189,27 @@ def test_a_running_browser_is_never_restarted(module, cls):
     surface = getattr(mod, cls)(browser=stub)
     surface._open()
     assert stub.started is False
+
+
+class _PortLike:
+    def __init__(self, page, url):
+        self._page, self._url = page, url
+    def collect(self):
+        from actions.grounding.web.page import COLLECT_JS
+        return self._page.evaluate(COLLECT_JS)
+    def url(self):
+        return self._url
+
+
+@pytest.mark.parametrize("fixture,url,blocked", [
+    ("whatsapp_qr.html", "https://web.whatsapp.com/", True),
+    ("whatsapp_chatlist.html", "https://web.whatsapp.com/", False),
+    ("telegram_login.html", "https://web.telegram.org/a/", True),
+    ("telegram_chatlist.html", "https://web.telegram.org/a/", False),
+])
+def test_messaging_sign_in_state_is_correctly_detected_by_web_agency(page, fixture, url, blocked):
+    from actions.web_agency import _wall_or_signed_out
+    page.set_content((FIX / fixture).read_text("utf-8"))
+    res = _wall_or_signed_out(_PortLike(page, url))
+    assert bool(res) is blocked
+
