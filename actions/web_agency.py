@@ -328,6 +328,31 @@ def _wall_or_signed_out(page) -> str:
     url = _current_url(page)
     if _on_auth_page(url):
         return "the user is still on the sign-in page"
+    p = getattr(page, "_page", page)
+    if "web.whatsapp.com" in url:
+        from actions.messaging.whatsapp import ROWS as WA_ROWS, QR as WA_QR
+        def _probe_wa(raw_p):
+            if raw_p.locator(WA_ROWS).count():
+                return ""
+            if raw_p.locator(WA_QR).count():
+                return "the WhatsApp QR code is on screen and waiting for scan"
+            return "WhatsApp Web is still loading"
+        try:
+            return page._call(lambda: _probe_wa(p)) if hasattr(page, "_call") else _probe_wa(p)
+        except Exception:
+            return "WhatsApp Web is still loading"
+    if "web.telegram.org" in url:
+        from actions.messaging.telegram import ROWS as TG_ROWS, LOGIN as TG_LOGIN
+        def _probe_tg(raw_p):
+            if raw_p.locator(TG_ROWS).count():
+                return ""
+            if raw_p.locator(TG_LOGIN).count():
+                return "Telegram Web is on the sign-in screen"
+            return "Telegram Web is still loading"
+        try:
+            return page._call(lambda: _probe_tg(p)) if hasattr(page, "_call") else _probe_tg(p)
+        except Exception:
+            return "Telegram Web is still loading"
     nodes = _current_nodes(page)
     if not nodes:
         return "the page is still loading"
