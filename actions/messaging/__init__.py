@@ -27,8 +27,10 @@ class ChatSurface(Protocol):
 def surface_for(platform: str) -> ChatSurface | None:
     key = (platform or "").strip().lower()
     if key in ("whatsapp", "wa", "whats app"):
-        from actions.messaging.whatsapp import WhatsAppWeb
-        return WhatsAppWeb()
+        import importlib
+        import actions.messaging.whatsapp as _wa
+        importlib.reload(_wa)
+        return _wa.WhatsAppWeb()
     if key in ("telegram", "tg"):
         from actions.messaging.telegram import TelegramWeb
         return TelegramWeb()

@@ -20,7 +20,11 @@ COMPOSER = (
     'footer div[contenteditable="true"], '
     '[data-testid="conversation-compose-box-input"]'
 )
-HEADER_TITLE = '#main header span[title], #main header span[dir="auto"]'
+HEADER_TITLE = (
+    '#main header [data-testid="conversation-info-header-chat-title"] span, '
+    '#main header span[dir="auto"], '
+    '#main header span[title]'
+)
 OUTGOING = '#main .message-out'
 QUOTE = '.quoted-mssg, [data-testid="quoted-message"]'
 MESSAGE_TEXT = 'span.selectable-text'
@@ -29,6 +33,21 @@ NO_RESULTS = (
     '[data-testid="chatlist-no-chats-found"], '
     '[data-testid="search-no-results"]'
 )
+
+def _dismiss_modals_js(p) -> bool:
+    try:
+        return bool(p.evaluate("""() => {
+            const dialog = document.querySelector('[role="dialog"], [aria-modal="true"], [data-testid="confirm-popup"]');
+            if (!dialog) return false;
+            const btn = dialog.querySelector('button[aria-label*="Close" i], button[aria-label*="Închide" i], [data-testid="confirm-popup"] button, button');
+            if (btn) {
+                btn.click();
+                return true;
+            }
+            return false;
+        }"""))
+    except Exception:
+        return False
 
 _TITLES_JS = """sel => [...document.querySelectorAll(sel)].map(r => {
     const s = r.querySelector('[data-testid="cell-frame-title"] span, span[title], span[dir="auto"]');
@@ -102,7 +121,8 @@ class WhatsAppWeb:
             return "not_loaded"
 
         def probe(p):
-            if p.locator(ROWS).count() or p.locator('#side, [data-testid="chat-list-search"]').count():
+            _dismiss_modals_js(p)
+            if p.locator(ROWS).count() or p.locator('#side, [data-testid="chat-list-search"], [data-testid="chat-list"]').count():
                 return None
             if p.locator(QR).count():
                 return "signed_out"
@@ -120,9 +140,14 @@ class WhatsAppWeb:
         return list(titles or [])
 
     def search(self, query: str) -> list[str] | None:
+        try:
+            self.browser.call(_dismiss_modals_js)
+        except Exception:
+            pass
         before = self.visible_titles()
 
         def go(p):
+            _dismiss_modals_js(p)
             box = p.locator(SEARCH).first
             box.click(timeout=6_000)
             if query:
@@ -158,6 +183,22 @@ class WhatsAppWeb:
 
     def open_chat(self, title: str) -> bool:
         def go(p):
+            _dismiss_modals_js(p)
+            try:
+                rows = p.locator(ROWS)
+                for i in range(rows.count()):
+                    row = rows.nth(i)
+                    s = row.locator('[data-testid="cell-frame-title"] span, span[title], span[dir="auto"]').first
+                    candidate = (s.get_attribute("title") or s.inner_text() or "").strip() if s.count() else ""
+                    if candidate == title or title in (row.inner_text() or "").split("\n"):
+                        cell = row.locator('[data-testid="cell-frame-container"]').first
+                        if cell.count():
+                            cell.click(timeout=3_000)
+                        else:
+                            row.click(timeout=3_000)
+                        return True
+            except Exception:
+                pass
             return p.evaluate(_CLICK_ROW_JS, [ROWS, title])
         try:
             clicked = bool(self.browser.call(go))
@@ -196,7 +237,7 @@ class WhatsAppWeb:
             head = p.locator(HEADER_TITLE).first
             if head.count() == 0:
                 return None
-            shown = (head.get_attribute("title") or head.inner_text() or "").strip()
+            shown = (head.inner_text() or head.get_attribute("title") or "").strip()
             return shown or None
         try:
             return self.browser.call(probe)
