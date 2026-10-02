@@ -5,28 +5,49 @@ import time
 from actions.messaging import clamped_seconds, ensure_running, relevant_titles
 
 WA_URL = "https://web.whatsapp.com/"
-ROWS = '#pane-side [role="row"], #pane-side [role="listitem"]'
+ROWS = '#pane-side [role="row"], #pane-side [role="listitem"], #side [role="row"]'
 QR = 'canvas[aria-label], [data-ref] canvas, div[data-testid="qrcode"], [data-testid="link-device-qr-code"]'
-SEARCH = 'div[contenteditable="true"][data-tab="3"], input[data-tab="3"]'
-COMPOSER = 'footer div[contenteditable="true"][data-tab="10"], footer div[contenteditable="true"]'
+SEARCH = (
+    '#side div[contenteditable="true"], '
+    '[data-testid="chat-list-search"], '
+    'div[contenteditable="true"][data-testid="chatlist-search-input"], '
+    '#side [role="textbox"], '
+    'div[contenteditable="true"][data-tab="3"], '
+    'input[data-tab="3"]'
+)
+COMPOSER = (
+    'footer div[contenteditable="true"][data-tab="10"], '
+    'footer div[contenteditable="true"], '
+    '[data-testid="conversation-compose-box-input"]'
+)
 HEADER_TITLE = '#main header span[title], #main header span[dir="auto"]'
 OUTGOING = '#main .message-out'
 QUOTE = '.quoted-mssg, [data-testid="quoted-message"]'
 MESSAGE_TEXT = 'span.selectable-text'
-NO_RESULTS = '#pane-side :text-is("No chats, contacts or messages found"), [data-testid="chatlist-no-chats-found"]'
+NO_RESULTS = (
+    '#pane-side :text-is("No chats, contacts or messages found"), '
+    '[data-testid="chatlist-no-chats-found"], '
+    '[data-testid="search-no-results"]'
+)
 
 _TITLES_JS = """sel => [...document.querySelectorAll(sel)].map(r => {
-    const s = r.querySelector('span[title]');
-    return s ? s.getAttribute('title') : null;
+    const s = r.querySelector('[data-testid="cell-frame-title"] span, span[title], span[dir="auto"]');
+    if (!s) return null;
+    const title = s.getAttribute('title') || s.textContent || '';
+    return title.trim() || null;
 }).filter(Boolean)"""
 
 _CLICK_ROW_JS = """(args) => {
     const [rowSel, title] = args;
     const rows = [...document.querySelectorAll(rowSel)];
     for (const r of rows) {
-        const s = r.querySelector('span[title]');
-        if (s && s.getAttribute('title') === title) {
-            s.click();
+        const s = r.querySelector('[data-testid="cell-frame-title"] span, span[title], span[dir="auto"]') || r;
+        const text = ((s.getAttribute && s.getAttribute('title')) || s.textContent || '').trim();
+        if (text === title.trim()) {
+            (r.querySelector('[role="button"]') || s || r).click();
+            if (r !== s) {
+                try { r.click(); } catch (_) {}
+            }
             return true;
         }
     }
@@ -81,7 +102,7 @@ class WhatsAppWeb:
             return "not_loaded"
 
         def probe(p):
-            if p.locator(ROWS).count():
+            if p.locator(ROWS).count() or p.locator('#side, [data-testid="chat-list-search"]').count():
                 return None
             if p.locator(QR).count():
                 return "signed_out"
@@ -104,7 +125,14 @@ class WhatsAppWeb:
         def go(p):
             box = p.locator(SEARCH).first
             box.click(timeout=6_000)
-            box.fill(query)
+            if query:
+                box.fill(query)
+            else:
+                box.fill("")
+                try:
+                    p.keyboard.press("Escape")
+                except Exception:
+                    pass
         try:
             self.browser.call(go)
         except Exception:
@@ -114,7 +142,7 @@ class WhatsAppWeb:
         deadline = time.monotonic() + timeout
         while True:
             titles = self.visible_titles()
-            if titles != before:
+            if titles != before or (query and relevant_titles(titles, query)):
                 relevant = relevant_titles(titles, query)
                 if relevant:
                     return relevant
