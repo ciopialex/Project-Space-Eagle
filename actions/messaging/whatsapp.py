@@ -25,7 +25,11 @@ HEADER_TITLE = (
     '#main header span[dir="auto"], '
     '#main header span[title]'
 )
-OUTGOING = '#main .message-out'
+OUTGOING = (
+    '#main [role="row"]:has([aria-label="You:"]), '
+    '#main [role="row"]:has([data-icon="tail-out"]), '
+    '#main .message-out'
+)
 QUOTE = '.quoted-mssg, [data-testid="quoted-message"]'
 MESSAGE_TEXT = 'span.selectable-text'
 NO_RESULTS = (
