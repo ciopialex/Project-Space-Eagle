@@ -75,6 +75,24 @@ def catalog() -> dict[str, dict]:
         return {}
 
 
+def catalog_name(spec: str) -> str | None:
+    """The catalog entry `spec` names (by name or alias), else None.
+
+    The terminal installs anything pip can (`eagle install <path|git URL>`),
+    because a person typing a URL there chose it. The window's Get button and
+    first-run screen only ever offer catalog modules, so that is all they may
+    install: the bridge is reachable from page script, and a git URL arriving
+    through it would build and run code nobody picked.
+    """
+    lowered = (spec or "").strip().lower()
+    if not lowered:
+        return None
+    for name, entry in catalog().items():
+        if lowered == name or lowered in [str(a).lower() for a in entry.get("aliases", [])]:
+            return name
+    return None
+
+
 def resolve(spec: str) -> Source:
     """A catalog name, a local path, or a git URL -> what to install."""
     raw = (spec or "").strip()

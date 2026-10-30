@@ -1487,8 +1487,11 @@ class WebShellUI(QObject):
         an extension: the user can close Settings and carry on; the island says
         when it is ready, and the running session picks it up with no restart.
         """
-        name = (name or "").strip()
+        from core.module_bus.installer import catalog_name
+        name = catalog_name(name or "") or ""
         if not name:
+            # Only catalog modules come through the window; see catalog_name.
+            self.write_log("ERR: that module is not in the catalog, so it was not installed.")
             return
         if (self._installs.get(name) or {}).get("state") in ("queued", "installing"):
             return
