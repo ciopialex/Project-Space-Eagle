@@ -94,7 +94,12 @@ function Show-Crest($Pct, $Label) {
   Write-Host "   $Label" -ForegroundColor Gray
 }
 
-function Die($msg) { Write-Host "`n Install failed: $msg`n" -ForegroundColor Red; exit 1 }
+# throw, not exit: this runs inside the user's own PowerShell through
+# `irm | iex`, where exit closes their window and takes the message with it.
+function Die($msg) {
+  Write-Host "`n Install failed: $msg`n" -ForegroundColor Red
+  throw "Aethelark was not installed. Run the same command again once the problem above is fixed."
+}
 
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
@@ -236,5 +241,4 @@ Write-Host "eagle" -NoNewline -ForegroundColor Yellow
 Write-Host " in any terminal, or open it from the Start Menu or your Desktop." -ForegroundColor Gray
 Write-Host "   You'll need a free Gemini API key - the app walks you through it.`n" -ForegroundColor DarkGray
 
-if ($env:AETHELARK_NO_LAUNCH -eq "1") { exit 0 }
-& (Join-Path $BinDir "eagle.cmd")
+if ($env:AETHELARK_NO_LAUNCH -ne "1") { & (Join-Path $BinDir "eagle.cmd") }
