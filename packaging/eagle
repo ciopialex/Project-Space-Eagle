@@ -200,8 +200,16 @@ source .venv/bin/activate
 
 # An installed eagle opens like any app: the terminal is handed back and nothing
 # is printed or kept. `eagle --doctor` and other flags still run in the terminal.
+# setsid is util-linux: macOS has none, and calling it there failed inside the
+# silenced background job, so `eagle`, the Dock icon and the end of the
+# installer all printed "opening" and opened nothing. nohup alone still
+# detaches the app from the terminal's hangup.
 if [ -z "$LOGGING" ] && [ ${#ARGS[@]} -eq 0 ]; then
-    setsid nohup python3 aethelark_web.py >/dev/null 2>&1 </dev/null &
+    if command -v setsid >/dev/null 2>&1; then
+        setsid nohup python3 aethelark_web.py >/dev/null 2>&1 </dev/null &
+    else
+        nohup python3 aethelark_web.py >/dev/null 2>&1 </dev/null &
+    fi
     echo "eagle: opening"
     exit 0
 fi
