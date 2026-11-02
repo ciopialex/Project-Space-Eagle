@@ -77,7 +77,6 @@ jobs:
 
       - name: It opens (macOS, offscreen)
         if: runner.os == 'macOS'
-        continue-on-error: true
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           QT_QPA_PLATFORM=offscreen eagle
