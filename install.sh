@@ -25,6 +25,11 @@
 #   AETHELARK_SKIP_BROWSER=1 skip the eagle's own browser (~150 MB)
 set -euo pipefail
 
+# Everything below is one { } group, closed on the last line. bash parses a
+# group whole before running any of it, so a download cut short by the network
+# runs nothing instead of running half an installer.
+{
+
 REPO="${AETHELARK_REPO:-https://github.com/ciopialex/Project-Space-Eagle.git}"
 BRANCH="${AETHELARK_BRANCH:-main}"
 EAGLE_HOME="$HOME/.aethelark"
@@ -33,6 +38,10 @@ HOME_DIR="${AETHELARK_APP:-${AETHELARK_HOME:-$EAGLE_HOME/app}}"
 INSTALL_URL="https://get.aethelark.com"
 BIN_DIR="$HOME/.local/bin"
 PY_VERSION="3.12"
+# PATH as the user's shell had it. The install puts ~/.local/bin on its own
+# PATH early (to find uv), so checking PATH later always found the eagle there
+# and the shell startup files were never given it.
+USER_PATH="$PATH"
 
 # ---------------------------------------------------------------- presentation
 ESC=$'\033'; RESET="${ESC}[0m"
@@ -66,6 +75,13 @@ EAGLE_BOT=(
 CORE_W=14                 # cells inside the bracket glyphs; even keeps it centred
 STATE="${TMPDIR:-/tmp}/.aethelark-install.$$"
 ANIM_PID=""
+# What uv, git and pip said. Kept after the installer ends: on a failure it is
+# the only record of why, and the last lines are printed with the error.
+LOG="${TMPDIR:-/tmp}/aethelark-install.log"
+: > "$LOG"
+# Redrawing the crest is for a person watching. Piped into a file or a CI log
+# it is tens of kilobytes of escape codes, so there it prints plain lines.
+INTERACTIVE=""; [ -t 1 ] && INTERACTIVE=1
 
 draw() {                  # draw <pct> <phase> <label>
   local pct=$1 phase=$2 label=$3 i line filled bar="" lab
@@ -108,16 +124,30 @@ animate() {               # background: keeps the core alive during long steps
   done
 }
 
-step() { printf '%s' "$1" > "$STATE.pct"; printf '%s' "$2" > "$STATE.label"; }
+step() {
+  printf '%s' "$1" > "$STATE.pct"; printf '%s' "$2" > "$STATE.label"
+  [ -n "$INTERACTIVE" ] || printf '  [%3s%%] %s\n' "$1" "$2"
+}
 
 cleanup() {
   [ -n "$ANIM_PID" ] && kill "$ANIM_PID" 2>/dev/null || true
   rm -f "$STATE.pct" "$STATE.label" "$STATE.apt.log"
-  printf '%s[?25h' "$ESC"
+  [ -n "${INTERACTIVE:-}" ] && printf '%s[?25h' "$ESC"
+  return 0
 }
 trap cleanup EXIT INT TERM
 
-die() { cleanup; printf '\n %sInstall failed:%s %s\n\n' "$RED" "$RESET" "$1" >&2; exit 1; }
+die() {
+  cleanup
+  printf '\n %sInstall failed:%s %s\n' "$RED" "$RESET" "$1" >&2
+  if [ -s "$LOG" ]; then
+    printf '\n   The last thing it said:\n' >&2
+    tail -n 8 "$LOG" | sed 's/^/     /' >&2
+    printf '\n   Full log: %s\n   Running the same command again resumes where it stopped.\n' "$LOG" >&2
+  fi
+  printf '\n' >&2
+  exit 1
+}
 
 # ---------------------------------------------------------------------- install
 OS="$(uname -s)"
@@ -215,21 +245,35 @@ if [ -n "$PKG" ]; then
 fi
 
 step 0 "Starting…"
-printf '%s[?25l' "$ESC"
-animate & ANIM_PID=$!
+if [ -n "$INTERACTIVE" ]; then
+  printf '%s[?25l' "$ESC"
+  animate & ANIM_PID=$!
+fi
 
 step 12 "Fetching the runtime…"
 if ! command -v uv >/dev/null 2>&1; then
-  curl -fsSL https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 \
+  curl -fsSL https://astral.sh/uv/install.sh | sh >>"$LOG" 2>&1 \
     || die "could not install uv (needed to provide Python)"
 fi
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 command -v uv >/dev/null 2>&1 || die "uv installed but is not on PATH"
 
 step 24 "Installing Python ${PY_VERSION}…"
-uv python install "$PY_VERSION" >/dev/null 2>&1 || die "could not install Python ${PY_VERSION}"
+uv python install "$PY_VERSION" >>"$LOG" 2>&1 || die "could not install Python ${PY_VERSION}"
 
 step 34 "Downloading Aethelark…"
+# A Mac that never installed Apple's command line tools has a /usr/bin/git that
+# only opens an "install developer tools" dialog and fails. Say so, rather than
+# "could not download".
+if ! git --version >/dev/null 2>&1; then
+  if [ "$OS" = "Darwin" ]; then
+    die "macOS needs Apple's Command Line Tools to download Aethelark (they provide git).
+   A window offering them may have just opened. If not, run:
+       xcode-select --install
+   When that finishes, run the installer again."
+  fi
+  die "git is not installed. Install it with your package manager, then run the installer again."
+fi
 mkdir -p "$(dirname "$HOME_DIR")"
 # Modules keep account details here (a brokerage login, a printer's access
 # code). Owner-only, like the data directory.
@@ -240,8 +284,11 @@ if [ -d "$HOME_DIR/.git" ]; then
   existing_remote="$(git -C "$HOME_DIR" remote get-url origin 2>/dev/null || echo '')"
   case "$existing_remote" in
     *Project-Space-Eagle*|*Space-Eagle*)
-      git -C "$HOME_DIR" fetch --quiet --depth 1 origin "$BRANCH" 2>/dev/null || true
-      git -C "$HOME_DIR" reset --hard --quiet FETCH_HEAD 2>/dev/null || true
+      if git -C "$HOME_DIR" fetch --quiet --depth 1 origin "$BRANCH" >>"$LOG" 2>&1; then
+        git -C "$HOME_DIR" reset --hard --quiet FETCH_HEAD >>"$LOG" 2>&1 || true
+      else
+        UPDATE_SKIPPED=1
+      fi
       ;;
     *)
       die "$HOME_DIR is a git repository, but not Aethelark's ($existing_remote).
@@ -255,7 +302,7 @@ elif [ -e "$HOME_DIR" ] && [ -n "$(ls -A "$HOME_DIR" 2>/dev/null)" ]; then
    checkout. Refusing to delete it. Move it aside, or install elsewhere:
        AETHELARK_APP=~/aethelark-app curl -fsSL $INSTALL_URL | bash"
 else
-  git clone --quiet --depth 1 --branch "$BRANCH" "$REPO" "$HOME_DIR" \
+  git clone --quiet --depth 1 --branch "$BRANCH" "$REPO" "$HOME_DIR" >>"$LOG" 2>&1 \
     || die "could not download Aethelark from $REPO"
 fi
 
@@ -268,7 +315,7 @@ step 46 "Building the environment…"
 # updated, and uv refuses to create a venv over an existing one -- which made
 # every update fail right here.
 if [ ! -x "$HOME_DIR/.venv/bin/python" ]; then
-  uv venv --python "$PY_VERSION" "$HOME_DIR/.venv" >/dev/null 2>&1 \
+  uv venv --python "$PY_VERSION" "$HOME_DIR/.venv" >>"$LOG" 2>&1 \
     || die "could not create the virtual environment"
 fi
 
@@ -279,7 +326,7 @@ CONSTRAINTS=()
 # ${arr[@]+...}: macOS runs this under bash 3.2, where expanding an empty
 # array with `set -u` aborts the script.
 uv pip install --python "$VENV_PY" -q -r "$HOME_DIR/requirements.txt" ${CONSTRAINTS[@]+"${CONSTRAINTS[@]}"} \
-  >/dev/null 2>&1 || die "dependency install failed"
+  >>"$LOG" 2>&1 || die "the Python packages Aethelark needs did not install."
 
 if [ "$OS" = "Linux" ]; then
   step 72 "Adding screen understanding…"
@@ -337,9 +384,14 @@ fi
 chmod +x "$BIN_DIR/eagle"
 
 # macOS does not put ~/.local/bin on PATH; Linux usually does. Append once.
-case ":$PATH:" in
+NEW_TERMINAL=""
+case ":$USER_PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+  *) NEW_TERMINAL=1
+     # A new Mac has no ~/.zshrc, and the loop below only edits files that
+     # exist, so `eagle` was never found in the next terminal.
+     [ "$OS" = "Darwin" ] && [ ! -e "$HOME/.zshrc" ] && touch "$HOME/.zshrc"
+     for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
        [ -f "$rc" ] && ! grep -q '.local/bin' "$rc" 2>/dev/null \
          && printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$rc"
      done ;;
@@ -413,7 +465,7 @@ if [ -n "${AETHELARK_MODULES:-}" ] && [ "${AETHELARK_MODULES}" != "none" ]; then
 fi
 
 step 100 "Ready."
-sleep 1.2
+[ -n "$INTERACTIVE" ] && sleep 1.2
 cleanup; ANIM_PID=""
 
 cat <<BANNER
@@ -425,8 +477,16 @@ cat <<BANNER
    ${DIM}You'll need a free Gemini API key — the app walks you through it.${RESET}
 
 BANNER
+if [ -n "$NEW_TERMINAL" ]; then
+  printf '   %sOpen a new terminal first: this one does not know the eagle command yet.%s\n\n' "$SLATE" "$RESET"
+fi
+if [ -n "${UPDATE_SKIPPED:-}" ]; then
+  printf '   %sGitHub could not be reached, so the app was not updated; the copy already here was kept.%s\n\n' "$AMBER" "$RESET"
+fi
 
 if [ "${AETHELARK_NO_LAUNCH:-}" = "1" ]; then
   exit 0
 fi
 exec "$BIN_DIR/eagle"
+
+}
