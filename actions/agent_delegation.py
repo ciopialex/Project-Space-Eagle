@@ -8,6 +8,8 @@ windows, no lost conversation history.
 
 import asyncio
 import re
+import threading
+import time
 
 from core.agent_catalog import PREFERENCE, catalog, resolve, spoken_list
 from core.agent_session import HeadlessSession, SESSION_AGENTS
@@ -235,10 +237,15 @@ class AgentAdapter:
             player.write_log(
                 f"SYS: Starting '{self.name}' session in '{project_dir}'...")
 
+        from core.agent_session import saved_conversation
+        resume = saved_conversation(agent_key, project_dir)
+        if resume and player:
+            player.write_log(f"SYS: Continuing the earlier {self.name} conversation.")
+        _start_idle_closer()
         try:
             session = await asyncio.to_thread(
                 HeadlessSession, agent_key, self.name, project_dir,
-                on_line=self._headless_pump(player))
+                on_line=self._headless_pump(player), resume=resume)
         except Exception as e:
             err_msg = f"Failed to start {self.name} session: {e}"
             if player:
@@ -304,6 +311,34 @@ class AgentAdapter:
                 player.write_log(text)
             print(text)
         return on_line
+
+
+_idle_closer: threading.Thread | None = None
+
+
+def _start_idle_closer() -> None:
+    """Close single-agent sessions that finished and went quiet. Swarm agents
+    and the chief are left to the swarm."""
+    global _idle_closer
+    if _idle_closer is not None and _idle_closer.is_alive():
+        return
+
+    def loop() -> None:
+        from actions.swarm_sentinel import swarm_root_of
+        from core.agent_session import close_idle
+        while True:
+            time.sleep(60)
+            try:
+                solo = [sess for (_k, sdir), sess in POOL.all_sessions().items()
+                        if swarm_root_of(sdir) is None and getattr(sess, "role", "") != "chief"]
+                for sess in close_idle(solo):
+                    print(f"[agent] closed idle {sess.agent_name} in {sess.project_dir.name}; "
+                          f"its conversation resumes on the next request")
+            except Exception as e:
+                print(f"[agent] idle closer: {e}")
+
+    _idle_closer = threading.Thread(target=loop, daemon=True, name="agent-idle-closer")
+    _idle_closer.start()
 
 
 def supports_session(agent_key: str) -> bool:

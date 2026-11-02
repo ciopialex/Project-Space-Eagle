@@ -68,6 +68,64 @@ ALLOWED_PERMISSION_MODES = ("acceptEdits", "manual", "plan", "default")
 
 #: How long a held request waits for the user before it is refused.
 HOLD_S = 600.0
+#: A finished session that has been quiet this long is closed; the next
+#: request in that project resumes the same conversation. Idle, one holds
+#: about 230 MB (measured, claude 2.1.316).
+IDLE_CLOSE_S = 1800.0
+_UUID = __import__("re").compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_saved_lock = threading.Lock()
+
+
+def _saved_path() -> Path:
+    from core import user_paths
+    return user_paths.config_dir() / "agent_sessions.json"
+
+
+def _saved() -> dict:
+    try:
+        return json.loads(_saved_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _transcript_exists(session_id: str) -> bool:
+    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+    return any(base.glob(f"*/{session_id}.jsonl"))
+
+
+def saved_conversation(agent_key: str, project_dir: Path | str) -> str:
+    """The conversation to resume in this project, if Claude still has it."""
+    if PROTOCOLS.get(agent_key) != "claude":
+        return ""
+    sid = str(_saved().get(f"{agent_key}@{Path(project_dir).resolve()}") or "")
+    return sid if _UUID.fullmatch(sid) and _transcript_exists(sid) else ""
+
+
+def remember_conversation(agent_key: str, project_dir: Path | str, session_id: str) -> None:
+    if not _UUID.fullmatch(session_id or ""):
+        return
+    with _saved_lock:
+        d = _saved()
+        d.pop(key := f"{agent_key}@{Path(project_dir).resolve()}", None)
+        d[key] = session_id
+        d = dict(list(d.items())[-50:])
+        try:
+            _saved_path().parent.mkdir(parents=True, exist_ok=True)
+            _saved_path().write_text(json.dumps(d, indent=1), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def close_idle(sessions, idle_s: float = IDLE_CLOSE_S) -> list:
+    """Close finished headless sessions quiet for `idle_s`. Returns the closed."""
+    closed = []
+    for sess in list(sessions):
+        if (isinstance(sess, HeadlessSession) and sess.is_alive() and not sess.turn_open
+                and not sess.waiting_for_user()
+                and sess.seconds_since_activity() >= idle_s):
+            sess.close()
+            closed.append(sess)
+    return closed
 
 SESSION_AGENTS = {"claude_code": "claude", "antigravity_cli": "agy"}
 PROTOCOLS = {"claude_code": "claude", "antigravity_cli": "agy"}
@@ -77,7 +135,8 @@ def session_argv(agent_key: str, *, cwd: Path | str,
                  permission_mode: str = "default",
                  model: str = "",
                  allowed_tools: Sequence[str] = (),
-                 disallowed_tools: Sequence[str] = ()) -> list[str]:
+                 disallowed_tools: Sequence[str] = (),
+                 resume: str = "") -> list[str]:
     """argv for a persistent streaming session."""
     binary = SESSION_AGENTS.get(agent_key)
     if binary is None:
@@ -106,6 +165,8 @@ def session_argv(agent_key: str, *, cwd: Path | str,
             "--permission-prompt-tool", "stdio"]
     if model:
         argv += ["--model", model]
+    if resume:
+        argv += ["--resume", resume]
     if allowed_tools:
         argv += ["--allowed-tools", ",".join(allowed_tools)]
     if disallowed_tools:
@@ -129,7 +190,8 @@ class HeadlessSession:
                  on_event: Callable[[AgentEvent], None] | None = None,
                  on_line: Callable[[str], None] | None = None,
                  permission_mode: str = "default",
-                 model: str = "") -> None:
+                 model: str = "",
+                 resume: str = "") -> None:
         self.agent_key = agent_key
         self.agent_name = agent_name
         self.project_dir = Path(project_dir)
@@ -173,7 +235,8 @@ class HeadlessSession:
 
         self._argv = list(argv) if argv is not None else session_argv(
             agent_key, cwd=self.project_dir,
-            permission_mode=permission_mode, model=model)
+            permission_mode=permission_mode, model=model, resume=resume)
+        self.session_id = resume
 
         # Raises OSError when the binary is missing. Callers must fail
         # honestly rather than report a session that was never started —
@@ -324,7 +387,15 @@ class HeadlessSession:
             except Exception:
                 pass
 
+    def waiting_for_user(self) -> bool:
+        from core import escalations
+        return any(e.id in self._held for e in escalations.pending())
+
     def _emit(self, event: AgentEvent) -> None:
+        sid = str((event.data or {}).get("session_id") or "")
+        if event.kind in ("init", RESULT) and sid and sid != self.session_id:
+            self.session_id = sid
+            remember_conversation(self.agent_key, self.project_dir, sid)
         text = self._render(event)
         if event.kind == "text" and event.text.strip():
             self.last_text = event.text.strip()

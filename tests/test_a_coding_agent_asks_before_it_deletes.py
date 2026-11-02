@@ -98,3 +98,17 @@ def test_a_no_refuses_the_delete(tmp_path):
         assert results[0].text == "deny"
     finally:
         s.close()
+
+
+def test_a_closed_conversation_is_resumed_only_while_claude_still_has_it(tmp_path, monkeypatch):
+    from core import agent_session as A
+    monkeypatch.setattr(A, "_saved_path", lambda: tmp_path / "agent_sessions.json")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    sid = "55c57476-a80b-465f-835b-bfd7e3d22ae5"
+    A.remember_conversation("claude_code", tmp_path, sid)
+    assert A.saved_conversation("claude_code", tmp_path) == "", "no transcript, start fresh"
+
+    (tmp_path / "claude" / "projects" / "-x").mkdir(parents=True)
+    (tmp_path / "claude" / "projects" / "-x" / f"{sid}.jsonl").write_text("{}")
+    assert A.saved_conversation("claude_code", tmp_path) == sid
+    assert A.session_argv("claude_code", cwd=tmp_path, resume=sid)[-2:] == ["--resume", sid]
