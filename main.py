@@ -95,7 +95,7 @@ API_CONFIG_PATH = user_paths.api_keys_path()
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 LABS_PROMPT_PATH = BASE_DIR / "core" / "prompt_labs.txt"
 CODING_PROMPT_PATH = BASE_DIR / "core" / "prompt_coding.txt"
-LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+from core.models import VOICE as LIVE_MODEL  # noqa: E402
 
 
 class _ReconnectSignal(Exception):
@@ -1106,15 +1106,16 @@ TOOL_DECLARATIONS = [
             "REFUSES irreversible actions (paying, ordering, deleting) and says why "
             "— relay that and let the user decide. Declines cookie walls itself. "
             "STOPS and ASKS for a verification code or a 'not a robot' check. "
-            "If a site needs the user signed in, call action='sign_in' with that "
-            "url: a window opens, they sign in ONCE, and it stays signed in. That "
-            "is the only way in - never tell the user to open their own browser, "
-            "and never claim you cannot reach their account."
+            "If a site needs the user signed in, ask which they prefer: use the "
+            "sign-ins already in their Chrome (action='use_chrome', set up once), "
+            "or sign in once in a window the eagle opens (action='sign_in' with "
+            "that url). Never tell the user to open their own browser, and never "
+            "claim you cannot reach their account."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "open | look | click | download | upload | type | sign_in | close. Use download (not click) for anything that produces a FILE - it only reports success when a file is actually on disk. Use upload (not click) to hand a local file to a file input - it only reports success when the control actually holds the file."},
+                "action":      {"type": "STRING", "description": "open | look | click | download | upload | type | sign_in | use_chrome | close. Use download (not click) for anything that produces a FILE - it only reports success when a file is actually on disk. Use upload (not click) to hand a local file to a file input - it only reports success when the control actually holds the file."},
                 "url":         {"type": "STRING", "description": "URL for the open action"},
                 "description": {"type": "STRING", "description": "Which control, in plain words: 'the Sign in button', 'the Email field'. Use a name from the last look."},
                 "text":        {"type": "STRING", "description": "Text to type, for the type action"},
@@ -1798,6 +1799,9 @@ class AethelarkLive:
         self._deck_gen = 0
         from core.module_bus import accounts as _accounts
         _accounts.subscribe(self._on_site_signed_in)
+        from actions.grounding.web import chrome_link as _chrome_link
+        _chrome_link.notify = getattr(ui, "show_notice", None)
+        _chrome_link.request_setup = getattr(ui, "request_chrome_setup", None)
         #: The playback stream's own latency, read when it opens. 50 ms
         #: measured on the default PipeWire device, 2026-09-24.
         self._out_latency_s = 0.05
@@ -1978,7 +1982,7 @@ class AethelarkLive:
         # path (the mission harness, the dashboard box) would inherit whatever
         # the last background wake-up set and have every tool refused.
         self._unprompted_turn = False
-        note_user_turn()
+        note_user_turn(text, typed=True)
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
                 turns={"parts": [{"text": text}]},
@@ -1996,6 +2000,7 @@ class AethelarkLive:
                 self.ui.write_log(f"SYS: Not sent — too long ago: {text[:60]}")
                 continue
             self._unprompted_turn = False
+            note_user_turn(text, typed=True)
             await session.send_client_content(
                 turns={"parts": [{"text": text}]}, turn_complete=True)
 
@@ -2907,8 +2912,8 @@ class AethelarkLive:
                 return MODULE_BUS.invoke(name, args, timeout_s=timeout_s)
             return ToolResult.failure(
                 tr.message,
-                guidance=(f"The {site} sign-in was just handed to the module "
-                          f"from the eagle's browser. Call this again now."),
+                guidance=(f"The {site} sign-in was just handed to the module. "
+                          f"Call this again now."),
                 **(tr.data or {}))
         return ToolResult.failure(
             tr.message,
@@ -3410,7 +3415,7 @@ class AethelarkLive:
                             if raw:
                                 in_buf.append(raw)
                                 self._last_user_speech = time.monotonic()
-                                note_user_turn()
+                                note_user_turn(raw)
                                 # Heard by the server, from whichever
                                 # microphone: the turn is the user's.
                                 self._unprompted_turn = False
@@ -3876,7 +3881,7 @@ class AethelarkLive:
                 session = self.session
                 if session:
                     self._unprompted_turn = False   # typed by the user
-                    note_user_turn()
+                    note_user_turn(text, typed=True)
                     await session.send_client_content(
                         turns={"parts": [{"text": text}]},
                         turn_complete=True,

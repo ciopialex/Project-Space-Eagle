@@ -74,6 +74,25 @@ def browser_cookies(site: str, *, start: bool = False,
     return [{k: c[k] for k in _FIELDS if k in c} for c in (found or [])]
 
 
+def chrome_cookies(site: str, timeout: float = 60.0) -> list[dict] | None:
+    """The same, from the user's own Chrome, if they let the eagle use it."""
+    from actions.grounding.web import chrome_link
+    if not chrome_link.usable():
+        return None
+    browser = chrome_link.chrome_browser()
+    if not browser.running:
+        browser.start()
+        if not browser.running:
+            return None
+    urls = [f"https://{site}/", f"https://www.{site}/"]
+    found = browser.call(lambda page: page.context.cookies(urls), timeout=timeout)
+    return [{k: c[k] for k in _FIELDS if k in c} for c in (found or [])]
+
+
+def _proves(cookies: list[dict] | None, account: ModuleAccount) -> bool:
+    return any(c.get("name") == account.proof for c in cookies or ())
+
+
 def hand_over(manifest: ModuleManifest, account: ModuleAccount,
               cookies: list[dict], which: Callable[[str], str | None]) -> dict:
     """Give the module this site's session. Never raises."""
@@ -111,7 +130,8 @@ def account_for(manifest: ModuleManifest | None, site: str) -> ModuleAccount | N
 
 def repair(manifest: ModuleManifest | None, site: str,
            which: Callable[[str], str | None],
-           cookies_fn: Callable[..., list[dict] | None] = browser_cookies) -> dict:
+           cookies_fn: Callable[..., list[dict] | None] = browser_cookies,
+           fallback_fn: Callable[[str], list[dict] | None] | None = chrome_cookies) -> dict:
     """The module said it needs `site`: hand the browser's session over again.
 
     Starts the eagle's browser if it is not running -- it is headless, and the
@@ -126,6 +146,13 @@ def repair(manifest: ModuleManifest | None, site: str,
     except Exception as e:
         return {"ok": False, "signed_in": False,
                 "detail": f"the eagle's browser could not be asked: {e}"}
+    if not _proves(cookies, account) and fallback_fn is not None:
+        try:
+            other = fallback_fn(account.site)
+        except Exception:
+            other = None
+        if _proves(other, account):
+            cookies = other
     if cookies is None:
         return {"ok": False, "signed_in": False,
                 "detail": "the eagle's browser is not available"}
@@ -135,7 +162,9 @@ def repair(manifest: ModuleManifest | None, site: str,
 def after_sign_in(url: str, manifests: Iterable[ModuleManifest],
                   which: Callable[[str], str | None],
                   cookies_fn: Callable[..., list[dict] | None] = browser_cookies,
-                  log: Callable[[str], None] = print) -> list[tuple[str, str, dict]]:
+                  log: Callable[[str], None] = print,
+                  fallback_fn: Callable[[str], list[dict] | None] | None = chrome_cookies,
+                  ) -> list[tuple[str, str, dict]]:
     """The user just finished signing in at `url`: give it to every module
     that declared that account."""
     done = []
@@ -145,6 +174,9 @@ def after_sign_in(url: str, manifests: Iterable[ModuleManifest],
                 continue
             try:
                 cookies = cookies_fn(account.site, start=False)
+                if not _proves(cookies, account) and fallback_fn is not None:
+                    other = fallback_fn(account.site)
+                    cookies = other if _proves(other, account) else cookies
             except Exception as e:
                 result = {"ok": False, "signed_in": False,
                           "detail": f"the eagle's browser could not be asked: {e}"}

@@ -125,6 +125,14 @@ def installed_modules() -> list[dict]:
             for m in bus._manifests]
 
 
+def _chrome_status() -> dict:
+    try:
+        from actions.grounding.web import chrome_link
+        return chrome_link.status()
+    except Exception:
+        return {"state": "none", "browser": "", "setup_url": ""}
+
+
 def snapshot() -> dict:
     """Everything the Settings panel needs — no secrets, just presence flags."""
     cfg = _read()
@@ -192,6 +200,7 @@ def snapshot() -> dict:
             # cannot. Probing costs one cheap API call, so it is only made
             # when the Labs accounts are on screen at all.
             "youtube": youtube_state() if labs else {},
+            "chrome": _chrome_status(),
             # The eagle's own browser sign-ins, which are NOT the user's Chrome.
             "browser": {"sites": browser_sessions() if labs else []},
             # WhatsApp Web login lives in the browser profile, not a token we own,
@@ -254,6 +263,8 @@ def set_brain_key(provider: str, key: str) -> dict:
     else:
         cfg["brain_api_key"] = key
     _write(cfg)
+    from config import reset_client_cache
+    reset_client_cache()
     return snapshot()
 
 

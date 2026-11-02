@@ -26,6 +26,8 @@ DEFAULTS: dict[str, object] = {
     # Tools a small voice model should not have to route around by default:
     # coding swarms, messaging, desktop automation, account integrations.
     "labs_tools_enabled": False,
+    # Work in the user's own Chrome when a site needs their sign-in.
+    "chrome_signins": False,
     "coding_mode": False,
     # "" means: reply in whatever language the user speaks.
     "reply_language": "",

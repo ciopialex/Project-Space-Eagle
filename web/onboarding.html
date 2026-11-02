@@ -149,9 +149,22 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       <div class="grow"></div>
       <div class="row">
         <button class="btn ghost" id="mic-retry" onclick="startMic()" style="display:none">Try again</button>
-        <button class="btn" id="mic-next" disabled onclick="go('done')">Continue</button>
+        <button class="btn" id="mic-next" disabled onclick="go(afterMic())">Continue</button>
       </div>
-      <button class="link" id="mic-skip" onclick="go('done')">Skip for now</button>
+      <button class="link" id="mic-skip" onclick="go(afterMic())">Skip for now</button>
+    </section>
+
+    <section class="screen" data-step="chrome">
+      <div class="mark"><img src="../assets/images/eagle_white.png" alt=""></div>
+      <h1>Already signed in?</h1>
+      <p class="sub">I can use your <span class="ch-n">Chrome</span> sign-ins, so you never sign in twice.</p>
+      <p class="hint" id="ch-steps" style="display:none">In <span class="ch-n">Chrome</span>:<br>1. Paste into the address bar and press Enter<br>2. Tick <b>Allow remote debugging</b><br>Later, when I first use it, click <b>Allow</b>.</p>
+      <div class="status" id="ch-status"></div>
+      <div class="grow"></div>
+      <div class="row">
+        <button class="btn ghost" id="ch-skip" onclick="go('done')">Not now</button>
+        <button class="btn" id="ch-go" onclick="useChrome()">Use Chrome</button>
+      </div>
     </section>
 
     <section class="screen" data-step="modules">
@@ -166,6 +179,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       <div class="mark"><img src="../assets/images/eagle_white.png" alt=""></div>
       <h1 id="done-title">You're all set.</h1>
       <p class="sub">I live in the small bar at the top of your screen. Just start talking. Double-click the bar to open the full window.</p>
+      <p class="hint" id="done-try"></p>
       <div class="modprog" id="done-modules" style="display:none"></div>
       <div id="aec" style="display:none">
         <p class="sub">Want to cut in while I'm talking, at a normal voice? That needs echo cancellation, which changes your computer's default microphone and speakers.</p>
@@ -184,7 +198,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
 <script>
 (function(){
   var bridge = null;
-  var ORDER = ['welcome', 'modules', 'key', 'name', 'mic', 'done'];
+  var ORDER = ['welcome', 'modules', 'key', 'name', 'mic', 'chrome', 'done'];
   var state = {api_key: '', key_ok: false, user_name: '', mode: 'setup'};
   var step = 'welcome';
 
@@ -192,7 +206,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
   function esc(t){ return String(t == null ? '' : t).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
 
   function renderDots(){
-    var steps = state.mode === 'key' ? ['key'] : ORDER;
+    var steps = state.mode === 'key' ? ['key'] : ORDER.filter(function(s){ return s !== 'chrome' || state.chrome; });
     $('dots').innerHTML = steps.map(function(s){
       return '<span class="dot' + (ORDER.indexOf(s) <= ORDER.indexOf(step) ? ' on' : '') + '"></span>';
     }).join('');
@@ -261,6 +275,14 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
     if (bridge && bridge.enable_echo_cancel) bridge.enable_echo_cancel();
   };
 
+  window.afterMic = function(){ return state.chrome ? 'chrome' : 'done'; };
+  window.useChrome = function(){
+    if (state.chrome_on) { go('done'); return; }
+    $('ch-go').disabled = true;
+    $('ch-status').className = 'status'; $('ch-status').textContent = 'Waiting for ' + state.chrome + '…';
+    if (bridge && bridge.chrome_setup) bridge.chrome_setup();
+  };
+
   window.answerModules = function(){
     var picked = [];
     document.querySelectorAll('#modlist input:checked:not(:disabled)').forEach(function(i){ picked.push(i.value); });
@@ -279,6 +301,11 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       state.mode = opts.mode || 'setup';
       if (opts.user_name) $('name-input').value = opts.user_name;
       if (opts.aec_offer) $('aec').style.display = '';
+      state.chrome = opts.chrome || '';
+      document.querySelectorAll('.ch-n').forEach(function(n){ n.textContent = state.chrome || 'Chrome'; });
+      $('ch-go').textContent = 'Use ' + (state.chrome || 'Chrome');
+      var ex = (opts.examples || []).slice(0, 2);
+      $('done-try').innerHTML = ex.length ? 'Try: ' + ex.map(function(e){ return '&ldquo;' + esc(e) + '&rdquo;'; }).join(' or ') : '';
       state.has_key = !!opts.has_key;
       state.offer = (opts.modules || []);
       $('modlist').innerHTML = state.offer.map(function(m){
@@ -312,6 +339,24 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       });
       box.innerHTML = rows.join('');
       box.style.display = rows.length ? '' : 'none';
+    },
+    setChrome: function(r){
+      r = r || {};
+      if (r.on) {
+        state.chrome_on = true;
+        $('ch-steps').style.display = 'none';
+        $('ch-status').className = 'status ok';
+        $('ch-status').textContent = 'Done. Your sign-ins work for me now.';
+        $('ch-go').disabled = false; $('ch-go').textContent = 'Continue';
+        $('ch-skip').style.display = 'none';
+      } else if (r.on === false && !state.chrome_waiting) {
+        state.chrome_waiting = true;
+        $('ch-steps').style.display = '';
+      } else {
+        $('ch-status').className = 'status';
+        $('ch-status').textContent = 'Not switched on yet. You can do it later in Settings.';
+        $('ch-go').disabled = false;
+      }
     },
     clipboardKey: function(k){
       // A key copied from Google's page: use it, if the field is empty and this is the key screen.

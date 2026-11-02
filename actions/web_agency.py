@@ -74,7 +74,7 @@ from actions.grounding.web.sense import PageSense
 from core.tool_result import ToolResult
 
 _ACTIONS = ("open", "look", "click", "download", "upload", "type", "sign_in",
-            "close")
+            "use_chrome", "close")
 
 _NO_BROWSER_GUIDANCE = (
     "The eagle's browser could not start. Run "
@@ -120,11 +120,55 @@ _NO_HANDOFF_WINDOW = (
 _SENSE = PageSense()
 
 
+#: The browser the current page lives in, and the sites that only work in the
+#: user's own Chrome. Module-level because a task spans many tool calls.
+_ACTIVE: dict = {}
+_CHROME_SITES: set[str] = set()
+
+
 def _browser(explicit):
     if explicit is not None:
         return explicit
+    if _ACTIVE.get("browser") is not None:
+        return _ACTIVE["browser"]
     from actions.grounding.web.browser import default_browser
     return default_browser()
+
+
+def _site(url: str) -> str:
+    from actions.grounding.web.sessions import normalise
+    return normalise(url)
+
+
+def _chrome():
+    """The user's Chrome, if they allowed the eagle to use it and it is open."""
+    try:
+        from actions.grounding.web import chrome_link
+        return chrome_link.chrome_browser() if chrome_link.usable() else None
+    except Exception:
+        return None
+
+
+def _route(url: str):
+    """Pick the browser for a new page: the user's Chrome for a site that
+    needed it before, otherwise the eagle's own."""
+    browser = _chrome() if _site(url) in _CHROME_SITES else None
+    if browser is None:
+        from actions.grounding.web.browser import default_browser
+        browser = default_browser()
+    _ACTIVE["browser"] = browser
+    return browser
+
+
+def _needs_chrome(result: ToolResult, browser) -> bool:
+    data = result.data or {}
+    if data.get("bot_wall") or _is_login_wall(str(data.get("needs_human") or "")):
+        return True
+    try:
+        page = browser.page()
+        return page is not None and _on_auth_page(_current_url(page))
+    except Exception:
+        return False
 
 
 def _ready(browser) -> ToolResult | None:
@@ -595,7 +639,8 @@ def _record_signed_in(url: str) -> None:
     from actions.grounding.web import sessions
     from core import user_paths
     from core.module_bus import accounts
-    sessions.record(user_paths.browser_profile_dir(), url)
+    if _site(url) not in _CHROME_SITES:
+        sessions.record(user_paths.browser_profile_dir(), url)
     accounts.signed_in(url)
 
 
@@ -608,10 +653,16 @@ def _remedy_for(url: str) -> str:
     a login the user had just made by hand. Offering a menu of routes, two of
     which quietly fail, is worse than offering one that works.
     """
-    return ("Call web_agency action='sign_in' with this url: a window opens, "
-            "the user signs in once, and the eagle stays signed in to that "
-            "site from then on. Do not suggest they open their own browser, "
-            "and never say their data is private.")
+    from actions.grounding.web import chrome_link
+    if chrome_link.usable() or chrome_link.status()["state"] == "none":
+        return ("Call web_agency action='sign_in' with this url: a window opens, "
+                "the user signs in once, and the eagle stays signed in to that "
+                "site from then on. Do not suggest they open their own browser, "
+                "and never say their data is private.")
+    return ("Ask the user: use the sign-ins already in their Chrome (call "
+            "web_agency action='use_chrome'), or sign in once in a window the "
+            "eagle opens (call action='sign_in' with this url). Never say their "
+            "data is private.")
 
 
 def _no_such_control(description: str, page) -> ToolResult:
@@ -1599,7 +1650,12 @@ def _web_agency(params: dict, player: Any, browser: Any) -> ToolResult:
             f"'{action or '(none)'}' is not something this tool does.",
             guidance=f"Use one of: {', '.join(_ACTIONS)}.")
 
-    browser = _browser(browser)
+    if action == "use_chrome":
+        return _use_chrome()
+
+    routed = browser is None
+    url = _coerce_url(params.get("url")) if action in ("open", "sign_in") else ""
+    browser = _route(url) if routed and url else _browser(browser)
 
     if action == "close":
         try:
@@ -1615,9 +1671,72 @@ def _web_agency(params: dict, player: Any, browser: Any) -> ToolResult:
 
     _BROWSER_BUSY.add(action)
     try:
-        return _dispatch(params, browser, action)
+        result = _dispatch(params, browser, action)
+        if routed and action == "open" and _needs_chrome(result, browser):
+            result = _open_in_chrome(params, browser, result)
+        return result
     finally:
         _BROWSER_BUSY.discard(action)
+
+
+def _use_chrome() -> ToolResult:
+    from actions.grounding.web import chrome_link
+    st = chrome_link.status()
+    name = st["browser"] or "Chrome"
+    if st["state"] == "none":
+        return ToolResult.failure(
+            "There is no Chrome, Edge or Brave on this computer.",
+            guidance="Offer to sign in once instead: call sign_in with the site's url.")
+    if st["state"] in ("ready", "connected"):
+        chrome_link.begin_setup()
+        return ToolResult.success(
+            f"The eagle already uses the user's {name} sign-ins. Call open with "
+            "the url again. If it still asks for a sign-in, they are not signed "
+            "in there either: call sign_in with that url.")
+    if st["state"] == "closed":
+        chrome_link.begin_setup()
+        return ToolResult.success(
+            f"Opening {name}. Call open with the url again in a few seconds.")
+    if chrome_link.request_setup:
+        chrome_link.request_setup()
+        where = "paste the copied address into its address bar"
+    else:
+        chrome_link.begin_setup()
+        where = f"go to {st['setup_url']}"
+    return ToolResult.success(
+        f"{name} is open. Tell the user: {where}, press Enter, and tick "
+        "'Allow remote debugging'. When they say it is done, call open with "
+        f"the url again; {name} will ask them to click Allow once.")
+
+
+def _coerce_url(value: Any) -> str:
+    url = str(value or "").strip()
+    return ("https://" + url) if url and "://" not in url else url
+
+
+def _open_in_chrome(params, browser, result: ToolResult) -> ToolResult:
+    """The eagle's browser hit a sign-in or bot wall: open the same page in
+    the user's Chrome, where they are signed in and look like themselves."""
+    chrome = _chrome()
+    if chrome is None or chrome is browser:
+        return result
+    url = _coerce_url(params.get("url"))
+    _CHROME_SITES.add(_site(url))
+    _ACTIVE["browser"] = chrome
+    not_ready = _ready(chrome)
+    if not_ready is not None:
+        _ACTIVE["browser"] = browser
+        _CHROME_SITES.discard(_site(url))
+        return ToolResult(ok=result.ok, guidance=result.guidance, data=result.data,
+                          message=(result.message + "\nChrome was not allowed "
+                                   "to connect, so this stayed in the eagle's "
+                                   "own browser."))
+    again = _dispatch(params, chrome, "open")
+    return ToolResult(ok=again.ok,
+                      message=("Opened in the user's own Chrome, where they are "
+                               "signed in.\n" + again.message),
+                      guidance=again.guidance,
+                      data={**again.data, "in_chrome": True})
 
 
 def _dispatch(params, browser, action):

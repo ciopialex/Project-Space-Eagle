@@ -758,14 +758,7 @@ class EagleBrowser:
             # happens, or the browser leaks along with the profile lock it holds
             # - which is exactly the state a later start() would retry into.
 
-            # Playwright pages expose their own context; the fakes do not.
-            context = getattr(page, "context", None)
-            if context is not None and hasattr(context, "close"):
-                try:
-                    self._submit(lambda: context.close(), _TEARDOWN_TIMEOUT,
-                                 cancellable=False)
-                except Exception:
-                    pass
+            self._release(page)
 
             playwright = self._playwright
             if playwright is not None and hasattr(playwright, "stop"):
@@ -779,6 +772,16 @@ class EagleBrowser:
             self._thread.join(timeout=5)
             self._thread = None
             self._playwright = None
+
+    def _release(self, page: Any) -> None:
+        """Let go of what `_launcher` returned. Ours, so the whole context goes."""
+        context = getattr(page, "context", None)
+        if context is not None and hasattr(context, "close"):
+            try:
+                self._submit(lambda: context.close(), _TEARDOWN_TIMEOUT,
+                             cancellable=False)
+            except Exception:
+                pass
 
     # ── work ────────────────────────────────────────────────────────────────
 

@@ -47,7 +47,7 @@ WHICH TOOL (ROUTING PRECEDENCE)
 - Weather: weather_report.
 - Open an installed app: open_app. A website is never an app.
 - Show a page in the user's own browser for them to look at: browser_control.
-- Do something inside a website (read it, click, fill a form): web_agency. It uses its own browser, separate from the user's; if a site needs a login, call web_agency with action "sign_in" and that address, and the user signs in once.
+- Do something inside a website (read it, click, fill a form): web_agency. If a site needs a login, follow what web_agency says: it either uses the user's Chrome sign-ins or opens a window where the user signs in once.
 - What is on the screen, or in front of the camera: screen_process. Call it once per question.
 - Volume, brightness, windows, keyboard shortcuts, lock screen, Wi-Fi, shutdown: computer_settings.
 - Files and folders: file_controller. Deleted files go to the trash, and "undo that" after a file change is file_controller with action undo.

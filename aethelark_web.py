@@ -478,6 +478,10 @@ class WebBridge(QObject):
     @pyqtSlot()
     def connect_youtube(self): self._ui.connect_youtube()
     @pyqtSlot()
+    def chrome_setup(self): self._ui.chrome_setup()
+    @pyqtSlot()
+    def chrome_off(self): self._ui.chrome_off()
+    @pyqtSlot()
     def rerun_onboarding(self): self._ui.rerun_onboarding()
 
     @pyqtSlot(int, int)
@@ -525,6 +529,9 @@ def _lend_accounts_after_install(key: str) -> list:
         from core.module_bus.manifest import load_manifests
         mods = [m for m in load_manifests(default_manifest_dirs()) if m.key == key]
         signed = sessions.signed_in_sites(user_paths.browser_profile_dir())
+        from actions.grounding.web import chrome_link
+        if chrome_link.usable():
+            signed += [a.site for m in mods for a in m.accounts]
         done = accounts.sync(mods, signed, which_module)
         lent = {site for _, site, r in done if r.get("ok")}
         return [a.site for m in mods for a in m.accounts if a.site not in lent]
@@ -915,6 +922,7 @@ class WebShellUI(QObject):
     _modules_sig      = pyqtSignal()
     _ambient_refresh_sig = pyqtSignal()
     _notice_sig       = pyqtSignal(str, str)   # (text, action) -> island notice
+    _chrome_setup_sig = pyqtSignal()
     _shop_sig         = pyqtSignal()           # an install moved on -> repaint the shop
     _module_ready_sig = pyqtSignal(str)        # (title) an install finished
     _module_gone_sig = pyqtSignal()            # a module was removed
@@ -1003,6 +1011,7 @@ class WebShellUI(QObject):
         self._hearing_sig.connect(self._on_hearing)
         self._modules_sig.connect(self._on_modules_changed)
         self._ambient_refresh_sig.connect(self._refresh_ambient)
+        self._chrome_setup_sig.connect(self.chrome_setup)
         self._notice_sig.connect(
             lambda text, action: self.pill_win.set_pill(
                 "notice", {"text": text, "action": action}))
@@ -1490,7 +1499,6 @@ class WebShellUI(QObject):
         from core.module_bus.installer import catalog_name
         name = catalog_name(name or "") or ""
         if not name:
-            # Only catalog modules come through the window; see catalog_name.
             self.write_log("ERR: that module is not in the catalog, so it was not installed.")
             return
         if (self._installs.get(name) or {}).get("state") in ("queued", "installing"):
@@ -1624,8 +1632,12 @@ class WebShellUI(QObject):
             before = prefs.enabled("labs_tools_enabled")
             snap = save(data)
             if key:
-                snap = set_brain_key(data.get("brain_provider")
-                                     or snap["brain"]["provider"], key)
+                provider = (data.get("brain_provider") or snap["brain"]["provider"]
+                            or "google").lower()
+                if provider == "google":
+                    self.set_brain_key("google", key)
+                else:
+                    snap = set_brain_key(provider, key)
             self._push("setSettings", snap)
             self.sync_island_prefs()
             if prefs.enabled("labs_tools_enabled") != before and self.on_session_refresh:
@@ -1766,6 +1778,36 @@ class WebShellUI(QObject):
                 self.write_log(f"SYS: Could not open the sign-in window: {e}")
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def chrome_setup(self):
+        """Let the eagle use the user's Chrome. Chrome only allows it from its
+        own settings page and will not open that page for another app, so the
+        address goes on the clipboard and Chrome comes forward."""
+        from actions.grounding.web import chrome_link
+        st = chrome_link.begin_setup()
+        name = st["browser"] or "Chrome"
+        if st["state"] != "off":
+            self.show_notice(f"The eagle uses your {name} sign-ins")
+            self.push_settings()
+            return
+        QApplication.clipboard().setText(st["setup_url"])
+        self.show_notice(f"In {name}: paste the copied address, press Enter, "
+                         "tick Allow remote debugging")
+
+        def _wait():
+            if chrome_link.wait_until_on():
+                self.show_notice(f"Done. Sites you are signed in to in {name} "
+                                 "now work for the eagle")
+            self.push_settings()
+        threading.Thread(target=_wait, daemon=True).start()
+
+    def chrome_off(self):
+        from core import prefs
+        from actions.grounding.web import chrome_link
+        prefs.save({"chrome_signins": False})
+        if chrome_link._DEFAULT is not None:
+            threading.Thread(target=chrome_link._DEFAULT.close, daemon=True).start()
+        self.push_settings()
 
     def disconnect_google(self):
         try:
@@ -2336,6 +2378,10 @@ class WebShellUI(QObject):
         if not str(text).startswith(("SYS:", "ERR:")):
             print(f"[chat] {text}")
         self._log_sig.emit(text)
+    def request_chrome_setup(self) -> None:
+        """chrome_setup from any thread: it touches the clipboard."""
+        self._chrome_setup_sig.emit()
+
     def show_notice(self, text: str, action: str = "") -> None:
         """One line on the island until the next state change replaces it.
         `action="key"` makes a tap open the key screen; anything else, nothing."""
@@ -2585,14 +2631,19 @@ class WebShellUI(QObject):
             self.set_state("LISTENING")
 
     def wait_for_api_key(self):
+        reported = False
         while True:
             try:
                 d = json.loads(API_KEYS.read_text(encoding="utf-8"))
                 if d.get("gemini_api_key"):
                     self._win._ready = True
                     return
+            except FileNotFoundError:
+                pass
             except Exception as _e:
-                print(f"[aethelark_web.py] Non-fatal error at line 686: {_e}")
+                if not reported:
+                    print(f"[aethelark_web] config not readable yet: {_e}")
+                    reported = True
             time.sleep(0.3)
 
 
@@ -2636,6 +2687,8 @@ class OnboardBridge(QObject):
     def stop_mic_check(self): self._win.stop_mic_check()
     @pyqtSlot()
     def enable_echo_cancel(self): self._win.enable_echo_cancel()
+    @pyqtSlot()
+    def chrome_setup(self): self._win.chrome_setup()
     @pyqtSlot(str)
     def complete(self, payload): self._win.complete(payload)
     @pyqtSlot()
@@ -2696,9 +2749,14 @@ class OnboardingWindow(QMainWindow):
 
     def on_ready(self):
         cfg = _config()
-        start = {"mode": self._mode, "user_name": cfg.get("user_name") or "",
+        from actions.grounding.web import chrome_link
+        chrome = chrome_link.status()
+        start = {"mode": self._mode,
+                 "user_name": cfg.get("user_name") or chrome_link.account_name(),
                  "has_key": bool(cfg.get("gemini_api_key")),
-                 "aec_offer": self._offer_echo_cancel()}
+                 "aec_offer": self._offer_echo_cancel(),
+                 "chrome": chrome["browser"] if chrome["state"] != "none" else "",
+                 "examples": WebShellUI._BASE_SUGGESTIONS}
         if self._mode == "key":
             start.update(step="key", reason=self._reason)
         else:
@@ -2753,6 +2811,19 @@ class OnboardingWindow(QMainWindow):
                 "Echo cancellation is on. Talk over me any time." if ok
                 else f"It could not be turned on: {detail[:120]}")})
         threading.Thread(target=_work, daemon=True).start()
+
+    def chrome_setup(self):
+        from actions.grounding.web import chrome_link
+        st = chrome_link.begin_setup()
+        if st["state"] != "off":
+            self.push("setChrome", {"on": True})
+            return
+        QApplication.clipboard().setText(st["setup_url"])
+        self.push("setChrome", {"on": False})
+
+        def _wait():
+            self.push("setChrome", {"on": chrome_link.wait_until_on(timeout=600)})
+        threading.Thread(target=_wait, daemon=True).start()
 
     def open_url(self, url: str):
         from PyQt6.QtGui import QDesktopServices
@@ -2891,6 +2962,8 @@ class OnboardingWindow(QMainWindow):
             user_paths.write_private(API_KEYS, json.dumps(cfg, indent=4))
         except Exception as e:
             print(f"[onboarding] could not write config: {e}")
+        from config import reset_client_cache
+        reset_client_cache()
         self.close()
         self._on_done()
 
@@ -2954,11 +3027,32 @@ def _name_the_app(app):
     app.setDesktopFileName("aethelark")
 
 
+def _quiet_once_started() -> None:
+    """Started detached by the launcher: its start-up capture is dropped once
+    the app is up, so stop writing into it."""
+    if not os.environ.pop("EAGLE_DETACHED", ""):
+        return
+
+    def to_null() -> None:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 1)
+        os.dup2(null, 2)
+        os.close(null)
+
+    QTimer.singleShot(8000, to_null)
+
+
 def main():
     app = QApplication.instance() or QApplication(sys.argv)
     _name_the_app(app)
     load_app_fonts()
     app.setStyle("Fusion")
+    _quiet_once_started()
 
     if _is_onboarded():
         _launch_main_app()
