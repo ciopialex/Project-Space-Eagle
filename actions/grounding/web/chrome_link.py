@@ -117,19 +117,23 @@ _WIN_EXE = {"Chrome": "chrome", "Chrome Beta": "chrome", "Chrome Canary": "chrom
             "Brave": "brave", "Edge": "msedge", "Chromium": "chromium"}
 
 
-def bring_forward(b: Installed) -> bool:
-    """Open a new window of that browser, focused on its address bar."""
+def _command(b: Installed, args: list[str]) -> list[str] | None:
     import shutil
-    import subprocess
     if sys.platform == "darwin":
-        cmd = ["open", "-a", _MAC_APP.get(b.name, "Google Chrome")]
-    elif sys.platform == "win32":
-        cmd = ["cmd", "/c", "start", "", _WIN_EXE.get(b.name, "chrome"), "--new-window"]
-    else:
-        exe = next((shutil.which(x) for x in _LINUX_BIN.get(b.name, ()) if shutil.which(x)), None)
-        if not exe:
-            return False
-        cmd = [exe, "--new-window"]
+        app = _MAC_APP.get(b.name, "Google Chrome")
+        exe = Path("/Applications") / f"{app}.app" / "Contents" / "MacOS" / app
+        return [str(exe), *args] if exe.is_file() else ["open", "-a", app, *args[-1:]]
+    if sys.platform == "win32":
+        return ["cmd", "/c", "start", "", _WIN_EXE.get(b.name, "chrome"), *args]
+    exe = next((shutil.which(x) for x in _LINUX_BIN.get(b.name, ()) if shutil.which(x)), None)
+    return [exe, *args] if exe else None
+
+
+def _launch(b: Installed, args: list[str]) -> bool:
+    import subprocess
+    cmd = _command(b, args)
+    if not cmd:
+        return False
     try:
         subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
@@ -138,15 +142,49 @@ def bring_forward(b: Installed) -> bool:
         return False
 
 
-def account_name() -> str:
-    """The first name on the signed-in Chrome profile, to greet the user by."""
+def bring_forward(b: Installed) -> bool:
+    """Open a new window of that browser, focused on its address bar."""
+    return _launch(b, ["--new-window"])
+
+
+@dataclass(frozen=True)
+class GoogleProfile:
+    browser: Installed
+    directory: str
+    email: str
+    given_name: str
+
+
+def google_profile() -> GoogleProfile | None:
+    """The browser profile signed in to Google that was used most recently."""
+    best: tuple[float, GoogleProfile] | None = None
     for b in installed():
         cache = ((_local_state(b).get("profile") or {}).get("info_cache") or {})
-        for prof in cache.values():
-            name = str(prof.get("gaia_given_name") or prof.get("gaia_name") or "").strip()
-            if name:
-                return name.split()[0]
-    return ""
+        for directory, info in cache.items():
+            if not (info.get("gaia_id") or info.get("user_name")):
+                continue
+            name = str(info.get("gaia_given_name") or info.get("gaia_name") or "").strip()
+            g = GoogleProfile(b, directory, str(info.get("user_name") or ""),
+                              name.split()[0] if name else "")
+            t = float(info.get("active_time") or 0)
+            if best is None or t > best[0]:
+                best = (t, g)
+    return best[1] if best else None
+
+
+def open_signed_in(url: str) -> GoogleProfile | None:
+    """Open `url` in the browser profile that is signed in to Google.
+    None when there is no such profile or it could not be started."""
+    g = google_profile()
+    if g and _launch(g.browser, [f"--profile-directory={g.directory}", url]):
+        return g
+    return None
+
+
+def account_name() -> str:
+    """The first name on the signed-in browser profile, to greet the user by."""
+    g = google_profile()
+    return g.given_name if g else ""
 
 
 def wanted() -> bool:

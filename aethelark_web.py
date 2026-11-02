@@ -2359,8 +2359,8 @@ class WebShellUI(QObject):
 
         self._reconfig_win = OnboardingWindow(
             on_done=_done, mode="key", on_cancel=lambda: None,
-            reason="Google turned your Gemini key down. Paste a new one to "
-                   "keep going.")
+            reason="Google turned your Gemini key down. Get a new one, "
+                   "free, to keep going.")
         self._reconfig_win.showMaximized()
         self._reconfig_win.raise_()
 
@@ -2677,6 +2677,10 @@ class OnboardBridge(QObject):
     def onboard_ready(self): self._win.on_ready()
     @pyqtSlot(str)
     def validate_key(self, key): self._win.validate_key(key)
+    @pyqtSlot()
+    def get_key(self): self._win.get_key()
+    @pyqtSlot()
+    def use_found_key(self): self._win.use_found_key()
     @pyqtSlot(str)
     def open_url(self, url): self._win.open_url(url)
     @pyqtSlot(str)
@@ -2713,6 +2717,7 @@ class OnboardingWindow(QMainWindow):
     down, and the one thing to do is paste a new one.
     """
     _push_sig = pyqtSignal(str, str)   # (fn, json-payload) — marshals to GUI thread
+    _front_sig = pyqtSignal()
 
     def __init__(self, on_done, mode: str = "setup", reason: str = "",
                  on_cancel=None):
@@ -2722,6 +2727,7 @@ class OnboardingWindow(QMainWindow):
         self._mode = mode
         self._reason = reason
         self._validated_key = ""
+        self._found_key = ""
         self._last_clip = ""
         self._mic_stop = threading.Event()
         self._mic_thread = None
@@ -2737,6 +2743,7 @@ class OnboardingWindow(QMainWindow):
         self.channel.registerObject("pybridge", self.bridge)
         self.view.page().setWebChannel(self.channel)
         self._push_sig.connect(self._do_push)
+        self._front_sig.connect(self._come_back)
         self.view.load(QUrl.fromLocalFile(str(ONBOARDING_HTML)))
 
     def _do_push(self, fn, payload):
@@ -2769,10 +2776,11 @@ class OnboardingWindow(QMainWindow):
             except Exception as e:
                 print(f"[onboarding] could not list the modules: {e}")
         self.push("startAt", start)
-        if self._mode != "key":
-            self._clip_timer = QTimer(self)
-            self._clip_timer.timeout.connect(self._watch_clipboard)
-            self._clip_timer.start(800)
+        self._clip_timer = QTimer(self)
+        self._clip_timer.timeout.connect(self._watch_clipboard)
+        self._clip_timer.start(800)
+        if not start["has_key"] or self._mode == "key":
+            threading.Thread(target=self._look_for_key, daemon=True).start()
 
         # The one expensive full scan of the machine, persisted so later
         # launches load it in a millisecond. Off-thread: nvidia-smi and lspci
@@ -2860,11 +2868,41 @@ class OnboardingWindow(QMainWindow):
     def _watch_clipboard(self):
         """Someone who has just copied a key from Google's page should not have
         to paste it. Only a string shaped exactly like a Gemini key leaves here."""
-        import re
+        from core import gemini_key
         text = (QApplication.clipboard().text() or "").strip()
-        if text != self._last_clip and re.fullmatch(r"AIza[0-9A-Za-z_\-]{35}", text):
+        if text != self._last_clip and gemini_key.shaped(text):
             self._last_clip = text
             self.push("clipboardKey", text)
+
+    def _look_for_key(self):
+        from core import gemini_key
+        for key in gemini_key.on_this_computer():
+            if gemini_key.check(key)[0]:
+                self._found_key = key
+                self.push("foundKey", {})
+                return
+
+    def use_found_key(self):
+        if self._found_key:
+            self._validated_key = self._found_key
+            self.push("setKeyResult", {"ok": True, "message": ""})
+
+    def get_key(self):
+        from actions.grounding.web import chrome_link
+        url = "https://aistudio.google.com/apikey"
+        g = chrome_link.open_signed_in(url)
+        if g is None:
+            self.open_url(url)
+        self.push("keyPageOpened", {"browser": g.browser.name if g else "",
+                                    "account": g.email if g else ""})
+
+    def _come_back(self):
+        if self.isActiveWindow():
+            return
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        QApplication.alert(self)
 
     def validate_key(self, key: str):
         def _work():
@@ -2872,6 +2910,7 @@ class OnboardingWindow(QMainWindow):
             ok, message = gemini_key.check(key)
             if ok:
                 self._validated_key = (key or "").strip()
+                self._front_sig.emit()
             self.push("setKeyResult", {"ok": ok, "message": message})
         threading.Thread(target=_work, daemon=True).start()
 
@@ -2970,6 +3009,8 @@ class OnboardingWindow(QMainWindow):
     def cancel(self):
         """The ✕. First run: quit. Fixing a key: just close the window."""
         self.stop_mic_check()
+        if getattr(self, "_clip_timer", None):
+            self._clip_timer.stop()
         if self._on_cancel is not None:
             self.close()
             self._on_cancel()
