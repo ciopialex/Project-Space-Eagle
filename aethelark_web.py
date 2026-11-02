@@ -2046,6 +2046,8 @@ class WebShellUI(QObject):
             from actions.swarm_sentinel import swarm_root_of
         except Exception:
             return
+        from core import escalations
+        waiting = {e.agent for e in escalations.pending()}
         seen = set()
         for (key, sdir), sess in POOL.all_sessions().items():
             if swarm_root_of(sdir) is not None or getattr(sess, "role", "") == "chief":
@@ -2070,8 +2072,10 @@ class WebShellUI(QObject):
                 "id": ident,
                 "state": "ended" if done_for > self._AGENT_DISMISS_S else "active",
                 "leading": f"{sess.agent_name} · {pathlib.Path(sdir).name}",
-                "trailing": "working" if busy else "done",
-                "relevance": 70 if busy else 40, "stale_after_s": 86400}})
+                "trailing": ("needs your OK" if sess.agent_name in waiting
+                             else "working" if busy else "done"),
+                "relevance": 90 if sess.agent_name in waiting else 70 if busy else 40,
+                "stale_after_s": 86400}})
             if was and not busy:
                 self.pill_win.set_pill("ready", {"label": f"{sess.agent_name} finished",
                                                  "id": f"{ident}:{int(since)}"})

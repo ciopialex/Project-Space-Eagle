@@ -4094,8 +4094,6 @@ class AethelarkLive:
         if getattr(esc, "kind", "") == "done":
             text = (f"[DONE] {esc.agent} {esc.reason} Tell the user in one or "
                     f"two short sentences what it did.")
-            if notice:
-                notice(f"{esc.agent} is done")
         elif getattr(esc, "informational", False):
             text = (f"[NOTE] {esc.agent} {esc.reason}; it carried on without it. "
                     f"Tell the user in one short sentence only if it stops the work.")
