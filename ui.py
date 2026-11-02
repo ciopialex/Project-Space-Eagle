@@ -146,6 +146,7 @@ def make_spring_curve(stiffness: float = 260.0, damping: float = 24.0,
 # ── Windows GPU via NVML DLL (no subprocess, no console window) ──────────────
 _nvml_lib: object = None   # cached ctypes DLL
 _nvml_ok:  object = None   # None=untested, True=works, False=unavailable
+_NVML_POSIX_OK: object = None  # same, for libnvidia-ml on Linux / macOS
 
 
 def _nvml_gpu_windows() -> float:
@@ -258,7 +259,13 @@ class _SysMetrics:
         if _OS == "Windows":
             return _nvml_gpu_windows()
 
-        # Linux / macOS: libnvidia-ml shared lib via ctypes
+        # Linux / macOS: libnvidia-ml shared lib via ctypes. Probed once: on a
+        # machine with no NVIDIA driver (every Mac, most laptops) the load
+        # fails the same way forever, and retrying it on every metrics tick
+        # wrote the same error line into the log every 1.5 s.
+        global _NVML_POSIX_OK
+        if _NVML_POSIX_OK is False:
+            return -1.0
         try:
             import ctypes
             _lib = "libnvidia-ml.so.1" if _OS == "Linux" else "libnvidia-ml.dylib"
@@ -272,9 +279,12 @@ class _SysMetrics:
             nv.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(dev))
             u = _Util()
             nv.nvmlDeviceGetUtilizationRates(dev, ctypes.byref(u))
+            _NVML_POSIX_OK = True
             return float(u.gpu)
         except Exception as _e:
-            print(f"[ui.py] Non-fatal error at line 424: {_e}")
+            if _NVML_POSIX_OK is None:
+                print(f"[ui.py] GPU load unavailable (no NVIDIA driver): {_e}")
+            _NVML_POSIX_OK = False
 
         return -1.0   # N/A — zero subprocess on all platforms
 
