@@ -76,14 +76,7 @@ def catalog() -> dict[str, dict]:
 
 
 def catalog_name(spec: str) -> str | None:
-    """The catalog entry `spec` names (by name or alias), else None.
-
-    The terminal installs anything pip can (`eagle install <path|git URL>`),
-    because a person typing a URL there chose it. The window's Get button and
-    first-run screen only ever offer catalog modules, so that is all they may
-    install: the bridge is reachable from page script, and a git URL arriving
-    through it would build and run code nobody picked.
-    """
+    """The catalog entry `spec` names (by name or alias), else None."""
     lowered = (spec or "").strip().lower()
     if not lowered:
         return None
@@ -237,6 +230,7 @@ def install(spec: str, *, interactive: bool | None = None,
     modules_dir.mkdir(parents=True, exist_ok=True)
     venv = venvs_dir() / source.name
     py = _python_in(venv)
+    first_install = not (venv / RECORD).exists()
 
     _say(f"Installing {source.title}…")
     if not py.exists():
@@ -287,9 +281,13 @@ def install(spec: str, *, interactive: bool | None = None,
                            + (f"\n{last_error}" if last_error else ""))
     # The human half: a module may have a question for the person installing
     # it (an email the data source requires, say). Only when someone is there.
-    if interactive:
-        _run([str(_bin_in(venv, registered_with)), "register"], check=False,
-             interactive=True, timeout=600)
+    if interactive and first_install:
+        try:
+            _run([str(_bin_in(venv, registered_with)), "register"], check=False,
+                 interactive=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            _say(f"  No answer, so setup was skipped. Answer it any time with: "
+                 f"{registered_with} register")
 
     binary = _manifest_binary(modules_dir, key) or registered_with
     target = _bin_in(venv, binary)
@@ -434,7 +432,7 @@ def update(key: str | None = None) -> list[dict]:
         if key and key.lower() not in (str(data.get("key", "")).lower(),
                                        str(data.get("name", "")).lower()):
             continue
-        done.append(install(data["source"]))
+        done.append(install(data["source"], interactive=False))
     return done
 
 

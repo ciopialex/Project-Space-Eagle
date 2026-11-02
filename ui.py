@@ -259,10 +259,6 @@ class _SysMetrics:
         if _OS == "Windows":
             return _nvml_gpu_windows()
 
-        # Linux / macOS: libnvidia-ml shared lib via ctypes. Probed once: on a
-        # machine with no NVIDIA driver (every Mac, most laptops) the load
-        # fails the same way forever, and retrying it on every metrics tick
-        # wrote the same error line into the log every 1.5 s.
         global _NVML_POSIX_OK
         if _NVML_POSIX_OK is False:
             return -1.0

@@ -17,11 +17,14 @@ def check(key: str, timeout_s: float = 12.0) -> tuple[bool, str]:
         client = genai.Client(
             api_key=key,
             http_options=types.HttpOptions(timeout=int(timeout_s * 1000)))
-        pager = client.models.list(config={"page_size": 1})
-        next(iter(pager), None)
+        from core.models import VOICE
+        client.models.get(model=VOICE)
         return True, ""
     except errors.ClientError as e:
         text = str(e)
+        if getattr(e, "code", None) == 404:
+            return False, ("This key works, but it can't use Gemini's voice "
+                           "model. Create a key in Google AI Studio.")
         if "API_KEY_INVALID" in text or "API key not valid" in text:
             return False, ("Google says this key isn't valid. Check that you "
                            "copied all of it.")

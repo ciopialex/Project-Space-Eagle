@@ -71,7 +71,7 @@ def _platform_os() -> str:
 def _get_os() -> str:
     return _load_config().get("os_system", _platform_os()).lower()
 
-_LIVE_MODEL         = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+from core.models import VOICE as _LIVE_MODEL  # noqa: E402
 _CHANNELS           = 1
 _RECEIVE_SAMPLE_RATE = 24_000
 _CHUNK_SIZE         = 1_024

@@ -62,6 +62,38 @@ if [ -z "${EAGLE_RELAUNCHED:-}" ] && [ -f "$REPO/packaging/eagle" ]; then
     rm -f "$RENDERED"
 fi
 
+uninstall_app() {
+    if [ ! -f "$REPO/.aethelark-install" ]; then
+        echo "eagle: $REPO was not made by the installer, so it is left alone. Delete it yourself if you mean to." >&2
+        exit 1
+    fi
+    local eagle_home="$HOME/.aethelark" bin="$HOME/.local/bin" link answer
+    echo "This removes Aethelark: the app ($REPO), its modules ($eagle_home),"
+    echo "the eagle command and its icons. Your keys and memory are kept."
+    printf 'Remove Aethelark? [y/N] '
+    read -r answer || answer=""
+    case "$answer" in y|Y|yes|YES|Yes) ;; *) echo "Nothing was removed."; exit 0 ;; esac
+    local data
+    data="$("$REPO/.venv/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); from core.user_paths import user_data_dir; print(user_data_dir())' "$REPO" 2>/dev/null || true)"
+    pkill -u "$(id -u)" -f '^[^ ]*python3? .*aethelark_web\.py' 2>/dev/null || true
+    for link in "$bin"/*; do
+        [ -L "$link" ] || continue
+        case "$(readlink -f "$link" 2>/dev/null || readlink "$link")" in
+            "$eagle_home"/*|"$REPO"/*) rm -f "$link" ;;
+        esac
+    done
+    rm -f "$HOME/.local/share/applications/aethelark.desktop" "$HOME/Desktop/Aethelark.desktop"
+    rm -rf "$HOME/Applications/Aethelark.app"
+    rm -rf "$REPO" "$eagle_home"
+    rm -f "$bin/eagle"
+    echo "Aethelark was removed."
+    [ -n "$data" ] && echo "Kept: your keys and memory in $data (delete that folder to remove them too)."
+    echo "Also kept, shared with other programs; remove them if nothing else uses them:"
+    echo "  the eagle's browser:  rm -rf ~/.cache/ms-playwright"
+    echo "  uv and its Python:    uv cache clean; uv python uninstall 3.12"
+    exit 0
+}
+
 # Module management needs no window and must not stop a running eagle: the
 # running one picks up what is installed on its own.
 case "${ARGS[0]:-}" in
@@ -99,9 +131,32 @@ case "${ARGS[0]:-}" in
         fi
         exec "$REPO/.venv/bin/python" -m core.module_bus.installer update "${ARGS[@]:1}"
         ;;
-    install|remove|uninstall|modules|bundle)
-        sub="${ARGS[0]}"; [ "$sub" = "uninstall" ] && sub=remove
-        exec "$REPO/.venv/bin/python" -m core.module_bus.installer "$sub" "${ARGS[@]:1}"
+    uninstall)
+        if [ ${#ARGS[@]} -gt 1 ]; then
+            exec "$REPO/.venv/bin/python" -m core.module_bus.installer remove "${ARGS[@]:1}"
+        fi
+        uninstall_app
+        ;;
+    install|remove|modules|bundle)
+        exec "$REPO/.venv/bin/python" -m core.module_bus.installer "${ARGS[0]}" "${ARGS[@]:1}"
+        ;;
+    -h|--help|help)
+        cat <<'USAGE'
+eagle                    open Aethelark
+eagle --doctor           check this machine and say what to fix
+eagle --doctor --fix     apply the fixes it can make itself
+eagle update             update the app and its modules
+eagle modules            list modules
+eagle install <module>   add a module (eagle modules lists them)
+eagle remove <module>    remove a module
+eagle uninstall          remove Aethelark from this computer (keys are kept)
+eagle --version          which version is installed
+USAGE
+        exit 0
+        ;;
+    -V|--version|version)
+        echo "eagle $(git -C "$REPO" log -1 --format='%h (%cd)' --date=short 2>/dev/null || echo unknown)"
+        exit 0
         ;;
 esac
 
@@ -109,17 +164,18 @@ esac
 #    Matched on the interpreter+script pair so this never matches an editor or
 #    a grep that merely has the filename on its command line.
 if [ -z "${ARGS[*]+x}" ] || [ ${#ARGS[@]} -eq 0 ]; then
-    OLD=$(pgrep -f '^[^ ]*python3? .*aethelark_web\.py' || true)
+    ME="$(id -u)"
+    OLD=$(pgrep -u "$ME" -f '^[^ ]*python3? .*aethelark_web\.py' || true)
     if [ -n "$OLD" ]; then
         echo "eagle: an older eagle is running (pid $(echo "$OLD" | tr '\n' ' ' | sed 's/ $//')) — stopping it, it has the old code in memory"
         # shellcheck disable=SC2086
         kill $OLD 2>/dev/null || true
         for _ in $(seq 20); do
-            pgrep -f '^[^ ]*python3? .*aethelark_web\.py' >/dev/null || break
+            pgrep -u "$ME" -f '^[^ ]*python3? .*aethelark_web\.py' >/dev/null || break
             sleep 0.25
         done
         # shellcheck disable=SC2046
-        kill -9 $(pgrep -f '^[^ ]*python3? .*aethelark_web\.py' || true) 2>/dev/null || true
+        kill -9 $(pgrep -u "$ME" -f '^[^ ]*python3? .*aethelark_web\.py' || true) 2>/dev/null || true
 
         # The main process exiting is not the end of it. QtWebEngine runs the
         # renderer and GPU work in separate QtWebEngineProcess children, and
@@ -128,7 +184,7 @@ if [ -z "${ARGS[*]+x}" ] || [ ${#ARGS[@]} -eq 0 ]; then
         # it outright: "Failed to restore OpenGL context after clean-up", after
         # a clean connect. Wait for the children rather than assume a delay.
         for _ in $(seq 40); do
-            pgrep -f 'QtWebEngineProcess.*aethelark_web\.py' >/dev/null || break
+            pgrep -u "$ME" -f 'QtWebEngineProcess.*aethelark_web\.py' >/dev/null || break
             sleep 0.25
         done
         sleep 0.5
@@ -198,20 +254,34 @@ fi
 
 source .venv/bin/activate
 
-# An installed eagle opens like any app: the terminal is handed back and nothing
-# is printed or kept. `eagle --doctor` and other flags still run in the terminal.
-# setsid is util-linux: macOS has none, and calling it there failed inside the
-# silenced background job, so `eagle`, the Dock icon and the end of the
-# installer all printed "opening" and opened nothing. nohup alone still
-# detaches the app from the terminal's hangup.
+if [ ${#ARGS[@]} -eq 0 ] && [ "$(uname -s)" = "Linux" ] && [ -z "${DISPLAY:-}" ] \
+        && [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${QT_QPA_PLATFORM:-}" ]; then
+    echo "eagle: there is no screen to open on here (no desktop session). Run eagle from a terminal on your desktop, or click Aethelark in your apps." >&2
+    exit 1
+fi
+
+# An installed eagle opens like any app: the terminal is handed back. What it
+# prints in its first seconds is kept only to say why, if it dies right away.
 if [ -z "$LOGGING" ] && [ ${#ARGS[@]} -eq 0 ]; then
-    if command -v setsid >/dev/null 2>&1; then
-        setsid nohup python3 aethelark_web.py >/dev/null 2>&1 </dev/null &
-    else
-        nohup python3 aethelark_web.py >/dev/null 2>&1 </dev/null &
+    START_LOG="$(mktemp "${TMPDIR:-/tmp}/eagle-start.XXXXXX")"
+    DETACH=(); command -v setsid >/dev/null 2>&1 && DETACH=(setsid)
+    EAGLE_DETACHED=1 ${DETACH[@]+"${DETACH[@]}"} nohup python3 aethelark_web.py >>"$START_LOG" 2>&1 </dev/null &
+    APP_PID=$!
+    for _ in $(seq 20); do
+        kill -0 "$APP_PID" 2>/dev/null || break
+        sleep 0.2
+    done
+    if kill -0 "$APP_PID" 2>/dev/null; then
+        rm -f "$START_LOG"
+        echo "eagle: opening"
+        exit 0
     fi
-    echo "eagle: opening"
-    exit 0
+    CODE=0; wait "$APP_PID" || CODE=$?
+    echo "eagle: Aethelark closed as it started (exit $CODE). What it said:" >&2
+    grep -v '^\s*$' "$START_LOG" | tail -n 12 | sed 's/^/  /' >&2
+    rm -f "$START_LOG"
+    echo "eagle: run  eagle --doctor  to see what this machine is missing." >&2
+    exit 1
 fi
 # ${ARGS[@]+...}: macOS runs bash 3.2, where an empty array under `set -u`
 # aborts -- i.e. plain `eagle`, the most common way to start it.

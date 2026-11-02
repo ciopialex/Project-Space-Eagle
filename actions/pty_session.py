@@ -402,19 +402,24 @@ def open_viewer_terminal(title: str, log_path: Path) -> bool:
     _VIEWERS_OPEN.add(key)
     try:
         if IS_WINDOWS:
-            cmd = (f'start "{title}" powershell -NoExit -Command '
-                   f'"Get-Content -Path \'{log_path}\' -Wait -Tail 200"')
+            safe_title = re.sub(r'["&|<>^%]', "", title)
+            ps_path = str(log_path).replace("'", "''")
+            cmd = (f'start "{safe_title}" powershell -NoExit -Command '
+                   f'"Get-Content -LiteralPath \'{ps_path}\' -Wait -Tail 200"')
             subprocess.Popen(cmd, shell=True)
             return True
         if IS_MACOS:
-            script = f'tell app "Terminal" to do script "tail -F -n +1 {log_path}"'
-            subprocess.Popen(["osascript", "-e", script])
+            import shlex
+            shell_cmd = f"tail -F -n +1 {shlex.quote(str(log_path))}"
+            as_string = shell_cmd.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.Popen(["osascript", "-e",
+                              f'tell app "Terminal" to do script "{as_string}"'])
             return True
-        tail_cmd = f"tail -F -n +1 {log_path}"
+        tail = ["tail", "-F", "-n", "+1", str(log_path)]
         for term, args in (
-            ("gnome-terminal", ["--title", title, "--", "bash", "-c", tail_cmd]),
-            ("konsole", ["--title", title, "-e", "bash", "-c", tail_cmd]),
-            ("xterm", ["-T", title, "-e", "bash", "-c", tail_cmd]),
+            ("gnome-terminal", ["--title", title, "--"] + tail),
+            ("konsole", ["--title", title, "-e"] + tail),
+            ("xterm", ["-T", title, "-e"] + tail),
         ):
             if shutil.which(term):
                 subprocess.Popen([term] + args)

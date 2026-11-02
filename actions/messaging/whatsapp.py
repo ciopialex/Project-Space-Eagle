@@ -43,11 +43,16 @@ def _dismiss_modals_js(p) -> bool:
         return bool(p.evaluate("""() => {
             const dialog = document.querySelector('[role="dialog"], [aria-modal="true"], [data-testid="confirm-popup"]');
             if (!dialog) return false;
-            const btn = dialog.querySelector('button[aria-label*="Close" i], button[aria-label*="Închide" i], [data-testid="confirm-popup"] button, button');
+            const safe = /^(close|cancel|not now|dismiss|maybe later|later|închide|anulează|nu acum)$/i;
+            const label = b => ((b.getAttribute('aria-label') || '') + '|' + (b.textContent || ''))
+                .split('|').map(t => t.trim()).filter(Boolean);
+            const btn = [...dialog.querySelectorAll('button, [role="button"]')]
+                .find(b => label(b).some(t => safe.test(t)));
             if (btn) {
                 btn.click();
                 return true;
             }
+            document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true}));
             return false;
         }"""))
     except Exception:
@@ -194,7 +199,7 @@ class WhatsAppWeb:
                     row = rows.nth(i)
                     s = row.locator('[data-testid="cell-frame-title"] span, span[title], span[dir="auto"]').first
                     candidate = (s.get_attribute("title") or s.inner_text() or "").strip() if s.count() else ""
-                    if candidate == title or title in (row.inner_text() or "").split("\n"):
+                    if candidate == title:
                         cell = row.locator('[data-testid="cell-frame-container"]').first
                         if cell.count():
                             cell.click(timeout=3_000)

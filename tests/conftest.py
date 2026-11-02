@@ -139,7 +139,7 @@ def user_answers_every_question(monkeypatch):
 
     def issue_then_answer(self, name, args):
         token = original(self, name, args)
-        confirm.note_user_turn()
+        confirm.note_user_turn("yes", typed=True)
         return token
 
     monkeypatch.setattr(confirm.Gate, "issue", issue_then_answer)

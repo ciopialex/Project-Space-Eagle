@@ -94,8 +94,6 @@ function Show-Crest($Pct, $Label) {
   Write-Host "   $Label" -ForegroundColor Gray
 }
 
-# throw, not exit: this runs inside the user's own PowerShell through
-# `irm | iex`, where exit closes their window and takes the message with it.
 function Die($msg) {
   Write-Host "`n Install failed: $msg`n" -ForegroundColor Red
   throw "Aethelark was not installed. Run the same command again once the problem above is fixed."

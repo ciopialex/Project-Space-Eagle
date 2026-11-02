@@ -15,6 +15,8 @@ import os
 from pathlib import Path
 from typing import Callable, Iterable
 
+from core import user_paths
+
 #: provider -> environment variables that carry its key, most specific first.
 ENV_VARS: dict[str, tuple[str, ...]] = {
     "gemini":     ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
@@ -44,7 +46,7 @@ def _default_config_files() -> list[Path]:
     return [
         home / ".local" / "share" / "opencode" / "auth.json",
         home / ".config" / "opencode" / "auth.json",
-        home / ".aethelark" / "api_keys.json",
+        user_paths.api_keys_path(),
     ]
 
 

@@ -71,12 +71,24 @@ def _plat() -> str:
 
 
 def _module(name: str, pip: str, why: str) -> Check:
+    import importlib.util
+    import warnings
     try:
-        importlib.import_module(name)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            importlib.import_module(name)
         return Check(why, OK)
     except Exception as e:
-        return Check(why, MISSING, str(e)[:70],
-                     fix=_pip(pip), auto=True)
+        try:
+            installed = importlib.util.find_spec(name) is not None
+        except Exception:
+            installed = False
+        if not installed:
+            return Check(why, MISSING, str(e)[:70], fix=_pip(pip), auto=True)
+        if isinstance(e, KeyError) and str(e).strip("'\"") in ("DISPLAY", "WAYLAND_DISPLAY"):
+            return Check(why, UNKNOWN, "no desktop session here",
+                         fix="run eagle --doctor from a terminal on your desktop")
+        return Check(why, MISSING, f"installed but would not start: {str(e)[:60]}")
 
 
 def _structural_grounding() -> Check:
@@ -388,7 +400,7 @@ def report(checks: list[Check]) -> str:
         lines.append(f"  {len(broken)} need attention on {_plat()}"
                      + (f"; {auto} can be fixed automatically with --fix."
                         if auto else "."))
-    return "\n".join(lines)
+    return "\n".join(lines).replace(str(Path.home()), "~")
 
 
 def main(argv=None) -> int:

@@ -14,14 +14,16 @@ Choices here are probed against the real key, not read off a pricing page
     ("Computer Use is not enabled"), so it must never back a grounding path.
   - `gemini-2.5-pro` is retired — 404 NOT_FOUND on this key.
 
-The live/native-audio models are deliberately absent. Voice runs on a
-different API surface (LiveConnect), its latency baseline was tuned against
-the model it names, and swapping it is a separate piece of work with its own
-measurements. It stays pinned at its call site until then.
+VOICE runs on a different API surface (LiveConnect) and its latency baseline
+was tuned against the model it names; changing its default is a separate
+piece of work with its own measurements.
 """
 from __future__ import annotations
 
 import os
+
+VOICE = os.environ.get("AETHELARK_MODEL_VOICE",
+                       "models/gemini-2.5-flash-native-audio-preview-12-2025")
 
 #: Proven-stable workhorse: general reasoning, tool selection, everyday turns.
 #: Also the model Google recommends for computer_use, which keeps the

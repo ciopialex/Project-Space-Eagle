@@ -22,12 +22,11 @@
 #   AETHELARK_MODULES=<list> modules to add during the install, comma separated
 #                            (default none: the app's first-run screen offers them)
 #   AETHELARK_NO_LAUNCH=1    install, but do not start the eagle
-#   AETHELARK_SKIP_BROWSER=1 skip the eagle's own browser (~150 MB)
+#   AETHELARK_SKIP_BROWSER=1 skip the eagle's own browser (about 650 MB)
 set -euo pipefail
 
-# Everything below is one { } group, closed on the last line. bash parses a
-# group whole before running any of it, so a download cut short by the network
-# runs nothing instead of running half an installer.
+# One { } group to the last line: bash parses it whole before running any of
+# it, so a truncated download runs nothing.
 {
 
 REPO="${AETHELARK_REPO:-https://github.com/ciopialex/Project-Space-Eagle.git}"
@@ -38,10 +37,8 @@ HOME_DIR="${AETHELARK_APP:-${AETHELARK_HOME:-$EAGLE_HOME/app}}"
 INSTALL_URL="https://get.aethelark.com"
 BIN_DIR="$HOME/.local/bin"
 PY_VERSION="3.12"
-# PATH as the user's shell had it. The install puts ~/.local/bin on its own
-# PATH early (to find uv), so checking PATH later always found the eagle there
-# and the shell startup files were never given it.
 USER_PATH="$PATH"
+NEED_MB=3000
 
 # ---------------------------------------------------------------- presentation
 ESC=$'\033'; RESET="${ESC}[0m"
@@ -75,13 +72,11 @@ EAGLE_BOT=(
 CORE_W=14                 # cells inside the bracket glyphs; even keeps it centred
 STATE="${TMPDIR:-/tmp}/.aethelark-install.$$"
 ANIM_PID=""
-# What uv, git and pip said. Kept after the installer ends: on a failure it is
-# the only record of why, and the last lines are printed with the error.
-LOG="${TMPDIR:-/tmp}/aethelark-install.log"
-: > "$LOG"
-# Redrawing the crest is for a person watching. Piped into a file or a CI log
-# it is tens of kilobytes of escape codes, so there it prints plain lines.
+LOG="$(mktemp "${TMPDIR:-/tmp}/aethelark-install.XXXXXX")"
 INTERACTIVE=""; [ -t 1 ] && INTERACTIVE=1
+if [ -z "$INTERACTIVE" ]; then
+  RESET=""; SLATE=""; BONE=""; DIM=""; AMBER=""; RED=""
+fi
 
 draw() {                  # draw <pct> <phase> <label>
   local pct=$1 phase=$2 label=$3 i line filled bar="" lab
@@ -167,9 +162,11 @@ PKG=""; WANT=""
 if [ "$OS" = "Linux" ]; then
   if command -v apt-get >/dev/null 2>&1; then
     PKG=apt
-    WANT="libegl1 libnss3 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
-          libxcb-keysyms1 libxcb-shape0 libgl1 libportaudio2 \
-          git curl gir1.2-atspi-2.0 libcairo2-dev pkg-config build-essential"
+    WANT="libegl1 libgl1 libgbm1 libnss3 libfontconfig1 libdbus-1-3 \
+          libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 \
+          libxcb-shape0 libxcb-image0 libxcb-render-util0 libx11-xcb1 \
+          libxcomposite1 libxdamage1 libxrandr2 libxtst6 libxfixes3 libxkbfile1 \
+          libportaudio2 git curl gir1.2-atspi-2.0 libcairo2-dev pkg-config build-essential"
     # libasound2t64 replaced libasound2 (Ubuntu 24.04). They are alternatives,
     # not a pair: installing both can conflict, so exactly one is wanted.
     policy="$(apt-cache policy libasound2t64 2>/dev/null || true)"
@@ -186,10 +183,10 @@ if [ "$OS" = "Linux" ]; then
     fi
   elif command -v dnf >/dev/null 2>&1; then
     PKG=dnf
-    WANT="portaudio libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms nss mesa-libEGL git curl"
+    WANT="portaudio libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms xcb-util-image xcb-util-renderutil nss mesa-libEGL mesa-libgbm libXcomposite libXdamage libXrandr libXtst libXfixes libxkbfile git curl"
   elif command -v pacman >/dev/null 2>&1; then
     PKG=pacman
-    WANT="portaudio libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms nss git curl"
+    WANT="portaudio libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms xcb-util-image xcb-util-renderutil nss mesa libxcomposite libxdamage libxrandr libxtst libxfixes libxkbfile git curl"
   fi
 fi
 
@@ -220,7 +217,7 @@ if [ -n "$PKG" ]; then
     if [ -n "$SUDO" ] && ! sudo -n true 2>/dev/null; then
       COUNT="$(printf '%s' "$MISSING" | wc -w | tr -d ' ')"
       NOUN="libraries"; [ "$COUNT" = "1" ] && NOUN="library"
-      printf '\n  Aethelark needs %s small system %s (display and audio).\n' "$COUNT" "$NOUN"
+      printf '\n  Aethelark needs %s system %s (display, audio and build tools).\n' "$COUNT" "$NOUN"
       printf '  Linux will ask for your password once. Aethelark never sees it.\n\n'
       sudo -v || die "permission to install system libraries was not given.
    Run this once, then run the installer again:
@@ -229,19 +226,26 @@ if [ -n "$PKG" ]; then
     printf '  Installing them…\n'
     case "$PKG" in
       apt)
-        $SUDO apt-get update -qq >/dev/null 2>&1 || true
+        APT=($SUDO env DEBIAN_FRONTEND=noninteractive apt-get)
+        "${APT[@]}" update -qq </dev/null >/dev/null 2>&1 || true
         # shellcheck disable=SC2086
-        if ! $SUDO apt-get install -y -qq --no-install-recommends $MISSING >"$STATE.apt.log" 2>&1; then
+        if ! "${APT[@]}" install -y -qq --no-install-recommends $MISSING </dev/null >"$STATE.apt.log" 2>&1; then
           for pkg in $MISSING; do
-            $SUDO apt-get install -y -qq --no-install-recommends "$pkg" >>"$STATE.apt.log" 2>&1 || true
+            "${APT[@]}" install -y -qq --no-install-recommends "$pkg" </dev/null >>"$STATE.apt.log" 2>&1 || true
           done
         fi ;;
       dnf)    # shellcheck disable=SC2086
-              $SUDO dnf install -y -q $MISSING >"$STATE.apt.log" 2>&1 || true ;;
+              $SUDO dnf install -y -q $MISSING </dev/null >"$STATE.apt.log" 2>&1 || true ;;
       pacman) # shellcheck disable=SC2086
-              $SUDO pacman -S --needed --noconfirm $MISSING >"$STATE.apt.log" 2>&1 || true ;;
+              $SUDO pacman -S --needed --noconfirm $MISSING </dev/null >"$STATE.apt.log" 2>&1 || true ;;
     esac
   fi
+fi
+
+FREE_MB="$(df -Pm "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')"
+if [ -n "$FREE_MB" ] && [ "$FREE_MB" -lt "$NEED_MB" ] 2>/dev/null; then
+  die "Aethelark needs about $((NEED_MB / 1000)) GB of free space and this disk has $((FREE_MB / 1000)) GB.
+   Free some space, then run the installer again."
 fi
 
 step 0 "Starting…"
@@ -252,8 +256,13 @@ fi
 
 step 12 "Fetching the runtime…"
 if ! command -v uv >/dev/null 2>&1; then
-  curl -fsSL https://astral.sh/uv/install.sh | sh >>"$LOG" 2>&1 \
-    || die "could not install uv (needed to provide Python)"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://astral.sh/uv/install.sh | sh >>"$LOG" 2>&1 \
+      || die "could not install uv (needed to provide Python)"
+  else
+    wget -qO- https://astral.sh/uv/install.sh | sh >>"$LOG" 2>&1 \
+      || die "could not install uv (needed to provide Python)"
+  fi
 fi
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 command -v uv >/dev/null 2>&1 || die "uv installed but is not on PATH"
@@ -262,9 +271,6 @@ step 24 "Installing Python ${PY_VERSION}…"
 uv python install "$PY_VERSION" >>"$LOG" 2>&1 || die "could not install Python ${PY_VERSION}"
 
 step 34 "Downloading Aethelark…"
-# A Mac that never installed Apple's command line tools has a /usr/bin/git that
-# only opens an "install developer tools" dialog and fails. Say so, rather than
-# "could not download".
 if ! git --version >/dev/null 2>&1; then
   if [ "$OS" = "Darwin" ]; then
     die "macOS needs Apple's Command Line Tools to download Aethelark (they provide git).
@@ -332,7 +338,7 @@ if [ "$OS" = "Linux" ]; then
   step 72 "Adding screen understanding…"
   # Not fatal: without it the eagle still works, by sight alone, and
   # `eagle --doctor` says so and what to install.
-  uv pip install --python "$VENV_PY" -q PyGObject >/dev/null 2>&1 || true
+  uv pip install --python "$VENV_PY" -q PyGObject >>"$LOG" 2>&1 || true
   # GNOME only publishes an app's buttons to that interface when this is on.
   command -v gsettings >/dev/null 2>&1 \
     && gsettings set org.gnome.desktop.interface toolkit-accessibility true \
@@ -341,6 +347,18 @@ fi
 
 step 78 "Verifying…"
 if ! IMPORT_ERR="$("$VENV_PY" -c 'import PyQt6.QtWebEngineWidgets, google.genai' 2>&1)"; then
+  MISSING_SO="$(printf '%s' "$IMPORT_ERR" | sed -n 's/.*\(lib[A-Za-z0-9_+.-]*\.so[0-9.]*\): cannot open shared object file.*/\1/p' | head -n 1)"
+  if [ -n "$MISSING_SO" ]; then
+    case "$PKG" in
+      apt) HINT="   Find the package that has it:  apt-file search $MISSING_SO" ;;
+      dnf) HINT="   Install it with:  sudo dnf install '*/$MISSING_SO'" ;;
+      pacman) HINT="   Find the package that has it:  pacman -F $MISSING_SO" ;;
+      *) HINT="   Install the package that provides it with your package manager." ;;
+    esac
+    die "a system library the window needs is missing: $MISSING_SO
+$HINT
+   Then run the installer again."
+  fi
   die "the install is missing critical components:
 $(printf '%s' "$IMPORT_ERR" | tail -n 6)
 $( [ -f "$STATE.apt.log" ] && { echo '   System libraries said:'; tail -n 6 "$STATE.apt.log"; } )"
@@ -356,7 +374,7 @@ if [ "${AETHELARK_SKIP_BROWSER:-}" != "1" ]; then
   step 82 "Fetching the eagle's own browser…"
   # web_agency drives a private browser, separate from the user's own. Not
   # fatal: everything else works without it, and `eagle --doctor` says so.
-  "$VENV_PY" -m playwright install chromium >/dev/null 2>&1 || true
+  "$VENV_PY" -m playwright install chromium >>"$LOG" 2>&1 || true
 fi
 
 # Echo cancellation is not applied here. It rewrites the system's default
@@ -388,8 +406,6 @@ NEW_TERMINAL=""
 case ":$USER_PATH:" in
   *":$BIN_DIR:"*) ;;
   *) NEW_TERMINAL=1
-     # A new Mac has no ~/.zshrc, and the loop below only edits files that
-     # exist, so `eagle` was never found in the next terminal.
      [ "$OS" = "Darwin" ] && [ ! -e "$HOME/.zshrc" ] && touch "$HOME/.zshrc"
      for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
        [ -f "$rc" ] && ! grep -q '.local/bin' "$rc" 2>/dev/null \
@@ -485,6 +501,10 @@ if [ -n "${UPDATE_SKIPPED:-}" ]; then
 fi
 
 if [ "${AETHELARK_NO_LAUNCH:-}" = "1" ]; then
+  exit 0
+fi
+if [ "$OS" = "Linux" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  printf '   %sThere is no screen here, so it was not opened. Open Aethelark from your desktop.%s\n\n' "$SLATE" "$RESET"
   exit 0
 fi
 exec "$BIN_DIR/eagle"
