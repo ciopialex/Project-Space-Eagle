@@ -4090,13 +4090,22 @@ class AethelarkLive:
         if loop is None or session is None:
             return
         self._unprompted_turn = True
-        if getattr(esc, "informational", False):
+        notice = getattr(self.ui, "show_notice", None)
+        if getattr(esc, "kind", "") == "done":
+            text = (f"[DONE] {esc.agent} {esc.reason} Tell the user in one or "
+                    f"two short sentences what it did.")
+            if notice:
+                notice(f"{esc.agent} is done")
+        elif getattr(esc, "informational", False):
             text = (f"[NOTE] {esc.agent} {esc.reason}; it carried on without it. "
                     f"Tell the user in one short sentence only if it stops the work.")
         else:
-            text = (f"[HELD] {esc.agent} is blocked and needs the user's OK. Why: "
+            text = (f"[HELD] {esc.agent} is waiting for the user's OK. Why: "
                     f"{esc.reason}. It asks: {esc.excerpt}. Tell the user in one "
-                    f"short sentence and ask whether to allow it.")
+                    f"short sentence and ask whether to allow it. If they say yes, "
+                    f"call swarm_mode with action authorize; if no, action deny.")
+            if notice:
+                notice(f"{esc.agent} needs your OK")
         asyncio.run_coroutine_threadsafe(
             session.send_client_content(turns={"parts": [{"text": text}]},
                                         turn_complete=True), loop)

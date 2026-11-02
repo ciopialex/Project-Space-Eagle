@@ -25,29 +25,25 @@ None of it is necessary. Measured against `claude` 2.1.235 on 2026-08-19:
     acknowledgement it never had — `session.interrupt()` on a PTY writes 0x03
     and hopes.
 
-What this changes about permissions, deliberately stated
--------------------------------------------------------
-The PTY path let `core/prompt_reflex.py` adjudicate each approval prompt as it
-appeared on screen: auto-answer the recognised-safe ones, escalate the rest to
-a human and let the agent block. That model depended on the prompt being
-*rendered*, and it cannot be reproduced here — this CLI has no
-`--permission-prompt-tool`, so it never asks over the stream. It decides from
-`--permission-mode`, `--allowed-tools` and its settings.
+Permissions
+-----------
+`--permission-prompt-tool stdio` makes Claude ask over the stream before
+anything its rules do not already allow, and wait for the answer:
 
-So the headless path is coarser by construction, and the response is to make it
-coarser in the SAFE direction:
+    <- {"type":"control_request","request_id":…,
+        "request":{"subtype":"can_use_tool","tool_name":"Bash",
+                   "input":{"command":…},"description":…}}
+    -> {"type":"control_response","response":{"subtype":"success",
+        "request_id":…,"response":{"behavior":"allow","updatedInput":…}}}
 
-  * the default mode is `acceptEdits`, never `bypassPermissions`. A swarm agent
-    exists to edit files in its own worktree; it does not need blanket
-    approval, and `--dangerously-skip-permissions` is refused outright rather
-    than left as an option someone reaches for at 2am.
-  * whatever is refused comes back as structured `permission_denials` on the
-    result, which the caller routes to `core/escalations.py`.
+Measured against `claude` 2.1.316 on 2026-11-03. Without the flag every such
+request was denied, so an agent asked to "run it" wrote the file and stopped.
 
-The behavioural difference worth knowing: an agent no longer BLOCKS waiting for
-a human to approve something. It proceeds without that tool and the denial is
-reported afterwards. That is a real change of shape — visible and recoverable
-rather than silent, but not the same as stopping.
+The answer follows `core/prompt_reflex.py`'s rule: a danger pattern, or a file
+outside the project, is held for the user (`core/escalations.py`) and the agent
+waits; anything else is allowed and written to the transcript. The mode is
+`default`, so every change comes here: `acceptEdits` lets Claude delete inside
+the project on its own (measured: `rm -rf build` ran without a request).
 """
 from __future__ import annotations
 
@@ -59,6 +55,7 @@ import threading
 import time
 from itertools import count
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable, Sequence
 
 from core.agent_stream import AgentEvent, RESULT, STREAM_PARSERS, THINKING
@@ -69,29 +66,15 @@ from core.agent_stream import AgentEvent, RESULT, STREAM_PARSERS, THINKING
 #: it replaces merely because nobody is looking at a screen any more.
 ALLOWED_PERMISSION_MODES = ("acceptEdits", "manual", "plan", "default")
 
-#: Agents with a verified streaming-session protocol. Same rule as
-#: `agent_stream.HEADLESS_AGENTS`: membership requires a real capture, not a
-#: promising line in `--help`.
-BUILD_TOOLS = (
-    "Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)", "Bash(git diff:*)",
-    "Bash(git log:*)", "Bash(git mv:*)", "Bash(git rm:*)", "Bash(git restore:*)",
-    "Bash(ls:*)", "Bash(cat:*)", "Bash(mkdir:*)", "Bash(touch:*)", "Bash(cp:*)",
-    "Bash(mv:*)", "Bash(pwd)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)",
-    "Bash(npm install:*)", "Bash(npm ci:*)", "Bash(npm run:*)", "Bash(npm test:*)",
-    "Bash(pnpm install:*)", "Bash(pnpm run:*)", "Bash(pnpm test:*)",
-    "Bash(yarn install:*)", "Bash(yarn run:*)", "Bash(yarn test:*)",
-    "Bash(pip install:*)", "Bash(python3 -m venv:*)", "Bash(python3 -m pip install:*)",
-    "Bash(python3 -m pytest:*)", "Bash(pytest:*)", "Bash(python3 -m py_compile:*)",
-    "Bash(cargo build:*)", "Bash(cargo test:*)", "Bash(go build:*)", "Bash(go test:*)",
-    "Bash(make:*)",
-)
+#: How long a held request waits for the user before it is refused.
+HOLD_S = 600.0
 
 SESSION_AGENTS = {"claude_code": "claude", "antigravity_cli": "agy"}
 PROTOCOLS = {"claude_code": "claude", "antigravity_cli": "agy"}
 
 
 def session_argv(agent_key: str, *, cwd: Path | str,
-                 permission_mode: str = "acceptEdits",
+                 permission_mode: str = "default",
                  model: str = "",
                  allowed_tools: Sequence[str] = (),
                  disallowed_tools: Sequence[str] = ()) -> list[str]:
@@ -119,9 +102,8 @@ def session_argv(agent_key: str, *, cwd: Path | str,
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
-            "--permission-mode", permission_mode]
-    if not allowed_tools and permission_mode == "acceptEdits":
-        allowed_tools = BUILD_TOOLS
+            "--permission-mode", permission_mode,
+            "--permission-prompt-tool", "stdio"]
     if model:
         argv += ["--model", model]
     if allowed_tools:
@@ -146,7 +128,7 @@ class HeadlessSession:
                  argv: Sequence[str] | None = None,
                  on_event: Callable[[AgentEvent], None] | None = None,
                  on_line: Callable[[str], None] | None = None,
-                 permission_mode: str = "acceptEdits",
+                 permission_mode: str = "default",
                  model: str = "") -> None:
         self.agent_key = agent_key
         self.agent_name = agent_name
@@ -167,6 +149,10 @@ class HeadlessSession:
         self._parser = STREAM_PARSERS[self.protocol]()
         self.last_activity = time.time()
         self.turn_open = False
+        self.last_text = ""
+        self.last_result: AgentEvent | None = None
+        self.last_result_at = 0.0
+        self._held: list[str] = []
         self._denied: set[str] = set()
         self._hooks: list[Callable[[str], None]] = []
         if on_line is not None:
@@ -241,6 +227,10 @@ class HeadlessSession:
             obj = None
         if isinstance(obj, dict) and obj.get("type") == "control_response":
             return
+        if (isinstance(obj, dict) and obj.get("type") == "control_request"
+                and (obj.get("request") or {}).get("subtype") == "can_use_tool"):
+            self._ask(obj)
+            return
 
         for event in self._parser.feed(raw):
             # Reasoning is private and voluminous. It was the single biggest
@@ -249,8 +239,95 @@ class HeadlessSession:
                 continue
             self._emit(event)
 
+    # ---------------------------------------------------------- permissions
+
+    def _judge(self, tool: str, inp: dict) -> tuple[str, tuple[str, str] | None]:
+        """(what it wants to do, why it must be held or None)."""
+        from core.prompt_reflex import find_danger
+        path = str(inp.get("file_path") or inp.get("notebook_path") or inp.get("path") or "")
+        if tool == "Bash":
+            what = str(inp.get("command") or "")
+        elif path:
+            what = f"{tool} {path}"
+        elif inp.get("url"):
+            what = f"{tool} {inp.get('url')}"
+        else:
+            what = f"{tool} {json.dumps(inp, default=str)[:200]}"
+        what = " ".join(what.split())[:300]
+        danger = find_danger(what)
+        if danger:
+            return what, danger
+        if path:
+            target = Path(path).expanduser()
+            if not target.is_absolute():
+                target = self.project_dir / target
+            root = self.project_dir.resolve()
+            target = target.resolve()
+            if target != root and root not in target.parents:
+                return what, ("OUTSIDE_PROJECT", "it touches a file outside the project folder")
+        return what, None
+
+    def _ask(self, obj: dict) -> None:
+        req = obj.get("request") or {}
+        rid = str(obj.get("request_id") or "")
+        tool = str(req.get("tool_name") or "")
+        inp = req.get("input") if isinstance(req.get("input"), dict) else {}
+        what, held = self._judge(tool, inp)
+        if held is None:
+            self._answer(rid, "allow", inp)
+            self._say(f"· allowed: {what}")
+            return
+
+        from core import escalations
+        said = " ".join(str(req.get("description") or inp.get("description") or "").split())
+        answered = threading.Event()
+
+        def on_resolve(verdict: str) -> None:
+            answered.set()
+            if verdict != "allow":
+                self._denied.add(what)
+            self._answer(rid, verdict, inp)
+            self._say(f"· {'allowed' if verdict == 'allow' else 'refused'}: {what}")
+
+        esc = escalations.raise_escalation(
+            self.agent_name, SimpleNamespace(rule_id=held[0], reason=held[1]),
+            f"{said}\n{what}" if said else what, player=self.player,
+            on_resolve=on_resolve)
+        self._held.append(esc.id)
+
+        def expire() -> None:
+            if not answered.wait(HOLD_S):
+                escalations.resolve(esc.id, "deny", by="timeout")
+        threading.Thread(target=expire, daemon=True, name="agent-hold").start()
+
+    def _answer(self, request_id: str, verdict: str, inp: dict) -> bool:
+        if verdict == "allow":
+            response = {"behavior": "allow", "updatedInput": inp}
+        else:
+            response = {"behavior": "deny", "message": (
+                "The user did not allow this. Do not try it again. Carry on "
+                "without it, or stop and say what you need.")}
+        return self._write({"type": "control_response",
+                            "response": {"subtype": "success",
+                                         "request_id": request_id,
+                                         "response": response}})
+
+    def _say(self, text: str) -> None:
+        try:
+            self._log.write(text + "\n")
+            self._log.flush()
+        except (OSError, ValueError):
+            pass
+        for hook in list(self._hooks):
+            try:
+                hook(text)
+            except Exception:
+                pass
+
     def _emit(self, event: AgentEvent) -> None:
         text = self._render(event)
+        if event.kind == "text" and event.text.strip():
+            self.last_text = event.text.strip()
 
         # The terminal `result` repeats the final assistant message verbatim,
         # so a plain reply was written to the transcript twice — measured
@@ -265,16 +342,7 @@ class HeadlessSession:
             self._last_line = text
 
         if text:
-            try:
-                self._log.write(text + "\n")
-                self._log.flush()
-            except (OSError, ValueError):
-                pass
-            for hook in list(self._hooks):
-                try:
-                    hook(text)
-                except Exception:
-                    pass
+            self._say(text)
         if self.on_thought is not None and event.kind in ("text", "tool_use"):
             try:
                 self.on_thought(self.agent_name,
@@ -285,6 +353,8 @@ class HeadlessSession:
 
         if event.kind == RESULT:
             self.turn_open = False
+            self.last_result = event
+            self.last_result_at = time.time()
             self._report_denials(event.data.get("permission_denials") or [])
             if self.on_result is not None:
                 try:
@@ -408,6 +478,10 @@ class HeadlessSession:
         if self._closed:
             return
         self._closed = True
+        if self._held:
+            from core import escalations
+            for esc_id in self._held:
+                escalations.resolve(esc_id, "deny", by="session closed")
         for pipe in (self._proc.stdin,):
             try:
                 if pipe is not None:

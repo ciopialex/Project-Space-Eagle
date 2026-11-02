@@ -883,9 +883,48 @@ def swarm_narrate() -> str:
     progress must never queue behind the work it is asking about. The eagle
     delegates — so it stays free to talk while its agents build.
     """
-    if not _ORCHESTRATORS:
-        return "No swarm is running — I haven't got anyone building anything yet."
-    return " ".join(o.narrate() for o in list(_ORCHESTRATORS.values()))
+    parts = [o.narrate() for o in list(_ORCHESTRATORS.values())]
+    parts += _solo_sessions(set(_ORCHESTRATORS))
+    from core import escalations
+    for e in escalations.pending()[:2]:
+        parts.append(f"{e.agent} is waiting for your OK: {e.excerpt[:120]}.")
+    if not parts:
+        return "No coding agent is working right now."
+    return " ".join(parts)
+
+
+def _short(text: str, n: int) -> str:
+    text = re.sub(r"`[^`]*`|/\S+", lambda m: m.group(0) if len(m.group(0)) < 30 else "…",
+                  " ".join((text or "").split()))
+    return text if len(text) <= n else text[:n].rsplit(" ", 1)[0] + "…"
+
+
+def _end(sentence: str) -> str:
+    return sentence if sentence.rstrip().endswith((".", "!", "?", "…")) else sentence + "."
+
+
+def _solo_sessions(swarm_roots: set[str]) -> list[str]:
+    """One sentence per agent session started on its own (developer_mode)."""
+    out = []
+    for (_key, sdir), sess in POOL.all_sessions().items():
+        if not sess.is_alive() or any(sdir == r or sdir.startswith(r + "/") for r in swarm_roots):
+            continue
+        name = getattr(sess, "agent_name", "An agent")
+        project = Path(sdir).name
+        last = _short(getattr(sess, "last_text", ""), 140)
+        if getattr(sess, "turn_open", False):
+            mins = int((time.time() - sess.last_activity) // 60) if hasattr(sess, "last_activity") else 0
+            line = f"{name} is working in {project}"
+            line += f", last saying: {last}" if last else ""
+            line += f" (quiet for {mins} minutes)" if mins >= 2 else ""
+            out.append(_end(line))
+        elif (getattr(sess, "last_result", None) is not None
+              and time.time() - getattr(sess, "last_result_at", 0) < 1800):
+            r = sess.last_result
+            said = _short(r.text, 160)
+            out.append(_end(f"{name} finished in {project}" + (f": {said}" if said and r.ok else
+                       " with a problem" + (f": {said}" if said else ""))))
+    return out
 
 
 def swarm_snapshot() -> dict:
@@ -1010,11 +1049,68 @@ def _derive_project_dir(goal: str) -> Path | None:
     return _ACTIVE_PROJECT
 
 
+def _answer_without_project(action: str, parameters: dict) -> str:
+    """Actions about agents that are already running, wherever they run."""
+    if action in ("authorize", "deny"):
+        # Closes the escalation loop: the reflex tier refused to answer a
+        # dangerous prompt, the human heard the question, and this delivers
+        # their decision back to the blocked agent.
+        from core import confirm, escalations
+        verdict = "allow" if action == "authorize" else "deny"
+        esc = escalations.find((parameters.get("escalation_id") or "").strip())
+        if esc is None:
+            return "Nothing is waiting for authorization right now."
+        if verdict == "allow":
+            said = confirm.answer(confirm.heard_since(esc.turn))
+            if said == "no":
+                verdict = "deny"
+            elif said != "yes":
+                return (f"Not allowed yet: the user has not said yes since "
+                        f"{esc.agent} asked. Ask them out loud and wait for "
+                        f"their answer.")
+        escalations.resolve(esc.id, verdict)
+        if esc.on_resolve is not None:
+            if verdict == "deny":
+                return (f"Refused. {esc.agent} was told no and carries on "
+                        f"without it. Tell the user in one short sentence.")
+            return (f"Allowed. {esc.agent} goes ahead. Tell the user in one "
+                    f"short sentence.")
+        if verdict == "deny":
+            return (f"Denied. {esc.agent} stays blocked on that prompt — "
+                    f"tell it what to do instead, or stop the swarm.")
+        # Find the live watcher for that agent and let IT do the typing.
+        for (_key, _sdir), sess in POOL.all_sessions().items():
+            w = getattr(sess, "watcher", None)
+            if w is not None and getattr(w, "agent_name", "") == esc.agent:
+                if w.authorize_pending():
+                    return f"Authorized — told {esc.agent} to go ahead."
+                return f"{esc.agent} is no longer running; nothing to authorize."
+        return f"Couldn't find a live session for {esc.agent}."
+
+    if action in ("kill_all", "panic"):
+        return halt_all()
+    if action == "processes":
+        from core import proc_registry
+        return proc_registry.describe()
+    if action == "escalations":
+        from core import escalations
+        p = escalations.pending()
+        if not p:
+            return "Nothing is blocked — no agent is waiting on you."
+        return " ".join(
+            f"{e.agent} has been waiting {e.waiting_s:.0f} seconds to run "
+            f"{e.excerpt[:100]}, because {e.reason}."
+            for e in p[:3])
+    return ""
+
+
 async def swarm_orchestrate(parameters: dict, player=None) -> str:
     """Voice-tool entry point. Actions: plan | execute | launch | status |
     broadcast | review | stop."""
     global _ACTIVE_PROJECT
     action = (parameters.get("action") or "status").strip().lower()
+    if action in ("authorize", "deny", "kill_all", "panic", "processes", "escalations"):
+        return await asyncio.to_thread(_answer_without_project, action, parameters)
     directory = (parameters.get("directory") or "").strip()
     goal = (parameters.get("goal") or parameters.get("mission") or "").strip()
     if not directory:
@@ -1139,32 +1235,6 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
             orch.review,
             (parameters.get("agent") or "").strip(),
             bool(parameters.get("deep")))
-    if action in ("authorize", "deny"):
-        # Closes the escalation loop: the reflex tier refused to answer a
-        # dangerous prompt, the human heard the question, and this delivers
-        # their decision back to the blocked agent.
-        from core import escalations
-        esc_id = (parameters.get("escalation_id") or "").strip()
-        verdict = "allow" if action == "authorize" else "deny"
-        esc = (escalations.resolve(esc_id, verdict) if esc_id
-               else escalations.resolve_oldest(verdict))
-        if esc is None:
-            return "Nothing is waiting for authorization right now."
-        if verdict == "deny":
-            return (f"Denied. {esc.agent} stays blocked on that prompt — "
-                    f"tell it what to do instead, or stop the swarm.")
-        # Find the live watcher for that agent and let IT do the typing.
-        for (_key, _sdir), sess in POOL.all_sessions().items():
-            w = getattr(sess, "watcher", None)
-            if w is not None and getattr(w, "agent_name", "") == esc.agent:
-                if w.authorize_pending():
-                    return f"Authorized — told {esc.agent} to go ahead."
-                return f"{esc.agent} is no longer running; nothing to authorize."
-        return f"Couldn't find a live session for {esc.agent}."
-
-    if action in ("kill_all", "panic"):
-        return halt_all()
-
     if action in ("open", "preview"):
         # "show me it" / "open the site" — also the manual path when a mission
         # merged before this existed, or the user closed the tab.
@@ -1175,19 +1245,6 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
                     f"no start script and no index.html.")
         preview.open_in_browser(pv.url)
         return f"Opened it at {pv.url}."
-
-    if action == "processes":
-        from core import proc_registry
-        return proc_registry.describe()
-
-    if action == "escalations":
-        from core import escalations
-        p = escalations.pending()
-        if not p:
-            return "Nothing is blocked — no agent is waiting on you."
-        return " ".join(
-            f"{e.agent} has been waiting {e.waiting_s:.0f} seconds: {e.reason}."
-            for e in p[:3])
 
     if action == "stop":
         return await asyncio.to_thread(orch.stop_all)

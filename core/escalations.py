@@ -24,6 +24,7 @@ import itertools
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 
 _counter = itertools.count(1)
 _lock = threading.Lock()
@@ -44,6 +45,12 @@ class Escalation:
     resolved_at: float | None = None
     verdict: str | None = None        # "allow" | "deny"
     resolved_by: str = ""
+    #: The user turn count when the question was raised: only a yes said
+    #: after it can allow (core.confirm).
+    turn: int = 0
+    #: Answers the agent directly. None for a terminal agent, whose watcher
+    #: types the answer itself.
+    on_resolve: Callable[[str], None] | None = field(default=None, repr=False)
 
     @property
     def waiting_s(self) -> float:
@@ -69,10 +76,11 @@ def add_listener(fn) -> None:
         _LISTENERS.append(fn)
 
 
-def notify(agent: str, text: str) -> None:
-    """Something the user should hear about an agent that needs no decision."""
+def notify(agent: str, text: str, kind: str = "note") -> None:
+    """Something the user should hear about an agent that needs no decision.
+    `kind` is "note" (it carried on without something) or "done"."""
     note = type("Note", (), {"agent": agent, "reason": text, "excerpt": "",
-                             "informational": True, "id": ""})()
+                             "informational": True, "kind": kind, "id": ""})()
     for fn in list(_LISTENERS):
         try:
             fn(note)
@@ -81,14 +89,17 @@ def notify(agent: str, text: str) -> None:
 
 
 def raise_escalation(agent: str, decision, region: str, player=None,
-                     on_new=None) -> "Escalation":
+                     on_new=None, on_resolve=None) -> "Escalation":
     """Record a held prompt and surface it everywhere a human might be looking."""
+    from core import confirm
     esc = Escalation(
         id=f"esc{next(_counter)}",
         agent=agent,
         rule_id=getattr(decision, "rule_id", "UNKNOWN"),
         reason=getattr(decision, "reason", "unrecognised prompt"),
         excerpt=_excerpt(region),
+        turn=confirm.user_turns(),
+        on_resolve=on_resolve,
     )
     with _lock:
         _pending[esc.id] = esc
@@ -139,7 +150,20 @@ def resolve(esc_id: str, verdict: str, by: str = "human") -> "Escalation | None"
     del _resolved[:-50]
     print(f"[Escalation] {esc.id} {verdict.upper()} by {by} "
           f"after {esc.waiting_s:.0f}s — {esc.agent}")
+    if esc.on_resolve is not None:
+        try:
+            esc.on_resolve(verdict)
+        except Exception as e:
+            print(f"[Escalation] {esc.id}: answering the agent failed: {e}")
     return esc
+
+
+def find(esc_id: str = "") -> "Escalation | None":
+    """The pending escalation with that id, or the oldest when no id is given."""
+    if not esc_id:
+        return oldest()
+    with _lock:
+        return _pending.get(esc_id)
 
 
 def resolve_oldest(verdict: str, by: str = "human") -> "Escalation | None":
