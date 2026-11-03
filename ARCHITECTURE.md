@@ -268,7 +268,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/cli/audio/linux.py` | Volume on Linux: PipeWire first, then PulseAudio, then ALSA. |
 | `actions/cli/audio/macos.py` | Volume on macOS, via osascript. |
 | `actions/cli/audio/windows.py` | Volume on Windows, via pycaw's scalar API. |
-| `actions/cli/base.py` | What every clified backend is, and the seam that makes it testable. |
+| `actions/cli/base.py` | What every native backend is. The command runner is injected, so Windows and macOS |
 | `actions/cli/media/linux.py` | Media transport on Linux, over MPRIS — the interface every player already |
 | `actions/cli/media/macos.py` | Media transport on macOS, via osascript — honest partial coverage. |
 | `actions/cli/media/windows.py` | Media transport on Windows, via SMTC. |
@@ -317,7 +317,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/messages_brief.py` | Unread-messages brief across the user's channels (Gmail, WhatsApp, …). |
 | `actions/messaging/telegram.py` |  |
 | `actions/messaging/whatsapp.py` |  |
-| `actions/mission.py` | Run a goal as a sequence of small, verified steps. |
+| `actions/mission.py` | Run a goal as a sequence of small, verified steps. `next` walks one step through |
 | `actions/open_app.py` |  |
 | `actions/proactive.py` | Deciding there is something worth saying, and saying how long it has been. |
 | `actions/pty_session.py` | Persistent PTY session pool for delegated agent CLIs. |
@@ -333,7 +333,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/weather_report.py` | The weather, said out loud. |
 | `actions/web_agency.py` | Use a website the way a person would: one way of perceiving any page and acting in |
 | `actions/web_search.py` | Bounded search across Gemini Grounding and DuckDuckGo. |
-| `actions/youtube_api.py` | The user's own YouTube account, through the API they already authorised. |
+| `actions/youtube_api.py` | The user's own YouTube account through the YouTube Data API, using the Google |
 | `actions/youtube_setup.py` | Connecting YouTube, as one button that knows which wall you are at. |
 | `actions/youtube_video.py` |  |
 
@@ -360,14 +360,14 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/contact_match.py` |  |
 | `core/diag.py` | Terminal output that says what failed and why. |
 | `core/doctor.py` | What is missing, on THIS machine, and the exact command that fixes it. |
-| `core/echo_cancel.py` | The microphone stops hearing the speakers, on every machine. |
+| `core/echo_cancel.py` | Echo cancellation, so the microphone stops hearing the speakers. |
 | `core/escalations.py` | Where held prompts go. |
 | `core/gemini_key.py` | Is this Gemini key one Google will accept? Asked before it is saved. |
 | `core/intent.py` | A hypothesis about what the user wants, formed before the model answers. |
 | `core/journal.py` | The mutation journal: what makes an action undoable, and what proves it isn't. |
 | `core/llm_client.py` | Where a local model would be reached, for an audit that starts nothing. |
 | `core/logsetup.py` | Make sure a log line written is a log line kept. |
-| `core/mic_vad.py` | A client-side voice-activity estimate. Two jobs, and neither gates sending. |
+| `core/mic_vad.py` | A client-side voice-activity estimate for two things the server does not tell us. |
 | `core/mission.py` | What the eagle is trying to do, and how far it has got. |
 | `core/mission_handoff.py` | Tell an outside agent what the eagle IS, before asking it for a plan. |
 | `core/mission_ladder.py` | Ways of doing one step, most exact first: the DOM (exact, in the eagle's browser), |
@@ -376,7 +376,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/mission_store.py` | Keep the mission across a reconnect, and leave a note when it gives up. |
 | `core/models.py` | Which Gemini model each job runs on — in one place, not fourteen. |
 | `core/module_bus/accounts.py` | A module borrows a sign-in the user made in the eagle's own browser. |
-| `core/module_bus/bundle.py` | Reading, writing and installing a `.aem` — the file a buyer downloads. |
+| `core/module_bus/bundle.py` | Reading, writing and installing a .aem, the file a buyer downloads: manifest, |
 | `core/module_bus/bus.py` | Discovery and invocation of module tools. invoke() never raises: every failure (no |
 | `core/module_bus/installer.py` | `eagle install <module>`: one command from nothing to a module the eagle uses. |
 | `core/module_bus/manifest.py` | What a module says it can do, and how that becomes an argv. |
@@ -388,13 +388,13 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/prompt_reflex.py` | Reflex layer — deterministic classification of agent terminal prompts. |
 | `core/quota.py` | Tell a rate limit apart from a broken tool. |
 | `core/run_cmd.py` | External commands with a deadline that actually reclaims what it kills. |
-| `core/safe_exec.py` | Run model-generated Python without handing it the machine. |
+| `core/safe_exec.py` | Run model-generated Python (desktop_control's `task`) without handing it the |
 | `core/session_port.py` | Act on the browser the eagle opened for the user, through the DOM. browser_control |
 | `core/setup_modules.py` | Adding the modules a user chose in setup, while they finish setting up. |
 | `core/tool_fallback.py` | When a narrow tool fails, name the general one that can still do the job. |
 | `core/tool_result.py` | ToolResult — the structured contract every tool result normalizes to. |
 | `core/trace.py` | Terminal trace for the mission pipeline. |
-| `core/turn_trace.py` | Where a voice turn actually spends its time. |
+| `core/turn_trace.py` | Where a voice turn spends its time, as the user experiences it: |
 | `core/ui_contract.py` | The boundary between the eagle and the human. |
 | `core/ui_recorder.py` | A UI that shows the user nothing and remembers everything. |
 | `core/update_check.py` | Is there a newer version of the eagle than the one running? |

@@ -1,19 +1,10 @@
-"""Run a goal as a sequence of small, verified steps.
+"""Run a goal as a sequence of small, verified steps. `next` walks one step through
+the ladder and advances only if it actually worked; the model calls it until done
+or blocked. No approval prompts between steps: advance() runs only on a confirmed
+step. The store remembers failed rungs across a reconnect.
 
-`next` is the whole design in one call: load the mission, walk ONE step
-through the ladder, and advance only if that step actually worked. The model
-calls it until the mission reports done or blocked. It cannot thrash — the
-ladder refuses a rung that already failed, and the store remembers that across
-a reconnect, which is the difference between surviving the network and merely
-surviving a turn.
-
-There are no approval prompts between steps. That is deliberate: a leader
-delegates and trusts. What earns the trust is that `advance()` is only ever
-called on a confirmed step — never because a tool returned.
-
-Every seam that touches the world is a module attribute (`_store_path`,
-`_report_path`, `_plan_locally`, `_runners`) so the rules can be tested
-without a browser, a model, or the real config directory.
+World-touching seams (_store_path, _report_path, _plan_locally, _runners) are
+module attributes so tests need no browser, model or config.
 """
 from __future__ import annotations
 
@@ -26,16 +17,11 @@ from core.tool_result import ToolResult
 
 _ACTIONS = ("start", "next", "status", "abandon")
 
-#: Names the model reaches for that mean one of the above. Live, it called
-#: `action='plan'` before `action='start'` — refused correctly, then
-#: self-corrected, at the cost of a full round trip. Same lesson as
-#: `type_text`: cheaper to accept the name than to be right about it.
+# Names the model reaches for that mean one of the above.
 _ALIASES = {"plan": "start", "begin": "start", "go": "next", "continue": "next",
             "step": "next", "resume": "next", "progress": "status",
             "stop": "abandon", "cancel": "abandon"}
 
-
-# ── seams ───────────────────────────────────────────────────────────────────
 
 def _store_path() -> Path:
     return store.default_path()
@@ -46,25 +32,16 @@ def _report_path() -> Path:
 
 
 def _plan_locally(goal: str):
-    """Break the goal into steps.
-
-    The other two sources the user described plug in HERE and nowhere else: a
-    researched blueprint (look up the documented path before guessing at it),
-    and a delegated plan from an outside agent, which
-    `core/mission_handoff.context_pack` already knows how to ask for.
+    """Break the goal into steps. Where a researched blueprint or a delegated plan
+    (core/mission_handoff.context_pack) would plug in.
     """
     from core.mission_planner import plan
     return plan(goal)
 
 
 def _release_browsers() -> None:
-    """Leave nothing running that this mission started.
-
-    Best-effort and never raises: a mission that SUCCEEDED must not be
-    reported as failed because a browser would not close. But it must be
-    attempted every single time a mission ends, however it ends — a leaked
-    Chrome also holds the profile lock, and that is what previously made the
-    eagle's own browser refuse to start and blame Playwright for it.
+    """Leave nothing running that this mission started, however it ended. Best-
+    effort, never raises: a leaked Chrome holds the profile lock.
     """
     try:
         from actions.browser_control import _registry
@@ -72,8 +49,7 @@ def _release_browsers() -> None:
     except Exception as e:
         print(f"[Mission] could not release browsers: {e}")
 
-    # Belt and braces: the eagle's own headless browser is a separate process
-    # from the user-facing one and closes through its own door.
+    # The eagle's own browser closes separately.
     try:
         from actions.web_agency import web_agency
         web_agency(parameters={"action": "close"})
@@ -87,31 +63,25 @@ def _release_browsers() -> None:
 
 
 def _observe():
-    """Fingerprint whatever the user's window is showing, or None.
-
-    None when there is no window to look at — which is a real answer and NOT
-    "nothing changed". The ladder treats it as unknown for exactly that
-    reason.
+    """Fingerprint the user's window, or None when there is none (unknown, not
+    unchanged).
     """
     try:
         from core.session_port import peek_window
         from core.world_state import signature_of
-        port, _ = peek_window()          # peek, never user_window: see its docstring
+        port, _ = peek_window()  # Peek, never user_window.
         return None if port is None else signature_of(port)
     except Exception:
         return None
 
 
 def _runners():
-    """strategy name -> callable(step) -> (ok, detail).
-
-    Bound lazily so importing this module never starts a browser.
+    """strategy name -> callable(step) -> (ok, detail). Bound lazily so importing
+    starts no browser.
     """
     from core.mission_runners import build_runners
     return build_runners()
 
-
-# ── helpers ─────────────────────────────────────────────────────────────────
 
 def _load() -> Mission | None:
     return store.load(_store_path())
@@ -126,10 +96,10 @@ def _describe(m: Mission) -> str:
     return f"“{m.goal}” — {done} of {total} steps done.{where}"
 
 
-# ── the tool ────────────────────────────────────────────────────────────────
-
 def _steps_from(raw) -> list[Step]:
-    """Steps the CALLER supplied — a list, or one newline-separated string."""
+    """Steps the caller supplied: a list, or one string separated by newlines or
+    pipes.
+    """
     from core.mission_handoff import parse_plan
     if not raw:
         return []
@@ -137,10 +107,7 @@ def _steps_from(raw) -> list[Step]:
         parsed = parse_plan(raw)
         if parsed:
             return parsed
-        # Newlines are not the only thing a model reaches for. Live, it sent
-        # four steps separated by PIPES; splitting on newlines alone made them
-        # one blob, the ladder ran its first verb, and the mission announced
-        # the whole goal done having only opened a page.
+        # Models also separate steps with pipes.
         import re as _re
         raw = [ln for ln in _re.split(r"[\n|;]+|(?<!:)//(?!/)", raw)
                if ln and ln.strip()]
@@ -149,8 +116,8 @@ def _steps_from(raw) -> list[Step]:
         text = str(item).strip()
         if not text:
             continue
-        # Reuse the same parser so a supplied step gets its url and quoted
-        # text extracted exactly like a delegated one.
+        # Same parser as delegated steps, so urls and quoted text are extracted the same
+        # way.
         parsed = parse_plan(f"1. {text}")
         out.append(parsed[0] if parsed else Step(intent=text))
     return out
@@ -164,14 +131,8 @@ def _start(params: dict) -> ToolResult:
             guidance="Ask the user what they want done, in their own words, "
                      "then call start again with it as 'goal'.")
 
-    # A mission for this same goal that is still RUNNING is resumed, never
-    # restarted. Reported live as "it opens the makerworld page again and
-    # again": a blocked or slow mission makes the model call start again to be
-    # helpful, and every start threw the old one away, reset the cursor to
-    # zero, and re-ran step one. Forever.
-    #
-    # Blocked and done missions DO restart — a stuck mission resumed is just
-    # the same wall again, and a finished goal must stay repeatable.
+    # A running mission for the same goal is resumed, never restarted. Blocked and done
+    # missions restart.
     existing = _load()
     if (existing is not None
             and existing.status == "running"
@@ -183,11 +144,8 @@ def _start(params: dict) -> ToolResult:
             f"resuming at: {existing.current().intent}. Call next.",
             resumed=True)
 
-    # The brain is ALREADY thinking about this goal. Steps it hands over cost
-    # nothing; a second generate_content call costs one of a DAILY budget of
-    # twenty - shared with vision, summarising and code_helper - and measured
-    # 10.7 seconds before the tool even began. Planning here is the fallback,
-    # not the path.
+    # Steps the model hands over cost nothing; planning here costs a generate_content
+    # call from a small daily budget. It is the fallback.
     raw = _steps_from(params.get("steps"))
     if not raw:
         raw = _plan_locally(goal)
@@ -195,8 +153,7 @@ def _start(params: dict) -> ToolResult:
              for s in (raw or []) if s]
     steps = [s for s in steps if s.intent.strip()]
 
-    # A separator nobody anticipated must degrade to "I cannot plan this",
-    # never to "one step that happens to succeed on its first verb".
+    # An unexpected separator degrades to "cannot plan this", never to one step.
     from core.mission_ladder import is_compound
     blobs = [s.intent for s in steps if is_compound(s.intent)]
     if blobs:
@@ -208,9 +165,8 @@ def _start(params: dict) -> ToolResult:
                       "not all of them in one line."))
 
     if not steps:
-        # A planner that could not REACH the model has not decided the goal is
-        # impossible. Saying so is the difference between the user waiting
-        # forty seconds and the user being told it cannot be done.
+        # A planner that could not reach the model has not decided the goal is
+        # impossible.
         from core import mission_planner
         why = getattr(mission_planner, "last_error", "")
         if why:
@@ -228,27 +184,16 @@ def _start(params: dict) -> ToolResult:
                      "detail about what they want, or do it with a single "
                      "tool if it really is one action.")
 
-    # One nod, up front, for the whole mission — never renegotiated per click.
-    # A step that would otherwise refuse as irreversible ("Submit", "Buy",
-    # "Pay") is checked here, on the PLAN, before a single step has run.
-    # Asking mid-mission was the alternative and it is worse twice over: it
-    # breaks the "no approval prompts between steps" design this tool is
-    # built on, and by the time a commit-shaped step is REACHED the model has
-    # usually already told the user it is under way — so the question lands
-    # as a surprise instead of an informed choice made before anything
-    # started.
+    # One yes, up front, for the whole mission: an irreversible step ("Submit", "Buy",
+    # "Pay") is found on the plan before anything runs.
     confirmed = bool(params.get("confirm"))
     if not confirmed:
         risky = _first_irreversible_step(steps)
         if risky is not None:
             from actions.grounding.web.consent import irreversible_reason
             why = irreversible_reason(risky.intent) or "it commits something"
-            # `ok=False`, deliberately, even though nothing is actually wrong:
-            # the mission did not start, and `ok` is the field this whole
-            # codebase's model reads instead of the prose — an `ok=True` here
-            # would be read as "under way, call next", which is exactly the
-            # "tool reported success it never had" bug class `ToolResult`
-            # exists to make impossible.
+            # ok=False: the mission did not start, and ok=True would read as "call
+            # next".
             return ToolResult.failure(
                 f"“{goal}” includes a step that cannot be undone once it "
                 f"runs: “{risky.intent}” — {why}. Nothing has started.",
@@ -274,22 +219,9 @@ def _start(params: dict) -> ToolResult:
 
 
 def _first_irreversible_step(steps: list[Step]) -> Step | None:
-    """The first step that would refuse at the consent gate, or None.
-
-    Scans the step's own wording with the SAME function `web_agency`'s click
-    gate uses — not a second vocabulary that could drift from the real one.
-    A goal with no such step asks nothing: the one-nod design exists for
-    "Submit"/"Buy"/"Pay", not for browsing.
-
-    Only CLICK-kind steps are scanned — `irreversible_reason` only ever runs
-    at `_gate_click`, so a step of any other kind can never reach it at
-    runtime regardless of what this scan says. Skipping that filter is not
-    merely redundant, it is wrong: `_COMMITTING["file"]` means a web button
-    like "File a complaint", and scanning a `file_read` step's own English
-    description ("Read the file my-details.txt on the Desktop") against that
-    vocabulary flags the wrong step for the wrong reason — a disk read, named
-    as the thing needing the user's nod instead of the real commit later in
-    the same plan.
+    """The first click step that would refuse at the consent gate, or None. Uses
+    web_agency's own function. Only click steps: a disk step's wording would trip
+    the web vocabulary.
     """
     from actions.grounding.web.consent import irreversible_reason
     from core.mission_ladder import kind_of
@@ -308,10 +240,7 @@ def _next(params: dict) -> ToolResult:
     if m.status == DONE or m.current() is None:
         return ToolResult.success(f"Mission done — “{m.goal}”.")
 
-    # A blocked mission stays blocked. Re-running its ladder costs a turn and,
-    # if any rung opens something, a browser — which is how pages kept
-    # appearing long after the mission had died. Every rung has already been
-    # tried; nothing about calling `next` again makes one work.
+    # A blocked mission stays blocked: every rung was already tried.
     if m.status == BLOCKED:
         done, total = m.progress()
         return ToolResult.failure(
@@ -326,8 +255,7 @@ def _next(params: dict) -> ToolResult:
     step = m.current()
     outcome = attempt(step, m, _runners(), observe=_observe)
 
-    # Where did that leave us? Recorded before the verdict, so a step that
-    # "succeeded" into a place we have been three times is still caught.
+    # Record where the step left us before the verdict, so a loop is caught.
     here = _observe()
     m.note_place(here)
     if m.going_in_circles(here):
@@ -344,10 +272,7 @@ def _next(params: dict) -> ToolResult:
                       "have already tried."))
 
     if outcome.ok:
-        # `ok` means the call worked. `moved is False` means the page did not
-        # react to it — the step is still advanced (the rung genuinely did its
-        # job, and a step CAN legitimately change nothing), but the doubt
-        # travels with the result instead of being swallowed.
+        # moved is False: advance, but carry the doubt with the result.
         m.advance()
         store.save(m, _store_path())
         done, total = m.progress()
@@ -363,12 +288,10 @@ def _next(params: dict) -> ToolResult:
             f"{step.intent} — done ({done} of {total}).{doubt} "
             f"Next: {m.current().intent}")
 
-    # Out of ways. Not a failed mission — a mission that needs a better plan
-    # or a human. Everything tried is on the step, ready for the handoff.
+    # Out of ways: needs a better plan or a human. Everything tried is on the step.
     m.block(outcome.detail or "every approach failed")
     store.save(m, _store_path())
-    # Blocked is terminal too. Measured: a mission that blocked left EIGHT
-    # browsers running, because release only ran on done and abandon.
+    # Blocked is terminal too: release the browsers.
     _release_browsers()
     tried = ", ".join(f"{a.strategy} ({a.detail[:40]})" for a in step.attempts)
     return ToolResult.failure(
