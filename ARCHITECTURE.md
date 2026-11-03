@@ -304,10 +304,10 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/grounding/web/browser.py` | One browser the eagle owns, kept warm, on its own thread. |
 | `actions/grounding/web/chrome_link.py` | Work in the user's own Chrome, where they are already signed in. |
 | `actions/grounding/web/consent.py` | The line the eagle does not cross by itself: controls that commit something are |
-| `actions/grounding/web/grounder.py` | Locate a control on a web page, by the words a person would use for it. |
-| `actions/grounding/web/handoff.py` | Hand the keyboard back when the site is asking for a person. |
+| `actions/grounding/web/grounder.py` | Locate a control on a web page by the words a person would use for it. Matching is |
+| `actions/grounding/web/handoff.py` | Hand the keyboard back when the site is asking for a person: stop, say what is |
 | `actions/grounding/web/outcome.py` | Did the click actually DO something? |
-| `actions/grounding/web/page.py` | The seam between a live page and the grounding types. |
+| `actions/grounding/web/page.py` | The seam between a live page and the grounding types. No Playwright import, so |
 | `actions/grounding/web/sense.py` | How much of a page to look at. |
 | `actions/grounding/web/sessions.py` | Which sites the eagle's browser is signed into. |
 | `actions/grounding/web/user_actions.py` | Act on the browser the eagle opened FOR THE USER — one implementation, |
@@ -354,7 +354,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/capability/keys.py` | Which model providers can this machine actually reach? |
 | `core/capability/profile.py` | The fused picture of this machine, and where it is remembered. |
 | `core/capability/router.py` | Which of the three cases is this machine in, and what follows from it. |
-| `core/card_assembly.py` | Assembling one island card out of several module answers. |
+| `core/card_assembly.py` | Assembling one island card from several module answers. `quote` is fast (price, |
 | `core/confirm.py` | A spoken yes, bound to exactly what it was given for. |
 | `core/contact_aliases.py` |  |
 | `core/contact_match.py` |  |

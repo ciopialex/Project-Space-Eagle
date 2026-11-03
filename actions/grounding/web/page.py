@@ -1,13 +1,8 @@
-"""The seam between a live page and the grounding types.
+"""The seam between a live page and the grounding types. No Playwright import, so
+everything above is tested against a fake page.
 
-This file deliberately does not import Playwright. Everything above it —
-tiering, matching, the refusal, the handoff — is tested against a fake page
-that returns canned records, and that is only possible while the seam stays a
-plain protocol.
-
-Coordinates here are VIEWPORT coordinates. They are used for hit-testing and
-for the stability check, never to move a physical mouse; web actuation goes
-through the browser. `Element.source` is "web" so that rule is checkable.
+Coordinates are viewport coordinates, for hit-testing and stability checks only;
+nothing moves a physical mouse. Element.source is "web".
 """
 from __future__ import annotations
 
@@ -16,55 +11,19 @@ from typing import Iterable, Protocol, runtime_checkable
 
 from actions.grounding.base import Element
 
-# Hard ceiling on what gets shown to a language model, not just a walk bound:
-# 600 named controls is already more than a model can use well. A
-# pathological page (infinite feed, virtualised table) must not be able to
-# hand back a hundred thousand records and stall the eagle either.
+# Hard ceiling on controls shown to a model, and on what a pathological page can return.
 MAX_NODES = 600
 
-#: How much surrounding text a single control may carry. An article page has
-#: thousands of text blocks; unbounded context would push the actual controls
-#: out of the model's attention, which is the failure this is meant to
-#: prevent, not cause.
+# How much surrounding text one control may carry.
 MAX_CONTEXT_CHARS = 160
 
-#: The name/role derivation shared by `COLLECT_JS`, `HIT_TEST_JS`, and (via
-#: `tools/web_coverage.py`'s import of this constant) the coverage
-#: instrument's `_MISSED_JS`.
-#:
-#: This used to be three separate copies. `COLLECT_JS` computed the full
-#: `accName()` chain and `implicitRole()`; `HIT_TEST_JS` computed a cut-down
-#: `aria-label || innerText` for the name and `getAttribute('role') ||
-#: tagName` for the role. The two never agreed except by coincidence (a bare
-#: `<button>text</button>`) — every `<a href>`, every `<input>` named by
-#: `label[for]`/`aria-labelledby`/a wrapping label/`alt`/`placeholder`/
-#: `title`, and every checkbox named by a wrapping label came back from
-#: `HIT_TEST_JS` with a *different* `(name, role)` than `COLLECT_JS` reported
-#: for the exact same element. `actionability._identity` compares
-#: `(name, role, bounds)` between the two, so `receives_events` could never
-#: pass for any of those — every click on a link or a labelled input timed
-#: out after 5s, and the model was told "it was covered by something else on
-#: the page," which was false. Fixed by making both scripts call the exact
-#: same functions instead of hand-maintaining two readings of "what is this
-#: element called" that could drift again the moment either one changed.
-#:
-#: `implicitRole()` maps an element to its ARIA role when none is stated
-#: explicitly. `accName()` is a deliberately simplified accessible-name
-#: computation:
-#:
-#: 1. `accName()` falls back to `textContent` when `innerText` is empty.
-#:    Chromium reports an empty `innerText` for content inside a *closed*
-#:    `<details>` (and a few other not-currently-rendered states) even
-#:    though the text is genuinely in the DOM and would render immediately
-#:    if the widget opened — without this fallback, everything inside a
-#:    collapsed disclosure widget is invisible to the collector. It is
-#:    still collected without SHOWING/VISIBLE (see `checkVisibility()`
-#:    in `COLLECT_JS` below) — present-but-not-currently-actionable is the
-#:    correct claim, not "does not exist."
-#: 2. `roleOf()` bundles the explicit-role filtering (`presentation`/`none`
-#:    suppress the element; an unrecognised or `generic` role means "not a
-#:    control") with the implicit-role fallback, so `COLLECT_JS`'s walk and
-#:    `HIT_TEST_JS`'s point lookup make that decision identically too.
+# Name and role derivation shared by COLLECT_JS, HIT_TEST_JS and tools/web_coverage.py,
+# so a collected element and the same element under a hit-test always get the same
+# (name, role); actionability compares them.
+#
+# implicitRole() maps an element to its ARIA role. accName() is a simplified accessible
+# name that falls back to textContent when innerText is empty (content in a closed
+# <details>). roleOf() applies explicit-role filtering, then the implicit role.
 _ACCESSIBLE_NAME_JS = r"""
   const implicitRole = (el) => {
     const tag = el.tagName;
@@ -170,18 +129,9 @@ _ACCESSIBLE_NAME_JS = r"""
   };
 """
 
-#: Walks the DOM and returns one record per *named* control.
-#:
-#: Named is the filter that matters. An unnamed div is not a control a person
-#: could ask for, and including it would bury the ones they can.
-#:
-#: On a page with more named controls than `MAX_NODES`, document order would
-#: always keep the top of the DOM and lose whatever is near the user's
-#: current viewport. Controls that intersect the viewport are preferred when
-#: the cut has to be made, and the walk reports whether it had to truncate at
-#: all (a `{truncated: true}` record appended to the output — see
-#: `collector_truncated()`), so a caller can tell "every control" from
-#: "every control up to the point we stopped counting."
+# Walks the DOM and returns one record per named control. When there are more than
+# MAX_NODES, controls intersecting the viewport are kept first, and a {truncated: true}
+# record is appended (collector_truncated()).
 COLLECT_JS = r"""
 (() => {
   const MAX_NODES = 600;
@@ -415,19 +365,9 @@ COLLECT_JS = r"""
 })()
 """
 
-#: Given [x, y] in viewport coordinates, the record for whatever is actually
-#: there — walking up to the nearest collected ancestor. This is the exact
-#: equivalent of AT-SPI's get_accessible_at_point, and it is what catches the
-#: cookie banner that opened over the button.
-#:
-#: `name`/`role` come from the exact same `accName()`/`roleOf()` used by
-#: `COLLECT_JS` — see `_ACCESSIBLE_NAME_JS`'s docstring for why this used to
-#: be a second, disagreeing reading and what that broke (`receives_events`,
-#: and therefore every click, for anything but a bare `<button>`). `roleOf()`
-#: can return `null` here in principle (the page mutated `role=` between the
-#: collect that stamped `owner`'s ref and this hit-test), so this falls back
-#: to the element's own tag name in that case — the same fallback the old,
-#: pre-fix code used unconditionally — rather than reporting no role at all.
+# The record for whatever is at [x, y] (viewport), walking up to the nearest collected
+# ancestor: catches a banner that opened over the target. Uses the same
+# accName()/roleOf() as COLLECT_JS; falls back to the tag name if the role vanished.
 HIT_TEST_JS = r"""
 (() => {
 """ + _ACCESSIBLE_NAME_JS + r"""
@@ -470,40 +410,16 @@ HIT_TEST_JS = r"""
 """
 
 
-#: One cheap number standing for "what the page currently is", so a click's
-#: effect can be seen when it navigates nowhere.
-#:
-#: `click_with_outcome` (outcome.py) claimed a `"url_or_dom_changed"` signal
-#: and only ever compared `page.url`. Every non-navigational click — a
-#: checkbox, a disclosure triangle, an in-page filter, a menu — therefore
-#: read as "nothing happened", which made the tied-candidate retry loop go on
-#: to click the NEXT candidate and toggle the first one's effect back off,
-#: and made the caller unable to tell a verified success from a verified
-#: nothing. This is the missing half.
-#:
-#: Deliberately NOT `COLLECT_JS`: every collect strips and re-stamps
-#: `data-ae-ref` from scratch (see the note at the top of that script), so
-#: taking a collect-shaped snapshot between resolving candidates and clicking
-#: them would invalidate the ref of every candidate not yet tried. This reads
-#: the page and writes nothing.
-#:
-#: What goes into the hash is chosen for what a CLICK changes:
-#:   * element count and total text length — content appeared, went away, or
-#:     was replaced (an in-page filter, an expanded panel, a loaded row);
-#:   * `class` — the overwhelmingly common way a site says "this is open now"
-#:     when it says it at all;
-#:   * `aria-expanded`/`checked`/`selected`/`pressed`/`hidden` and
-#:     `<details open>` — the accessible version of the same;
-#:   * the `checked`/`selected`/`value` PROPERTIES, which is where a ticked
-#:     checkbox actually lives — its `checked` ATTRIBUTE does not move when a
-#:     user (or a click) ticks it, so an attribute-only reading misses the
-#:     single most common non-navigational click there is.
-#:
-#: It is deliberately biased towards reporting a change: page noise (an
-#: animation, a lazily-loaded row) can move it without the click having
-#: caused it. That direction is the safe one — a false "something happened"
-#: stops the retry loop after ONE click, while a false "nothing happened" is
-#: what makes it click three different controls and undo its own work.
+# One number for what the page is now, so a click that does not navigate can still be
+# seen to work. Reads, never writes (a collect would re-stamp refs).
+#
+# Hashes element count, text length, class, aria-
+# expanded/checked/selected/pressed/hidden, <details open>, and the
+# checked/selected/value properties (a ticked checkbox changes the property, not the
+# attribute).
+#
+# Biased toward reporting a change: a false "changed" stops the retry loop after one
+# click; a false "unchanged" clicks other candidates and undoes its own work.
 DOM_SIGNATURE_JS = r"""
 (() => {
   // Bounded like every other walk in this file: a pathological page must not
@@ -553,17 +469,9 @@ DOM_SIGNATURE_JS = r"""
 
 @dataclass(frozen=True)
 class VisionTarget:
-    """What the vision fallback clicked, in the shape everything downstream
-    expects a resolved control to have.
-
-    There was never a `WebNode` here — vision found a coordinate on a
-    screenshot, not a control the page named — but a bare `None` is what let
-    `WebGrounder.resolve_and_click`'s vision branch click a raw coordinate
-    with no consent gate ever running: `gate_fn(node)` reads `.name` and
-    `.role`, and there was nothing to hand it. `name` is the description the
-    caller asked for, which IS what was clicked; `role` is honestly
-    `"unknown"`, which is all `irreversible_reason` needs to refuse
-    "Complete purchase" whether or not the page ever named it.
+    """What the vision fallback clicked, shaped like a resolved control so the
+    consent gate can run on it: `name` is the description asked for; `role` is
+    "unknown".
     """
 
     name: str
@@ -575,12 +483,8 @@ class VisionTarget:
 
 @dataclass(frozen=True)
 class WebNode:
-    """One control as the page reports it.
-
-    Carries everything `UINode` does — `roles.best_match` is duck-typed and
-    reads exactly these fields — plus the `ref` the browser needs to act on it.
-    A separate type rather than a wider `UINode`, because the shared type is
-    used by three other backends that have no concept of a ref.
+    """One control as the page reports it: UINode's fields plus the `ref` the browser
+    acts on.
     """
     name: str
     role: str
@@ -591,10 +495,8 @@ class WebNode:
     ref: str = ""
     states: frozenset = frozenset()
     value: str = ""
-    #: Text sitting with this control that is not itself clickable - a price,
-    #: a stock line, a heading. Attached HERE rather than returned as separate
-    #: nodes: a flat list of every text block would double what the grounder
-    #: must score, making matching worse while trying to make reading better.
+    # Text with this control that is not itself clickable (a price, a heading), attached
+    # rather than returned as separate nodes.
     context: str = ""
 
     def has(self, state: str) -> bool:
@@ -611,11 +513,8 @@ def ref_of(node: object) -> str:
 
 
 def nodes_from_records(records: Iterable[object]) -> tuple[WebNode, ...]:
-    """Convert raw collector output into nodes. Drops anything malformed.
-
-    The page is hostile input: a record can be missing fields, carry NaN
-    geometry, or not be a dict at all. One bad record must not cost us the
-    whole snapshot.
+    """Convert raw collector output into nodes, dropping anything malformed: the page
+    is hostile input.
     """
     nodes: list[WebNode] = []
     for record in records or ():
@@ -641,22 +540,9 @@ def nodes_from_records(records: Iterable[object]) -> tuple[WebNode, ...]:
 
 
 def collector_truncated(records: Iterable[object]) -> bool:
-    """True if `COLLECT_JS` had to stop before it could hand back every named
-    control it found.
-
-    Two distinct causes both set this: more named controls existed than
-    `MAX_NODES` allows (the common case — see the viewport-preference cut
-    in `COLLECT_JS`), or the raw walk itself hit its safety ceiling
-    (`CANDIDATE_CAP`) before it finished the DOM at all. Either way, the
-    node count `nodes_from_records` returns is a floor, not the true count —
-    this is what lets a caller (`PageSense`, `tools/web_coverage.py`) say so
-    instead of quietly reporting a number that means "we stopped counting."
-
-    Reads the raw records rather than the `WebNode` tuple because the
-    sentinel `{"truncated": true}` `COLLECT_JS` appends has no `name` and is
-    silently dropped by `nodes_from_records` — the same fate as any other
-    malformed record, which is correct for node-hood but would erase this
-    flag if it were looked for after that conversion instead of before it.
+    """True if COLLECT_JS stopped before returning every named control (MAX_NODES or
+    CANDIDATE_CAP), so the node count is a floor. Reads the raw records: the
+    sentinel has no name and nodes_from_records drops it.
     """
     for record in records or ():
         if isinstance(record, dict) and record.get("truncated"):
@@ -673,43 +559,26 @@ def element_from(node: WebNode) -> Element:
 
 @runtime_checkable
 class PageLike(Protocol):
-    """What the grounder needs from a page. Implemented for real in browser.py
-    (`PagePort`) and core/session_port.py (`SessionPort`), and faked in
-    tests/web_fakes.py.
-
-    Everything below the first block was already REQUIRED by
-    `WebGrounder.resolve_and_click` and `click_with_outcome` (grounder.py,
-    outcome.py) and was simply missing from this list. That is not a
-    documentation nicety: both of those swallow `AttributeError` as part of
-    their "that signal did not fire" handling, so a page-like object missing
-    one of these does not fail — it silently reports that the click did
-    nothing, or never clicks at all. That exact gap shipped once already
-    (`expect_download`/`expect_popup` absent from both real ports; see
-    `_MarshaledEventCtx` in each). Anything implementing this protocol owes
-    all of it.
+    """What the grounder needs from a page: PagePort (browser.py), SessionPort
+    (core/session_port.py), and tests/web_fakes.py. Implement all of it: callers
+    treat a missing attribute as "that signal did not fire".
     """
 
-    # ── reading the page ────────────────────────────────────────────────────
     def collect(self) -> list[dict]: ...
     def hit_test(self, x: int, y: int) -> dict | None: ...
     def screenshot(self) -> bytes: ...
     def url(self) -> str: ...
-    #: A hash of the page's current state, for "did this click change
-    #: anything that was not a navigation" — see `DOM_SIGNATURE_JS`. Returns
-    #: "" for "no reading available", which callers must treat as "cannot
-    #: tell", never as "nothing changed".
+    # A hash of the page's state (DOM_SIGNATURE_JS). "" means cannot tell, never
+    # unchanged.
     def dom_signature(self) -> str: ...
 
-    # ── acting on it ────────────────────────────────────────────────────────
     def click(self, ref: str) -> None: ...
     def fill(self, ref: str, text: str) -> None: ...
-    #: The vision fallback's only lever: there is no ref to click when
-    #: `collect()` never saw the control at all.
+    # Click a coordinate: the vision fallback, when collect() never saw the control.
     def mouse_click(self, x: int, y: int) -> None: ...
     #: Best-effort preparation `resolve_and_click` performs before a click.
     def dismiss_overlay(self) -> bool: ...
     def centre(self, ref: str) -> None: ...
 
-    # ── Playwright's own event expectations, wrapped around a click ─────────
     def expect_download(self, timeout: int | None = None): ...
     def expect_popup(self, timeout: int | None = None): ...
