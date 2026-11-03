@@ -1,28 +1,7 @@
-"""Act on the browser the eagle opened FOR THE USER, through the DOM.
-
-The chain this closes, traced on a real mission:
-
-  1. `web_open` correctly fails — makerworld serves a bot wall to the eagle's
-     own headless browser.
-  2. `browser_open` succeeds — the page opens in the user's real Chrome.
-  3. Every step after that had nowhere to go. `web_click` looks in the eagle's
-     browser (blank), `screen_click` is blind because Chrome publishes nothing
-     to the accessibility bus, and vision guesses — measured 5.8s and ~650px
-     off. The eagle could SEE the page and had no way to touch it.
-
-The first attempt at this launched that Chrome with `--remote-debugging-port`
-and connected over CDP from outside. It does not work: Playwright's
-`launch_persistent_context` manages its own CDP channel, and no listener
-appears on the port. It was also unnecessary — `browser_control` is ALREADY
-holding a Playwright `Page` for that window. The fix is to reach into the
-session that exists rather than open a second door to it.
-
-The only wrinkle is that the session is async and lives on its own event loop,
-while `PageLike` (and everything above it — the grounder, the actionability
-check, the waiting loop) is synchronous. `sess.run()` already marshals a
-coroutine onto that loop and blocks for the result, so each method here is one
-`run()` away from the same protocol the eagle uses on its own browser. That is
-what lets `WebGrounder` drive the user's window with no changes at all.
+"""Act on the browser the eagle opened for the user, through the DOM. browser_control
+already holds a Playwright Page for that window; each method here runs one
+coroutine on its event loop via sess.run(), so WebGrounder drives the user's
+window unchanged.
 """
 from __future__ import annotations
 
@@ -34,12 +13,8 @@ from actions.grounding.web.page import (COLLECT_JS, DOM_SIGNATURE_JS,
 
 _TIMEOUT = 20
 
-#: Hard ceiling on browser launches. A runaway is not hypothetical: a loop
-#: that opens a window each pass leaves a pile of Chromes, and those hold the
-#: profile lock, which is what then makes the eagle's OWN browser refuse to
-#: start and blame Playwright for it. Every other guard here is about not
-#: launching WRONGLY. This one is about not launching MANY, whatever the bug
-#: turns out to be — it does not need to know why.
+# Hard ceiling on browser launches: a runaway loop of Chromes holds the profile lock and
+# breaks the eagle's own browser.
 MAX_LAUNCHES = 4
 _launches = 0
 
@@ -60,30 +35,15 @@ def launches_used() -> int:
 
 
 def reset_launch_budget() -> None:
-    """Cleared when a mission ends and its browsers are released."""
+    """Reset when a mission ends and its browsers are released."""
     global _launches
     _launches = 0
 
 
-
-
 class _MarshaledEventCtx:
-    """Async counterpart of `browser.py`'s class of the same name — same
-    job, same reason, adapted to the async Playwright page this session
-    drives instead of a thread-marshaled sync one.
-
-    `outcome.py`'s `click_with_outcome` uses `page.expect_download`/
-    `expect_popup` as an ordinary (sync-looking) `with` statement, with the
-    real click happening INSIDE the block, between `__enter__` and
-    `__exit__`. Each of those, plus reading `.value`, is its own
-    `self._sess.run(...)` — not one call wrapping the whole block — so the
-    click in between (itself its own `run()`, via `SessionPort.click`) plays
-    out in the right order on the session's one event loop, the same way
-    `browser.py`'s version interleaves with the browser thread's job queue.
-    Without this, `SessionPort` has no `expect_download`/`expect_popup` at
-    all, so `click_with_outcome` never actually clicks anything for the
-    user's window either — see `browser.py`'s `_MarshaledEventCtx` for the
-    full account of the bug this closes.
+    """Async twin of browser.py's _MarshaledEventCtx: __enter__, __exit__ and .value
+    each run on the session's loop, so the click inside the block happens in
+    order.
     """
 
     def __init__(self, sess: Any, open_ctx, timeout: float) -> None:
@@ -107,14 +67,8 @@ class _MarshaledEventCtx:
                 return await self._raw_cm.__aexit__(*exc)
             self._sess.run(_do(), timeout=self._timeout)
         except (Exception, asyncio.CancelledError):
-            # Same reasoning as `browser.py`'s sync twin: Playwright's
-            # `__aexit__` cancels the expectation when an exception is
-            # active in the block (a raising click), and a cancelled
-            # expectation surfaces as `asyncio.CancelledError` — a
-            # `BaseException` that `except Exception` does not catch. Here
-            # it escaped out of `user_click` rather than killing a thread,
-            # but it is the same bug wearing different clothes. See
-            # `_EXPECTATION_FAILED` in outcome.py.
+            # A cancelled expectation raises CancelledError (a BaseException); see
+            # _EXPECTATION_FAILED in outcome.py.
             pass
         return False
 
@@ -131,7 +85,6 @@ class SessionPort:
     def __init__(self, sess: Any) -> None:
         self._sess = sess
 
-    # ── perception ──────────────────────────────────────────────────────────
 
     def collect(self) -> list[dict]:
         async def _do():
@@ -164,11 +117,8 @@ class SessionPort:
             return ""
 
     def dom_signature(self) -> str:
-        """The DOM half of `click_with_outcome`'s `"url_or_dom_changed"`
-        signal, for the user's own window — see `PagePort.dom_signature`
-        (browser.py) and `DOM_SIGNATURE_JS` (page.py). Read-only: it must
-        not be a `collect()`, which would re-stamp every `data-ae-ref` and
-        invalidate the candidates still queued behind this click.
+        """The DOM half of url_or_dom_changed for the user's window. Read-only, never
+        a collect().
         """
         async def _do():
             page = await self._sess._get_page()
@@ -178,7 +128,6 @@ class SessionPort:
         except Exception:
             return ""
 
-    # ── actuation ───────────────────────────────────────────────────────────
 
     def click(self, ref: str) -> None:
         selector = f'[data-ae-ref="{ref}"]'
@@ -188,23 +137,19 @@ class SessionPort:
             try:
                 await page.click(selector, timeout=4_000)
             except Exception:
-                # Same last resort the eagle's own port uses: deliver the click
-                # to the element rather than fail on one we located.
+                # Last resort: dispatch the click on the located element.
                 await page.eval_on_selector(selector, "el => el.click()")
         self._sess.run(_do(), timeout=_TIMEOUT)
 
     def mouse_click(self, x: int, y: int) -> None:
-        """Click a raw page coordinate — the vision fallback's only lever
-        when structural matching found nothing to put a ref on. Mirrors
-        `PagePort.mouse_click` (browser.py) for the user's own window."""
+        """Click a raw page coordinate: the vision fallback."""
         async def _do():
             page = await self._sess._get_page()
             await page.mouse.click(int(x), int(y))
         self._sess.run(_do(), timeout=_TIMEOUT)
 
     def expect_download(self, timeout: int | None = None) -> _MarshaledEventCtx:
-        """`click_with_outcome`'s (outcome.py) real-signal detection needs
-        this on the user's window too — see `_MarshaledEventCtx` above."""
+        """Needed by click_with_outcome on the user's window too."""
         tms = 30_000 if timeout is None else timeout
         async def _open():
             page = await self._sess._get_page()
@@ -212,8 +157,7 @@ class SessionPort:
         return _MarshaledEventCtx(self._sess, _open, _TIMEOUT)
 
     def expect_popup(self, timeout: int | None = None) -> _MarshaledEventCtx:
-        """The "a new tab opened" half of `click_with_outcome`'s detection —
-        see `expect_download` just above and `_MarshaledEventCtx`."""
+        """The new-tab half of click_with_outcome's detection."""
         tms = 30_000 if timeout is None else timeout
         async def _open():
             page = await self._sess._get_page()
@@ -229,11 +173,8 @@ class SessionPort:
         self._sess.run(_do(), timeout=_TIMEOUT)
 
     def type_into_focused(self, text: str) -> str:
-        """Type into whatever the PAGE has focused. "" if nothing editable is.
-
-        Exact, not blind: the browser knows which element has focus, so this
-        cannot leak into another window the way the OS keyboard does. Returns
-        a description of where the text went, so the caller can say.
+        """Type into whatever the page has focused, or "" if nothing editable is.
+        Cannot leak into another window. Returns where the text went.
         """
         async def _do():
             page = await self._sess._get_page()
@@ -265,14 +206,8 @@ class SessionPort:
 
 
 def peek_window(browser: str | None = None):
-    """The user's window WITHOUT touching it.
-
-    `user_window` follows the url a native open left behind — which is a
-    navigation, and therefore a change to the world. Anything that merely
-    OBSERVES must use this instead: an observer with a side effect cannot be
-    used to detect side effects, and the first version of the movement check
-    reported "nothing changed" on every step because looking had already
-    moved things.
+    """The user's window without touching it. Observers must use this: following a
+    pending URL is a navigation.
     """
     try:
         from actions.browser_control import _registry
@@ -292,42 +227,21 @@ def peek_window(browser: str | None = None):
 
 
 def user_window(browser: str | None = None, create: bool = False):
-    """`(SessionPort, WebGrounder)` for the user-facing browser, or `(None, None)`.
+    """(SessionPort, WebGrounder) for the user-facing browser, or (None, None) when
+    there is no window, which callers must not report as a missing control.
 
-    `browser_control` has TWO ways of opening a page and only one of them can
-    be driven. `go_to` opens NATIVELY — fast, visible, and completely
-    uncontrollable — and merely *notes* the url. A controllable window is
-    created lazily, the first time an interactive action needs one, and then
-    navigated to that noted url. That is why the first version of this
-    function found nothing: it asked `_registry.has()`, which is False after a
-    native open, and a mission that had just successfully opened MakerWorld
-    was told "no browser window is open for the user".
-
-    So this does what `browser_control` does for its own interactive actions:
-    create the session if needed, then sync it to wherever the user was last
-    sent. Getting that wrong the other way is worse — an earlier version
-    created a session and left it on about:blank, so the grounder read ZERO
-    controls off a window that visibly had a page in it.
-
-    `(None, None)` means there is no window at all — a different thing from
-    "the control is not there", and callers must not report it as the latter.
+    browser_control's go_to opens natively and only notes the URL; this creates
+    the controllable session when needed and navigates it to that URL.
     """
-    # `_registry.get()` CREATES a session — it launches Chrome. Reported live
-    # as "a blank page keeps opening out of nowhere": _user_click, _user_type
-    # and _user_look all came through here, so a CLICK step with no window
-    # open launched an empty browser, did nothing with it, and left it
-    # running. Only a step that MEANS to open a page may create one; for the
-    # rest, "there is no window" is the honest answer.
+    # _registry.get() launches Chrome. Only a step meant to open a page, or one
+    # following a native open, may create a session.
     try:
         from actions.browser_control import _registry
-        # A NATIVE open leaves no session but there IS a page the user is
-        # looking at; reaching it is the whole reason this function exists.
-        # So "may create" means: asked to, or there is a page waiting to be
-        # followed. Neither is true for a click with nothing open.
+        # A native open left a page to follow.
         has = _registry.has(browser)
         pending = ""
         if not has:
-            # Consumed, not peeked — if there is one we are about to follow it.
+            # Consumed, not peeked.
             pending = _registry.pop_native_url() or ""
         if not (has or create or pending):
             return None, None
@@ -339,9 +253,7 @@ def user_window(browser: str | None = None, create: bool = False):
     if sess is None:
         return None, None
 
-    # A native open left the address here rather than in any page. Follow it,
-    # exactly once — `pop` clears it so a later step does not get yanked back
-    # to the start of the mission.
+    # Follow the noted address exactly once.
     try:
         if pending:
             sess.run(sess.go_to(pending), timeout=45)

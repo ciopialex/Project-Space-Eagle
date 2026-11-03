@@ -328,7 +328,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/swarm_orchestrator.py` | Swarm orchestrator: one git worktree per agent |
 | `actions/swarm_reviewer.py` | Reviewer Agent: offloaded verification and automated merges. |
 | `actions/swarm_sentinel.py` | Self-healing sentinel: stall detection, nudges, and fallback re-delegation. |
-| `actions/system_monitor.py` | A cache with a TTL, not a thread that never stops. |
+| `actions/system_monitor.py` | System metrics behind a cache with a TTL: a process that never asks pays nothing, |
 | `actions/visual_verifier.py` | Autonomous visual web verification (Playwright coupling). |
 | `actions/weather_report.py` | The weather, said out loud. |
 | `actions/web_agency.py` | Use a website the way a person would: one way of perceiving any page and acting in |
@@ -346,7 +346,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/agent_catalog.py` | Coding-agent CLIs the eagle can launch and drive. |
 | `core/agent_session.py` | A live coding-agent session that is a protocol, not a terminal. |
 | `core/agent_stream.py` | Drive a coding-agent CLI as a typed event stream instead of scraping a terminal |
-| `core/ambient.py` | What a module says when nobody asked it anything. |
+| `core/ambient.py` | What a module says when nobody asked it anything: a first layer that adhered, a |
 | `core/barge_in.py` | The user talking over the eagle: hearing it without hearing the eagle itself. |
 | `core/capabilities.py` | What Aethelark can do, as data rather than prose. |
 | `core/capability/agents.py` | What can already do work on this machine? |
@@ -370,7 +370,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/mic_vad.py` | A client-side voice-activity estimate. Two jobs, and neither gates sending. |
 | `core/mission.py` | What the eagle is trying to do, and how far it has got. |
 | `core/mission_handoff.py` | Tell an outside agent what the eagle IS, before asking it for a plan. |
-| `core/mission_ladder.py` | Ways of doing one step, cheapest and most exact first. |
+| `core/mission_ladder.py` | Ways of doing one step, most exact first: the DOM (exact, in the eagle's browser), |
 | `core/mission_planner.py` | Break a spoken goal into steps small enough to grind through. |
 | `core/mission_runners.py` | The rungs, bound to real tools. Each runner is (step) -> (ok, detail), and ok |
 | `core/mission_store.py` | Keep the mission across a reconnect, and leave a note when it gives up. |
@@ -389,7 +389,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/quota.py` | Tell a rate limit apart from a broken tool. |
 | `core/run_cmd.py` | External commands with a deadline that actually reclaims what it kills. |
 | `core/safe_exec.py` | Run model-generated Python without handing it the machine. |
-| `core/session_port.py` | Act on the browser the eagle opened FOR THE USER, through the DOM. |
+| `core/session_port.py` | Act on the browser the eagle opened for the user, through the DOM. browser_control |
 | `core/setup_modules.py` | Adding the modules a user chose in setup, while they finish setting up. |
 | `core/tool_fallback.py` | When a narrow tool fails, name the general one that can still do the job. |
 | `core/tool_result.py` | ToolResult — the structured contract every tool result normalizes to. |
