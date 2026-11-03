@@ -74,6 +74,7 @@ it over the fixture: the fixture is a photograph and does not update itself.
 
 ## Core Architectural Reference
 
+- **`ARCHITECTURE.md`** is the map: data flow, every voice tool and where it runs, the island states, every Python ↔ page call, where data lives, and a one-line index of every file. It is generated from the source by `python tools/architecture.py`, and a test fails when it is out of date, so regenerate it after a change instead of editing it.
 - **`docs/MODULE_CONTRACT.md`** is the interface a module is written against.
 
 ## Apple Human Interface Guidelines (HIG) System-Wide Mandate
