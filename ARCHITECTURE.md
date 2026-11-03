@@ -249,7 +249,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 
 | file | says it is |
 |---|---|
-| `aethelark_web.py` | Aethelark — integrated web-rendered app. |
+| `aethelark_web.py` | Aethelark: the app's entry point. |
 | `main.py` |  |
 | `setup.py` | Space-Eagle / Aethelark 3D Environment Bootstrap & Dependency Installer. |
 | `setup_google.py` | One-shot Google connect: save your OAuth client ID, then run the login flow. |
