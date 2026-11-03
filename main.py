@@ -1,21 +1,18 @@
 import platform as _platform
 import subprocess as _subprocess
 
-# ── Nuclear: force CREATE_NO_WINDOW on EVERY subprocess call on Windows ───────
-# This patches Popen itself, so no per-file flag is needed anywhere.
+# Windows: start every subprocess with CREATE_NO_WINDOW.
 if _platform.system() == "Windows":
     _OrigPopen = _subprocess.Popen
 
     class _Popen(_OrigPopen):
         def __init__(self, args, **kw):
-            # CREATE_NO_WINDOW is 0x08000000 on Windows
             creation_flags = getattr(_subprocess, "CREATE_NO_WINDOW", 0x08000000)
             kw["creationflags"] = kw.get("creationflags", 0) | creation_flags
-            kw.pop("startupinfo", None)   # drop any stale/shared STARTUPINFO
+            kw.pop("startupinfo", None)
             super().__init__(args, **kw)
 
     _subprocess.Popen = _Popen
-# ─────────────────────────────────────────────────────────────────────────────
 
 import asyncio
 import contextlib
@@ -26,10 +23,7 @@ import time
 import json
 import sys
 
-# Line-buffer stdout before anything prints. Redirected output is
-# block-buffered by default, so `eagle > log.txt` loses everything
-# still in the buffer when the process dies - which is exactly the
-# moment the log matters most.
+# Line-buffered, so a crash does not lose the end of a redirected log.
 from core import logsetup  # noqa: E402,F401
 import traceback
 import uuid
@@ -99,16 +93,13 @@ from core.models import VOICE as LIVE_MODEL  # noqa: E402
 
 
 class _ReconnectSignal(Exception):
-    """Raised to intentionally collapse the live-session TaskGroup for a clean,
-    context-preserving reconnect (e.g. on a server GoAway). Not an error —
-    the run loop treats it as a graceful, fast reconnect using the resume handle."""
+    """Collapses the live-session TaskGroup for a reconnect with the resume handle.
+    Not an error.
+    """
 
 
 def _flatten_exc(exc: BaseException) -> list[BaseException]:
-    """Flatten an exception into itself plus any nested ExceptionGroup members
-    and __cause__/__context__ links. TaskGroup wraps failures in a
-    BaseExceptionGroup, so the real cause (e.g. a 1011 APIError) is only
-    reachable by unwrapping — plain str(group) hides it."""
+    """The exception plus its ExceptionGroup members and its cause/context chain."""
     seen: set[int] = set()
     out: list[BaseException] = []
 
@@ -131,14 +122,11 @@ SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 
-# How long a deliberate "stop talking" keeps discarding the answer it stopped.
-# The answer's own turn_complete ends it sooner; this only bounds the case
-# where that never arrives.
+# How long a deliberate stop keeps discarding the answer it stopped, if turn_complete
+# never arrives.
 _STOP_LATCH_S = 20.0
 
-# Waits after Gemini's free tier runs out, one per consecutive refusal. The
-# connection is healthy -- the allowance is not -- so reconnecting every two
-# seconds only spends the next minute's allowance as well.
+# Waits after the free-tier quota runs out, one per consecutive refusal.
 _QUOTA_WAITS_S = (30.0, 60.0, 120.0, 300.0)
 
 
@@ -147,53 +135,35 @@ def _spoken_wait(seconds: float) -> str:
             else "1 minute" if seconds < 120 else f"{seconds / 60:.0f} minutes")
 
 
-# No server frame at all for this long, while a turn is in flight, means the
-# session is wedged. Reconnect with the resumption handle rather than sit silent.
+# No server frame for this long during a turn means the session is wedged: reconnect.
 _TURN_STALL_S = 25.0
 
-# How often the health loop wakes. Kept well under _TURN_STALL_S so the stall
-# window — not the log cadence — decides how fast a wedge is caught.
+# Health-loop interval, well under _TURN_STALL_S.
 _WATCHDOG_TICK_S = 2.0
 
-# Telemetry prints every Nth tick, preserving the original ~30s log cadence
-# without slowing the health check down to match it.
+# Telemetry prints every Nth tick.
 _TELEMETRY_EVERY_N_TICKS = 15
 
 _TOOL_WORKERS = 8
 
 
 def _make_tool_executor() -> "ThreadPoolExecutor":
-    """The private pool tools run on. Named so a stuck thread is identifiable
-    in a stack dump rather than an anonymous ThreadPoolExecutor-N."""
+    """The tool thread pool, named so a stuck thread shows up in a stack dump."""
     return ThreadPoolExecutor(
         max_workers=_TOOL_WORKERS, thread_name_prefix="aethelark-tool"
     )
 
 
 def _shutdown_tool_executor(executor: "ThreadPoolExecutor") -> None:
-    """Stop taking new work and abandon the backlog.
-
-    `cancel_futures=True` drops everything not yet started; `wait=False` means
-    quitting does not block on tools that are mid-flight. Combined with the
-    deadlines in core.run_cmd — which stop a command hanging forever in the
-    first place — this is what turns "quit" into an action rather than a wish.
+    """Stop taking new work and abandon the backlog without waiting for running
+    tools.
     """
     executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _shutdown_web_browser() -> None:
-    """Close the eagle's own browser, if `web_agency` ever started one.
-
-    Nothing else in this process closes it: `EagleBrowser` runs its own
-    daemon thread and holds an un-`stop()`ped Playwright driver process for
-    as long as the process lives, and a daemon thread does not get a chance
-    to run its own cleanup on interpreter exit. Importing
-    `actions.grounding.web.browser` here rather than at module load time
-    keeps this file from paying for Playwright's import (and the module
-    it's nested under) on every startup, including the vast majority of
-    sessions that never touch the web tool at all — `default_browser()`
-    only ever constructs the real thing the first time `web_agency` needs
-    it, and if that never happened, closing it here is a safe no-op.
+    """Close the eagle's own browser if web_agency started one: its daemon thread
+    cannot clean up at exit.
     """
     try:
         from actions.grounding.web.browser import default_browser
@@ -203,17 +173,8 @@ def _shutdown_web_browser() -> None:
 
 
 class ConnectionBackoff:
-    """Reconnect delay that grows under failure and forgets that growth once a
-    session proves healthy.
-
-    The delay used to only ever go up. It doubled on each network error, capped
-    at 60, and was never reset on a successful connect — so one bad-Wi-Fi
-    stretch pinned every later reconnect at a full minute for the rest of the
-    process, long after the network had recovered.
-
-    The reset is gated on HEALTH rather than on merely connecting: a session
-    that dies on arrival is a crash loop, and a crash loop that resets its own
-    backoff is a hot loop with extra steps.
+    """Reconnect delay that grows under failure and resets once a session has stayed
+    up long enough to prove the path healthy.
     """
 
     BASE            = 3.0
@@ -252,16 +213,7 @@ def _get_api_key() -> str:
 
 
 def _load_system_prompt() -> str:
-    """The constitution, or a stub loud enough to notice.
-
-    The fallback is right — an eagle with a reduced prompt beats an eagle that
-    will not start — but it was silent, and silence turns a packaging mistake
-    into a personality change nobody can attribute. core/prompt.txt is read by
-    relative path and was in neither packaging/aethelark.spec's `datas` nor
-    smoke_test.py's REQUIRED, so a frozen build shipped without it would have
-    started normally and run on three lines: no security clauses, none of the
-    leak history, not the ONE SENTENCE rule. It would just have behaved oddly.
-    """
+    """core/prompt.txt, or a stub loud enough to notice in the log."""
     try:
         text = PROMPT_PATH.read_text(encoding="utf-8")
     except Exception as e:
@@ -295,11 +247,8 @@ def _load_system_prompt() -> str:
 
 
 def _language_line() -> str:
-    """One sentence on which language to answer in.
-
-    The user's own choice when they made one; otherwise the language they
-    speak. The prompt used to hard-code one person's languages, which is a
-    wrong instruction for every other person who installs this.
+    """One sentence on which language to answer in: the user's setting, else the
+    language they speak.
     """
     lang = str(prefs.get("reply_language") or "").strip()
     if lang:
@@ -318,9 +267,7 @@ def _clean_transcript(text: str) -> str:
 
 
 def _collapse_repeats(text: str) -> str:
-    """The native-audio transcription sometimes emits an utterance twice in a row
-    ('X. X.'), so a spoken reply logs doubled. Collapse (1) an exact whole-string
-    doubling and (2) consecutive duplicate sentences, so it reads once."""
+    """Collapse a transcript that repeats itself ('X. X.') into one copy."""
     text = (text or "").strip()
     if not text:
         return text
@@ -343,9 +290,9 @@ def _collapse_repeats(text: str) -> str:
 
 
 def _computer_control_actions() -> str:
-    """Read from computer_control's own _ACTIONS, for the same reason as
-    below: the hand-typed version had already lost drag, wait_for_element and
-    scroll_into_view, which work and which the model was never told about."""
+    """Actions read from computer_control._ACTIONS, so the declaration cannot fall
+    behind the code.
+    """
     try:
         from actions.computer_control import _ACTIONS
         return " | ".join(_ACTIONS)
@@ -354,17 +301,8 @@ def _computer_control_actions() -> str:
 
 
 def _computer_settings_actions() -> str:
-    """The action vocabulary, read from the implementation itself.
-
-    This was the string "The action to perform", and computer_settings
-    implements 66 actions. The model cannot invoke what it has never heard of,
-    so 59 working capabilities - lock screen, mute, snap window, switch tab,
-    toggle wifi, task manager - were unreachable by voice. The eagle was less
-    capable than the eagle, and no test could see it: the code worked, the
-    tests passed, and the features were dead because nothing advertised them.
-
-    Generated rather than typed, because a hand-written list is exactly how
-    they went missing in the first place.
+    """Actions read from computer_settings itself, so the declaration cannot fall
+    behind the code.
     """
     try:
         from actions.computer_settings import ACTION_MAP
@@ -378,23 +316,15 @@ def _computer_settings_actions() -> str:
             "brightness_set takes 0-100.")
 
 
-#: Tools that only READ. Safe on a turn nobody asked for; everything else is
-#: refused there.
-#: `mission` is deliberately ABSENT. `mission next` runs a step, and running
-#: steps unasked is the exact behaviour being stopped — it is what kept
-#: opening pages a minute at a time after the mission had already failed.
+# Tools that only read: allowed on a turn nobody asked for. mission is absent because
+# `next` runs a step.
 _READ_ONLY_TOOLS = frozenset({
     "system_status", "swarm_status", "save_memory", "messages_brief",
     "weather_report",
 })
 
-#: Built-in tools offered only when the user turns Labs on in Settings.
-#:
-#: Every declared tool is a choice a small voice model has to get right, and a
-#: wrong choice here sends a message to the wrong person, drives the mouse, or
-#: starts a coding swarm. These are the ones that are powerful, depend on
-#: accounts most people have not connected, or have not been exercised enough
-#: to be the default. They stay fully wired: Labs is a switch, not a deletion.
+# Built-in tools offered only when Labs is on: powerful, account-dependent or less
+# exercised.
 CODING_TOOLS = frozenset({
     "swarm_mode", "swarm_status", "developer_mode", "dev_agent", "code_helper",
     "agent_interject",
@@ -419,12 +349,9 @@ def tool_enabled(name: str) -> bool:
     return True
 
 
-#: Harness tools that act on the island's row of models and on printers. The
-#: row and the picks are the harness's; what gets printed is a module's, and
-#: without that module these are four tools about models and printers offered
-#: to a model on a machine that has neither -- each one a wrong choice it can
-#: make. Keyed to the module tool they drive, so they arrive with it.
-#: The module tool the island's print drives -- named once, here.
+# Harness tools for the island's model row and printers, offered only with the module
+# tool they drive.
+# The module tool the island's print drives.
 _PRINT_TOOL = "a3d_print_batch"
 
 MODULE_BACKED_TOOLS = {
@@ -436,9 +363,9 @@ MODULE_BACKED_TOOLS = {
 
 
 def _missing_tool_result(name: str) -> ToolResult:
-    """A tool that does not exist here. One of a catalog module's is the common
-    case: the user never installed that module, and the reply has to say so
-    rather than leave the model to guess whether to retry."""
+    """A tool that does not exist here, usually one from a module the user has not
+    installed.
+    """
     from core.module_bus import installer
     module = None
     for key, entry in installer.catalog().items():
@@ -475,10 +402,7 @@ def declared_tools(labs: bool | None = None) -> list[dict]:
             and (d["name"] not in MODULE_BACKED_TOOLS
                  or _module_tool_available(MODULE_BACKED_TOOLS[d["name"]]))]
 
-#: Domain modules discovered on this machine (a3d, …). Discovery is a glob
-#: plus a few PATH lookups — nothing is executed — so it is safe at import.
-#: Modules whose binary is absent contribute no declarations, and calling one
-#: reports that it is not installed rather than failing obscurely.
+# Modules found on this machine. Discovery runs nothing, so it is safe at import.
 from core.module_bus import ModuleBus as _ModuleBus
 from core.module_bus.manifest import CONFIRM_PARAM, PERMANENT
 
@@ -491,30 +415,18 @@ except Exception as _e:                       # never block boot on a module
 
 from core.card_assembly import CardStore
 
-#: What the island is currently showing, so a second tool about the same
-#: company extends that card instead of replacing it with a thinner one.
+# What the island shows now, so a second tool about the same company extends that card.
 CARD_STORE = CardStore()
 
 
-#: What the model may say for a flip, and what each word means. An
-#: unrecognised direction is 0 rather than a default: guessing which way the
-#: user meant is worse than saying you did not know.
+# Words the model may use for a flip. An unknown direction is 0, never a guess.
 _DECK_DELTAS = {"next": 1, "forward": 1, "right": 1,
                 "previous": -1, "prev": -1, "back": -1, "left": -1}
 
 
 def _drawable_here_or_in_deck(card: dict, fields, asked: set) -> bool:
-    """True if the card carries a drawn field — at the top level OR inside a
-    deck of candidates.
-
-    A browse/local answer is a DECK: its drawable fields (title, eta,
-    dimensions, printer...) sit one level down, inside a `candidates` list,
-    while the top level holds only the query and the fleet. Measured
-    2026-09-21: a browse returned five benchies with titles, times and sizes,
-    but the drawability gate read only the top level, saw nothing, and the
-    carousel never opened — even though pill.html already builds the deck from
-    `candidates` ("A browse exists to show the candidates, so it opens the
-    card"). The gate now looks where the data actually is.
+    """True if the card carries a drawn field at the top level or inside its deck of
+    candidates.
     """
     def has(obj) -> bool:
         return isinstance(obj, dict) and any(
@@ -535,9 +447,7 @@ def deck_delta(direction) -> int:
     return _DECK_DELTAS.get(str(direction or "").strip().lower(), 0)
 
 
-#: Words for an absolute position. "The second one" is a jump, and a delta
-#: cannot express it — a delta needs to know where the cursor already is, and
-#: nothing on this side of the bridge does.
+# Words for an absolute position in the deck.
 _DECK_ORDINALS = {
     "first": 1, "one": 1, "1st": 1, "second": 2, "two": 2, "2nd": 2,
     "third": 3, "three": 3, "3rd": 3, "fourth": 4, "four": 4, "4th": 4,
@@ -561,10 +471,8 @@ _ISLAND_STAGES = {"summary": "glance", "details": "expanded", "close": "idle"}
 
 
 def island_view(ui, view, target=None) -> ToolResult:
-    """Open the card on screen, or a running activity, at another size.
-
-    The page picks the card; this only refuses what cannot be shown, so the
-    model hears "nothing is running" rather than a success nothing followed.
+    """Open the card on screen, or a running activity, at another size. Refuses what
+    cannot be shown.
     """
     stage = _ISLAND_STAGES.get(str(view or "").strip().lower())
     if stage is None:
@@ -588,12 +496,8 @@ def island_view(ui, view, target=None) -> ToolResult:
 
 
 def island_deck_move(ui, direction) -> ToolResult:
-    """Flip the deck on the island, if there is one.
-
-    These tools are declared for the whole session — a Gemini Live session's
-    tool list is fixed at connect time — so the gate lives here. "Next" is an
-    ordinary English word, and with nothing on screen the honest answer is to
-    say so rather than quietly do something to whatever card is up.
+    """Flip the deck on the island, if there is one. The session's tool list is fixed
+    at connect time, so the gate lives here.
     """
     if not ui.deck_is_open():
         return ToolResult.failure(
@@ -617,23 +521,9 @@ def island_deck_move(ui, direction) -> ToolResult:
 
 
 def print_picked(ui, bus, confirm_token: str = "") -> ToolResult:
-    """Print what is on screen. The model supplies nothing but a yes.
-
-    Printing used to take two calls with a JSON string copied between them:
-    island_picks handed back a jobs list and the model passed it verbatim to
-    the module's batch print. Nothing about that needed a model. The page already knows
-    what is picked, so the list is built here from the live selection, and the
-    only thing the model contributes is the token proving a human said yes.
-
-    That removes the copy — a weak model transcribing a JSON array is a defect
-    waiting to happen — and it removes the mismatch it made possible: a batch
-    built from the screen cannot disagree with the screen.
-
-    The gate is untouched. The first call runs nothing and returns a question
-    to speak plus a single-use token bound to a digest of these exact jobs; a
-    second call carrying that token runs. Changing the picks in between changes
-    the digest and the token stops working, which is the behaviour that keeps
-    a yes attached to the thing it was given for.
+    """Print what is picked on screen. The first call returns a question and a token
+    bound to these exact jobs; a second call with the token prints. Changing the
+    picks voids the token.
     """
     import json as _json
 
@@ -665,8 +555,7 @@ def print_picked(ui, bus, confirm_token: str = "") -> ToolResult:
     result = bus.invoke(_PRINT_TOOL, args,
                         timeout_s=TOOL_SPECS[_PRINT_TOOL].timeout_s)
 
-    # Say what is being printed, not the ids it is being printed by. The
-    # human half of a confirmation has to be checkable by the human.
+    # Say what is being printed, in words the user can check.
     if result.data.get("needs_confirmation") and result.data.get("confirm_token"):
         named = ", ".join(f"{j['title'] or j['model_id']} on {j['printer']}"
                           for j in jobs)
@@ -680,13 +569,7 @@ def print_picked(ui, bus, confirm_token: str = "") -> ToolResult:
 
 
 def island_picks(ui) -> ToolResult:
-    """What the user has picked, and where each one is going.
-
-    The model needs this to compose a print batch, and it needs it as data
-    rather than from memory: the picks live on screen, the user changed them by
-    clicking, and a model reciting what it thinks it saw is how the wrong model
-    reaches the right printer.
-    """
+    """What the user has picked and where each one goes, read from the screen."""
     import json as _json
     if not ui.deck_is_open():
         return ToolResult.failure(
@@ -708,29 +591,20 @@ def island_picks(ui) -> ToolResult:
 
 
 def island_set_printer(ui, printer) -> ToolResult:
-    """Send the candidate on screen to a named printer.
-
-    The name reaches the page as JavaScript, so it is constrained to something
-    that can only be a printer key before it gets there.
+    """Send the candidate on screen to a named printer. The name reaches the page as
+    JavaScript, so only a printer key is accepted.
     """
     if not ui.deck_is_open():
         return ToolResult.failure(
             "There is nothing on screen to assign to a printer.",
             guidance="Search for models first.")
     name = str(printer or "").strip()
-    # Rejected, not sanitised. Stripping the illegal characters out of
-    # "'; drop" leaves "drop", which is a different request the user never
-    # made — and quietly turning bad input into valid-looking input is how a
-    # job reaches a machine nobody named.
+    # Rejected, not sanitised: cleaning bad input can turn it into a different request.
     if not name or not all(c.isalnum() or c in "_-" for c in name):
         return ToolResult.failure(
             f"{printer!r} is not a printer name.",
             guidance="Use the printer's name exactly as it was set up.")
-    # Syntax is not identity. "CC9" is well-formed and does not exist; it was
-    # accepted, uppercased, written to the chip and passed through the gate,
-    # and the driver then dialled 127.0.0.1 because get_printer returned
-    # nothing. Where the fleet is known, it is enforced; where it is not, the
-    # syntactic check above is all there is and the failure surfaces later.
+    # Where the fleet is known, the printer must be in it.
     known = []
     try:
         import json as _json
@@ -1191,10 +1065,6 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "desktop_control",
-        # `task` was not described at all, so the model chose this tool
-        # believing it only set wallpapers — while that action generates and
-        # runs Python. Say what it does; the model cannot weigh a capability
-        # it has not been told about.
         "description": ("Controls the desktop: wallpaper, organize, clean, "
                         "list, stats. The 'task' action additionally writes "
                         "and RUNS Python for something the other actions do "
@@ -1521,8 +1391,6 @@ TOOL_DECLARATIONS = [
     },
 ]
 
-# --- Plugin system ---
-
 
 class ToolSpec:
     def __init__(self, reads=None, writes=None, exclusive=False, priority=1,
@@ -1532,10 +1400,8 @@ class ToolSpec:
         self.exclusive = exclusive
         self.priority = priority
         self.timeout_s = timeout_s
-        #: Two calls to this tool with the SAME arguments must not overlap.
-        #: Keyed on arguments rather than on the tool, because two prints on
-        #: two different printers are the whole point of owning a fleet, while
-        #: the same print twice is a machine started twice.
+        # Two calls with the same arguments must not overlap: keyed on arguments, so two
+        # prints on two printers can run together.
         self.one_at_a_time = one_at_a_time
 
 TOOL_SPECS = {
@@ -1543,27 +1409,11 @@ TOOL_SPECS = {
     "open_app": ToolSpec(writes=["desktop"], priority=1),
     "weather_report": ToolSpec(reads=["web"], priority=1),
     "browser_control": ToolSpec(writes=["desktop"], priority=1),
-    # Reads the web in its own browser; touches neither the user's screen nor
-    # their browser. Non-exclusive on purpose — this is the tool that can run
-    # while the user is doing something else.
+    # Reads the web in its own browser, so it can run while the user does something
+    # else.
     "web_agency": ToolSpec(reads=["web"], priority=1, timeout_s=90.0),
-    # Declared because it was NOT, and an undeclared tool does not get "no
-    # policy" -- it gets whichever default the caller happened to write. The
-    # scheduler asks for it four different ways: `TOOL_SPECS.get(name,
-    # ToolSpec())` when sorting by priority and `ToolSpec(exclusive=True)` in
-    # three exclusion checks. So `mission` has been running as priority 1 and
-    # exclusive, which is a policy nobody chose and nobody could read.
-    #
-    # This is that policy written down, not a change to it. `mission` drives
-    # real applications a step at a time -- start / next / status / abandon --
-    # so it owns the desktop while a step runs, exactly as the fallback assumed.
-    #
-    # The cost is real and worth naming: `status` is a question about progress
-    # and now queues behind the work it is asking about, which is the thing
-    # `swarm_status` below is deliberately non-exclusive to avoid. A ToolSpec
-    # is per tool, not per action, so the two cannot be separated without
-    # splitting the tool. Left as it has always behaved rather than changed
-    # blind.
+    # mission drives real applications a step at a time, so it is exclusive; its status
+    # action queues behind the step.
     "mission": ToolSpec(reads=["memory"], writes=["desktop", "file"],
                         exclusive=True, priority=1),
     "island_deck_move":  ToolSpec(writes=["island"], priority=3, timeout_s=5.0),
@@ -1572,8 +1422,7 @@ TOOL_SPECS = {
     "island_picks":       ToolSpec(reads=["island"], priority=3, timeout_s=5.0),
     "print_picked":       ToolSpec(writes=["printer"], exclusive=True,
                                    priority=2, timeout_s=600.0),
-    # One HTTPS call. Non-exclusive and short: it touches nothing the user can
-    # see and has no reason to hold a slot.
+    # One HTTPS call: short and non-exclusive.
     "youtube_api": ToolSpec(reads=["net"], priority=1, timeout_s=20.0),
     "file_controller": ToolSpec(writes=["file"], priority=1),
     "send_message": ToolSpec(writes=["desktop"], exclusive=True, priority=1, timeout_s=90.0),
@@ -1586,9 +1435,8 @@ TOOL_SPECS = {
     "dev_agent": ToolSpec(reads=["memory"], writes=["file"], priority=1, timeout_s=45.0),
     "developer_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=120.0),
     "swarm_mode": ToolSpec(reads=["memory"], writes=["file"], exclusive=True, priority=2, timeout_s=300.0),
-    # Read-only and deliberately NOT exclusive: a question about progress must
-    # never queue behind the work it is asking about. The eagle delegates, so
-    # it stays free to talk while its agents build.
+    # Read-only and not exclusive: a question about progress never queues behind the
+    # work.
     "eagle_mode": ToolSpec(writes=["settings"], exclusive=True, priority=3, timeout_s=10.0),
     "swarm_status": ToolSpec(reads=["memory"], priority=3, timeout_s=10.0),
     "agent_interject": ToolSpec(writes=["file"], priority=3, timeout_s=30.0),
@@ -1603,27 +1451,16 @@ TOOL_SPECS = {
     "shutdown_aethelark": ToolSpec(writes=["system"], exclusive=True, priority=3),
 }
 
-# Discovered module tools get a spec too, or the scheduler falls back to the
-# 30s default — too short for `a3d search`, which goes to the network, and for
-# anything that talks to a printer over the wire. They read rather than write
-# as far as the eagle's own resources are concerned: a module touches its own
-# domain, not the mouse, the filesystem or the browser, so nothing here needs
-# to be exclusive against the eagle's hands.
-#: Names in TOOL_SPECS that came from a module manifest rather than the table
-#: above, so a rediscovery can replace them without touching hand-set entries.
+# Module tools get a spec too, or the scheduler's 30s default cuts off network and
+# printer calls. They never touch the eagle's mouse, files or browser, so none is
+# exclusive.
+# Names in TOOL_SPECS that came from a manifest, so a rediscovery can replace them.
 _MODULE_SPEC_NAMES: set[str] = set()
 
 
 def register_module_specs() -> None:
-    """Scheduling specs for every available module tool, from its manifest.
-
-    setdefault, not assignment, for names in the hand-written table above: a
-    name there is a deliberate override. Names this function added earlier are
-    replaced, so a module updated while the eagle runs gets its new numbers.
-
-    Undeclared stays conservative: a tool nobody measured gets a query-sized
-    budget, and a gated one the long budget, because a gated print downloads,
-    slices, uploads and starts a job.
+    """Scheduling specs for every available module tool, from its manifest. Hand-set
+    entries win; entries added earlier are replaced.
     """
     for name in list(_MODULE_SPEC_NAMES):
         TOOL_SPECS.pop(name, None)
@@ -1647,10 +1484,8 @@ register_module_specs()
 
 
 def reload_modules() -> tuple[set[str], set[str]]:
-    """Look for installed modules again. Returns (added, removed) keys.
-
-    Discovery is a glob and a PATH lookup, nothing is executed, so this is
-    cheap enough to run whenever the modules directory changes.
+    """Look for installed modules again. Returns (added, removed) keys. Runs nothing,
+    so it is cheap.
     """
     before = {m.key for m in getattr(MODULE_BUS, "available", lambda: [])()}
     try:
@@ -1661,7 +1496,6 @@ def reload_modules() -> tuple[set[str], set[str]]:
     register_module_specs()
     after = {m.key for m in MODULE_BUS.available()}
     return after - before, before - after
-
 
 
 class AethelarkLive:
@@ -1679,34 +1513,25 @@ class AethelarkLive:
         self._pending_vision       = None    # (img_bytes, mime_type, question, angle) to inject after tool response
         self._vision_last_time     = 0.0     # monotonic time of last screen_process call (cooldown guard)
         self._vision_busy          = False   # True while a vision capture/inject cycle is in flight
-        # Refuses a repeat of the SAME question about the SAME surface. The
-        # old 4s cooldown was cleared at every turn_complete, so a model
-        # asking once per turn walked straight through it - five times in one
-        # session, after it had already answered correctly.
+        # Refuses a repeat of the same question about the same surface.
         self._vision_guard         = VisionGuard()
         self._interrupted          = False   # True while draining audio after user interrupt
-        self._interrupt_ts         = 0.0     # monotonic time the latch was set — see _discard_stragglers()
+        self._interrupt_ts         = 0.0
         self._interrupt_until      = 0.0     # when the discard latch lets go on its own
-        # Whether the server is still working on the current answer. Set by
-        # its audio and its tool calls, cleared by turn_complete / interrupted.
-        # What a stop has to wait out, if anything, depends on it.
+        # Whether the server is still working on the current answer: set by its audio
+        # and tool calls, cleared by turn_complete or interrupted.
         self._model_turn_active    = False
-        # Set by a stop; the receive loop closes the user's line at the next
-        # message, so what they said before the stop is not merged with, or
-        # dropped along with, what they say after it.
+        # Set by a stop: the receive loop closes the user's line at the next message.
         self._close_heard          = False
-        # Talking over the eagle. `_play_peak` is how loud the speakers are
-        # right now (playback thread writes, event loop reads); the detector
-        # learns how much of that comes back in through the microphone.
-        # `_barge_reply` is True while the detector is following the current
-        # reply, and `_barge_on` is the Settings toggle as read when it began.
+        # Talking over the eagle. _play_peak is the speaker level now (playback thread
+        # writes, event loop reads). _barge_reply is True while the detector follows the
+        # current reply; _barge_on is the Settings toggle when it began.
         self._barge = BargeInDetector(frame_ms=1000.0 * CHUNK_SIZE / SEND_SAMPLE_RATE)
         self._barge_reply          = False
         self._barge_on             = True
         self._play_peak            = 0.0
-        # Straggler audio from a cancelled turn arrives within milliseconds;
-        # this window is generous. It is a self-heal backstop, not a timer the
-        # normal path relies on — turn_complete still clears the latch at once.
+        # Backstop for straggler audio from a cancelled turn; turn_complete normally
+        # clears the latch.
         self._turn_had_audio       = False   # did THIS turn produce speakable audio?
         self._last_server_activity = time.monotonic()  # watchdog: any server frame resets this
         self.ui.on_text_command   = self._on_text_command
@@ -1728,70 +1553,54 @@ class AethelarkLive:
         self._proactive        = ProactiveEngine()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
 
-        # ── Phase 1: Observability & Turn Identity ────────────────────────────
         self._session_id:  str = ""              # unique per live-session connection
         self._turn_epoch:  int = 0               # monotonic counter; incremented on barge-in and turn_complete
         self._shutdown_requested = False          # graceful shutdown flag
 
-        # ── Phase 2: Audio Queue Bounds ───────────────────────────────────────
         self._mic_drops: int = 0                  # count of oldest-mic-frames dropped due to overflow
 
-        # ── Phase 9: Session Resumption ───────────────────────────────────────
-        # Gemini Live streams a rolling resumption token; on a dropped connection
-        # (1011, GoAway, network blip) we reconnect WITH this handle so the server
-        # restores full conversation context instead of a cold restart.
+        # Gemini Live's rolling resumption token: a reconnect with it keeps the
+        # conversation.
         self._resume_handle: str | None = None
         self._go_away_reconnect  = False          # set when server signals imminent GoAway
 
-        # Reconnect pacing. Grows under failure, resets once a session has been
-        # up long enough to prove the path is healthy — see ConnectionBackoff.
+        # Reconnect pacing (ConnectionBackoff).
         self._backoff = ConnectionBackoff()
         #: Consecutive sessions ended by an exhausted quota. Cleared by the
         #: first turn that completes, which proves the allowance is back.
         self._quota_strikes = 0
-        #: Typed while there was no session: (monotonic time, text). Sent when
-        #: the session is back, if still fresh -- see _flush_pending_text.
+        # Typed while there was no session: (monotonic time, text). Sent when the
+        # session is back, if still fresh.
         self._pending_text: list[tuple[float, str]] = []
         self._refresh_lock = threading.Lock()
 
-        # Tool batches currently running off the receive loop. Holds a strong
-        # reference (asyncio only keeps a weak one) and tells the wedge
-        # watchdog that silence is work, not death.
+        # Tool batches running off the receive loop. A strong reference (asyncio keeps
+        # only a weak one); tells the wedge watchdog that silence is work.
         self._inflight_tools: set[asyncio.Task] = set()
-        #: "<tool>|<json args>" -> the future of the call already running it.
-        #: Stops a duplicate request starting a second copy of work that is
-        #: unsafe to overlap. See `_execute_tool`.
+        # "<tool>|<json args>" -> the future already running that call, so a duplicate
+        # does not start a second copy.
         self._inflight_by_args: dict[str, "asyncio.Future"] = {}
 
-        # Serialises batches that write or claim exclusivity. Read-only batches
-        # skip it entirely — see _batch_needs_exclusion.
+        # Serialises batches that write or claim exclusivity. Read-only batches skip it.
         self._tool_batch_lock = asyncio.Lock()
 
-        # Tools get their own bounded pool so a pile-up of slow ones cannot
-        # starve asyncio.to_thread (memory loads, dashboard snapshots, news).
+        # Tools get their own bounded pool so slow ones cannot starve asyncio.to_thread.
         self._tool_executor = _make_tool_executor()
 
-        # ── Latency tracing (AETHELARK_TRACE=1) ───────────────────────────────
-        # Off by default and inert when off: no VAD is constructed, and every
-        # mark is an attribute read that returns immediately. On, it answers the
-        # only question that matters here — where the time between "I stopped
-        # talking" and "I heard something" actually goes.
-        # Speculation: one prediction per turn, reset at turn_complete.
+        # Latency tracing (AETHELARK_TRACE=1). Inert when off.
         self._speculated = False
         self._trace_on = _trace_enabled()
         self._trace: TurnTrace | None = None
         self._trace_log = TraceLog(emit=lambda line: print(f"[Aethelark] {line}"))
         self._vad = SpeechDetector(rate=SEND_SAMPLE_RATE,
                                    frame_samples=CHUNK_SIZE) if self._trace_on else None
-        # A second detector, always on, for one job: letting the island show
-        # that it hears the user while they talk and rest when they do not.
+        # Always-on detector so the island shows when the user is talking.
         self._hearing_vad = SpeechDetector(rate=SEND_SAMPLE_RATE,
                                            frame_samples=CHUNK_SIZE,
                                            hangover_ms=450)
         self._hearing = False
         self._mic_shield_on = prefs.enabled("mic_shield_enabled")
-        # When the eagle's own voice has certainly left the room. See
-        # `_feed_hearing`; stamped by `set_speaking(False)`.
+        # When the eagle's own voice has left the room; stamped by set_speaking(False).
         self._echo_clear_at = 0.0
         self._echo_reset_due = False
         #: Which deck is on the island. A new deck bumps it, and a background
@@ -1802,15 +1611,10 @@ class AethelarkLive:
         from actions.grounding.web import chrome_link as _chrome_link
         _chrome_link.notify = getattr(ui, "show_notice", None)
         _chrome_link.request_setup = getattr(ui, "request_chrome_setup", None)
-        #: The playback stream's own latency, read when it opens. 50 ms
-        #: measured on the default PipeWire device, 2026-09-24.
+        # The playback stream's own latency, read when it opens.
         self._out_latency_s = 0.05
 
-    # ── Trace helpers ───────────────────────────────────────────────────────
-    # Deliberately tiny and total: these are called from four different threads
-    # (mic, receive loop, playback, tool dispatch) on the hot path of a live
-    # conversation. Instrumentation that can throw would make the diagnostic
-    # worse than the disease.
+    # Trace helpers run on four threads in the hot path, so they never raise.
 
     def _trace_mark_at(self, name: str, when: float) -> None:
         t = self._trace
@@ -1823,11 +1627,7 @@ class AethelarkLive:
             t.mark(name)
 
     def _trace_begin(self) -> None:
-        """Open a new turn. The previous one is dropped, not reported.
-
-        A turn the user abandoned mid-sentence has no meaningful end, and
-        publishing its half-filled numbers would drag the medians toward
-        whatever the abandonment happened to cost."""
+        """Open a new turn. The previous one is dropped, not reported."""
         self._trace = TurnTrace(turn=self._turn_epoch, enabled=True)
 
     def _trace_finish(self) -> None:
@@ -1846,20 +1646,8 @@ class AethelarkLive:
         threading.Thread(target=_run, daemon=True).start()
 
     def _speculate(self, partial: str) -> None:
-        """Begin the safe half of a request while the user is still speaking.
-
-        The only moment early enough to matter: by the time the model emits a
-        tool call, the 350ms silence window and the round trip are already
-        spent. Browser cold start was measured at ~310ms, and the first `open`
-        on a fresh profile at 7165ms.
-
-        Strictly READ_ONLY, and strictly one thing for now - warming the
-        browser. It has no side effects at all, and if `to_action` does not
-        move on web requests then the whole idea is wrong and nothing else
-        should be built on it.
-
-        Never raises. It runs on the receive loop, and a speculative
-        optimisation that can break a turn is worse than no optimisation.
+        """Warm the browser while the user is still speaking, if the request looks
+        like web work. Read-only. Never raises.
         """
         if self._speculated:
             return                      # transcription streams in many chunks
@@ -1867,10 +1655,8 @@ class AethelarkLive:
             intent = _decode_intent(partial)
             if not any(c.id == "web.open" for c in intent.prewarm):
                 return
-            # A verb is not a destination. Substring matching fired on the word
-            # "click" in "why can't you click", so a browser started, was never
-            # used, and closed again — repeatedly, around a conversation that
-            # was not about the web.
+            # Match whole intents, not verbs: "click" in "why can't you click" is not a
+            # web request.
             from core.intent import worth_warming
             if not worth_warming(partial):
                 return
@@ -1882,16 +1668,8 @@ class AethelarkLive:
             pass
 
     def _trace_mic_frame(self, data) -> None:
-        """Timestamp the user's speech from a single outgoing mic frame.
-
-        A method rather than a closure inside `_listen_audio` so it can be
-        driven by a test without a sound device: the marks it sets are the
-        origin of every latency number, and an origin nothing can exercise is
-        an origin nobody can trust.
-
-        Fed the frames that are actually SENT, not every frame the device
-        produces, so our estimate of "the user stopped" is made from the same
-        audio the server's own VAD judged.
+        """Timestamp the user's speech from the mic frames actually sent, so the
+        estimate matches the audio the server judged.
         """
         if self._vad is None:
             return
@@ -1900,32 +1678,22 @@ class AethelarkLive:
             self._trace_begin()
             self._trace_mark("speech_start")
         elif event == "end":
-            # The detector only declares "end" after `hangover_ms` of silence,
-            # so this fires that long AFTER the user actually stopped. Marking
-            # it here made `to_voice` (speech_end -> first_audio) UNDERSTATE
-            # the felt delay by the whole hangover — a measured 1.8s was really
-            # ~2.1s. Back-date the mark to when speech really ended.
-            #
-            # The client VAD does not gate sending; audio streams continuously
-            # and the SERVER decides the turn. So this costs nothing at
-            # runtime and only ever affected the honesty of the number.
+            # The detector says "end" hangover_ms after speech stops, so back-date the
+            # mark.
             self._trace_mark_at("speech_end",
                                 time.monotonic() - (self._vad.hangover_ms / 1000.0))
 
     def _feed_hearing(self, data) -> str | None:
         """Two events per utterance: the user started talking, and stopped."""
-        # The mic reopens when the last chunk of the eagle's reply is WRITTEN
-        # to the device, not when it has been heard: the stream's buffer and
-        # the room still hold the end of its sentence. Without echo
-        # cancellation (a fresh install has none) that tail is a human voice
-        # to the detector, and hearing it would light the island and count as
-        # the user speaking. The frames still go to Gemini; only this skips.
+        # The mic reopens when the reply is written to the device, not heard: skip the
+        # tail so the eagle's own voice does not count as the user. The frames still go
+        # to Gemini.
         if time.monotonic() < self._echo_clear_at:
             self._echo_reset_due = True
             return None
         if self._echo_reset_due:
-            # Here rather than in set_speaking, which the playback thread
-            # calls: the detector is only touched from the event loop.
+            # Here, not in set_speaking: the detector is only touched from the event
+            # loop.
             self._echo_reset_due = False
             self._hearing_vad.reset()
         event = self._hearing_vad.feed(data)
@@ -1934,10 +1702,7 @@ class AethelarkLive:
             if level is not None:
                 self.ui.set_audio_level(min(level / 3000.0, 1.0))
         if event == "start":
-            # The user spoke, so the next turn is theirs and may act. This
-            # used to live in the latency tracer, which AETHELARK_TRACE=0
-            # switches off -- and with it off, one proactive check or system
-            # alert left every later spoken request refused.
+            # The user spoke, so the next turn is theirs and may act.
             self._unprompted_turn = False
         if event == "start" and not self._hearing:
             self._set_hearing(True)
@@ -1946,8 +1711,8 @@ class AethelarkLive:
         return event
 
     def _set_hearing(self, on: bool) -> None:
-        # In the log because it freezes the island's clock: while it is on,
-        # a card on screen does not decay.
+        # Logged because it freezes the island's clock: a card does not decay while it
+        # is on.
         print(f"[hearing] {'on' if on else 'off'}")
         self._hearing = bool(on)
         fn = getattr(self.ui, "set_hearing", None)
@@ -1969,8 +1734,7 @@ class AethelarkLive:
         manual = self._dashboard.get_manual_url()
         return url, key, f"{url}/auto-login?key={key}", manual
 
-    #: How long a typed request stays worth sending after a reconnect. Longer,
-    #: and "turn off the lights" arrives minutes after anyone wanted it.
+    # How long a typed request stays worth sending after a reconnect.
     _PENDING_TEXT_S = 60.0
 
     def _on_text_command(self, text: str):
@@ -1978,9 +1742,7 @@ class AethelarkLive:
             self._pending_text = (self._pending_text + [(time.monotonic(), text)])[-3:]
             self.ui.write_log("SYS: Reconnecting — I'll send that the moment I'm back.")
             return
-        # Typed input is a request, same as speech. Without this the text-driven
-        # path (the mission harness, the dashboard box) would inherit whatever
-        # the last background wake-up set and have every tool refused.
+        # Typed input is a request, same as speech, so it clears the background gate.
         self._unprompted_turn = False
         note_user_turn(text, typed=True)
         asyncio.run_coroutine_threadsafe(
@@ -2005,23 +1767,10 @@ class AethelarkLive:
                 turns={"parts": [{"text": text}]}, turn_complete=True)
 
     def _on_island_subject(self, line: str) -> None:
-        """What the island is showing, handed to the model as context.
-
-        `turn_complete=False` is the whole design. This is not the user saying
-        something and it must not provoke a reply -- it rides along and is
-        there the next time they actually speak, so "what does that mean" has
-        a referent. Every other send_client_content in this file completes a
-        turn; this one deliberately does not.
-
-        The model was blind to anything the USER did to the island. It saw the
-        tool result that built a card, and nothing after: not the click that
-        opened it, not the flip to the third model, not a card that arrived on
-        its own. `[ISLAND]` is explained once in core/prompt.txt, so the line
-        itself stays about six tokens instead of carrying its own preamble.
-
-        Failure here is silent on purpose. A missing session means the model
-        simply does not learn what is on screen, which is where it started;
-        raising into a GUI callback thread would be worse than that.
+        """What the island shows, sent with turn_complete=False so it does not
+        provoke a reply but is there when the user next speaks. [ISLAND] is
+        explained in core/prompt.txt. Fails silently: no session means the model
+        just does not learn it.
         """
         if not self._loop or not self.session or not line:
             return
@@ -2041,14 +1790,11 @@ class AethelarkLive:
             was = self._is_speaking
             self._is_speaking = value
         if was and not value:
-            # Output buffer, then one mic frame whose window could straddle
-            # the last word, then the room's decay. The frame and the buffer
-            # are measured; the 0.1 s of decay is a margin, not a measurement.
+            # Output buffer plus one mic frame plus 0.1 s of room decay.
             self._echo_clear_at = (time.monotonic() + self._out_latency_s
                                    + CHUNK_SIZE / SEND_SAMPLE_RATE + 0.1)
         if value and self._hearing:
-            # The mic stops sending while the eagle talks, so no "end" would
-            # ever reach the detector; close the utterance here instead.
+            # The mic does not send while the eagle talks, so close the utterance here.
             self._hearing_vad.reset()
             self._set_hearing(False)
         
@@ -2068,18 +1814,10 @@ class AethelarkLive:
         self.interrupt()
 
     def interrupt(self) -> None:
-        """Stop Aethelark mid-speech: drain queued audio and open mic immediately.
-
-        After a stop, the server may still be sending the rest of the answer
-        that was stopped, and those frames must not play. They are discarded
-        until the server says the answer is over -- but ONLY if it is still
-        sending one. Gemini usually finishes generating well before the eagle
-        finishes speaking; a hold set then had nothing to wait for, and
-        silently ate the NEXT answer instead.
-
-        One stop for every way of asking: a tap, Esc, or talking over it. Esc
-        used to take a 1.5-second version of this, after which the rest of a
-        long answer simply played on.
+        """Stop the eagle mid-speech: drain queued audio and open the mic. Frames
+        still arriving for the stopped answer are discarded until the server ends
+        it, but only if it is still sending one. One stop for a tap, Esc or
+        talking over it.
         """
         streaming = self._model_turn_active
         self._interrupted = streaming
@@ -2104,8 +1842,7 @@ class AethelarkLive:
         self.set_speaking(False)
         if self._turn_done_event:
             self._turn_done_event.clear()
-        # An interrupted turn never reached its own end. Reporting it would
-        # mix "how long the eagle took" with "how long the user tolerated it".
+        # An interrupted turn has no real end, so it is not reported.
         self._trace = None
         if self._vad is not None:
             self._vad.reset()
@@ -2125,10 +1862,8 @@ class AethelarkLive:
             }))
 
     def _drop_queued_audio(self) -> None:
-        """Silence what is queued for the speakers, without holding anything.
-
-        For when the SERVER ended the answer: nothing more of it will arrive,
-        so there is nothing to discard later, only what is already queued.
+        """Silence what is queued for the speakers. For when the server ended the
+        answer, so nothing more of it will arrive.
         """
         self._turn_epoch += 1
         q = self.audio_in_queue
@@ -2141,20 +1876,9 @@ class AethelarkLive:
         self.set_speaking(False)
 
     def _discard_stragglers(self) -> bool:
-        """Should the frame just received be thrown away?
-
-        After a barge-in the server may still be flushing the CANCELLED turn's
-        audio. Those frames are tagged at RECEIVE time (post-interrupt), so they
-        carry the NEW epoch and slip past the stale-frame filter in the playback
-        loop — hence this second guard.
-
-        It is time-bounded, and that matters more than it looks. This used to be
-        a plain boolean cleared ONLY by a `turn_complete`. When a barge-in was
-        never followed by one, the latch stuck True and every audio frame for
-        the rest of the session was discarded one line before it reached the
-        playback queue: the eagle kept listening, kept transcribing, kept
-        generating, and never made another sound. A latch whose only exit is a
-        message that may never arrive is a deadlock with extra steps.
+        """Should the frame just received be thrown away? After a barge-in the server
+        may still flush the cancelled turn's audio under the new epoch. Time-
+        bounded, so a missing turn_complete cannot mute the session.
         """
         if not self._interrupted:
             return False
@@ -2182,7 +1906,6 @@ class AethelarkLive:
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
 
-        # Load customization from config
         try:
             _cfg = json.loads(open(API_CONFIG_PATH, encoding="utf-8").read())
             self._asst_name = (_cfg.get("assistant_name") or "Aethelark").strip()
@@ -2204,7 +1927,7 @@ class AethelarkLive:
             f"Use this to calculate exact times for reminders.\n\n"
         )
 
-        # Identity injection — overrides any hardcoded name in prompt.txt
+        # Identity from config overrides any name in prompt.txt.
         _addr = f"ADDRESS: Always call the user '{_user_name}'." if _user_name else ""
         identity_ctx = (
             f"[IDENTITY]\n"
@@ -2217,8 +1940,8 @@ class AethelarkLive:
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
-        # Each installed module says how to use it; an uninstalled one says
-        # nothing, so the prompt never sends the model to a tool it lacks.
+        # Only installed modules add instructions, so the prompt never names a tool the
+        # model lacks.
         try:
             module_notes = MODULE_BUS.instructions()
         except Exception:
@@ -2228,62 +1951,19 @@ class AethelarkLive:
 
         _voice = (_cfg.get("voice_name") or "Puck").strip()
 
-        # ── Latency: end-of-turn detection ───────────────────────────────────
-        # The single biggest tunable delay in the whole product. After you stop
-        # talking the server waits for silence before deciding your turn ended;
-        # nothing can begin until it does, so this sits in front of EVERY reply.
-        # Model inference is fixed cost — this is not.
-        #
-        # It trades against patience: too short and it cuts you off when you
-        # pause mid-thought (exactly what happens while describing something,
-        # a design idea). Tuned here for a conversational middle and
-        # exposed in config so it can be dialled per-person.
-        # ── TURN LATENCY BUDGET ──────────────────────────────────────────
-        # The only latency knobs the eagle actually controls. Everything else
-        # in a turn - network, model, how long the user talked - is not ours
-        # to set. Both had shipped untuned since the beginning.
-        #
-        # `silence_duration_ms` is the big one, and it is pure waiting: the
-        # server sits in SILENCE this long after the user stops before it will
-        # admit the turn ended. Nothing is in flight, the model is not
-        # thinking. It is paid on every turn, including "yes" - and at 550ms
-        # it was most of a one-second target spent doing nothing.
-        #
-        # 350ms is chosen against the failure on the other side, which is
-        # worse than waiting: below roughly 250ms an ordinary pause mid
-        # sentence - drawing breath, hunting for a word - reads as the end of
-        # the turn and the eagle talks over the user. Being cut off is far
-        # more annoying than a beat of delay, so this stays clear of that
-        # edge rather than chasing the smallest number that works in a quiet
-        # room. Set `end_of_turn_silence_ms` in config to tune per machine.
+        # Silence after speech before the server ends the turn: paid on every reply.
+        # Below about 250 ms a pause mid-sentence ends the turn. Tune with
+        # end_of_turn_silence_ms in config.
         _silence_ms = int(_cfg.get("end_of_turn_silence_ms") or 350)
-        # Audio kept from BEFORE speech onset, so a first syllable is not
-        # clipped. Useful; pure latency beyond what it takes to do that job.
+        # Audio kept from before speech onset, so a first syllable is not clipped.
         _prefix_ms = int(_cfg.get("speech_prefix_padding_ms") or 150)
 
-        # ── Latency + voice consistency: thinking ────────────────────────────
-        # LIVE_MODEL is a *thinking* native-audio model and thinking defaults
-        # on, so it reasons before it speaks — pure added delay on the simple
-        # conversational turns that are most of a voice session. It is also
-        # where stray `thought`/`text` parts come from, and a turn that returns
-        # text instead of audio is a SILENT turn.
-        #
-        # include_thoughts=False stops the reasoning being streamed to us at
-        # all, which keeps every reply in the model's own voice. Budget is
-        # configurable: 0 is fastest, raise it if planning quality suffers.
+        # Thinking off by default: it delays simple turns, and streamed thoughts can
+        # return text instead of audio (a silent turn). Budget is configurable.
         _think_budget = int(_cfg.get("thinking_budget") or 0)
 
-        # ── Verbosity: the hard-law backstop ────────────────────────────────
-        # `core/prompt.txt` asks for one sentence. Measured across 13 real
-        # turns it was not obeyed: `spoken` (first_audio -> complete) had a
-        # median of 4854ms and a worst case of 15373ms. Fifteen seconds of
-        # speech the user cannot skim, skip or interrupt.
-        #
-        # Prompt text is soft law - the model may talk itself out of it. This
-        # is the dispatch-layer version, and it is OFF by default on purpose:
-        # a cap set too low truncates a reply mid-word, which is worse than a
-        # long one. Set `max_reply_tokens` in config once a value has been
-        # measured against real turns rather than guessed at.
+        # Reply length cap, off by default: too low cuts a reply mid-word. Set
+        # max_reply_tokens in config.
         _max_tokens = _cfg.get("max_reply_tokens")
         _max_tokens = int(_max_tokens) if _max_tokens else None
 
@@ -2300,10 +1980,8 @@ class AethelarkLive:
             session_resumption=types.SessionResumptionConfig(
                 handle=self._resume_handle
             ),
-            # Without this the server ends an audio session once its context
-            # fills -- Google documents about fifteen minutes of audio -- and
-            # resuming only restores the same full context. A sliding window
-            # drops the oldest turns instead, so a conversation has no end.
+            # A sliding window, so the server does not end the session when its context
+            # fills (about fifteen minutes of audio).
             context_window_compression=types.ContextWindowCompressionConfig(
                 sliding_window=types.SlidingWindow(),
             ),
@@ -2327,56 +2005,18 @@ class AethelarkLive:
         )
 
     async def _dispatch_one_tool(self, fc, call_epoch: int = -1) -> types.FunctionResponse:
-        """Run a tool, unless an identical one is already running.
-
-        Measured 2026-09-07: the user asked for Spiderman ONCE and three
-        browse calls fired, at epochs 2, 3 and 5 — three separate turns,
-        so no batch-level check could have seen them together. Each launched a
-        browser and downloaded the same five files into the same directory.
-        Two of the five then failed with
-
-            No such file or directory: 'spiderman multipart.3mf.part'
-                -> 'spiderman multipart.3mf'
-
-        which is one copy renaming the temp file out from under another. The
-        same race was already written up for the download tool; browse inherited
-        it and nobody had run it twice at once before.
-
-        Keyed on the ARGUMENTS, not the tool. Two prints on two printers are
-        the point of owning a fleet; the same print twice is a machine started
-        twice. Identical arguments are the only case where a second run is
-        certainly not wanted, so it is the only case blocked — and the waiting
-        call gets the first one's answer rather than a refusal, because from
-        the model's side the request did succeed.
+        """Run a tool, unless an identical call is already running; the duplicate
+        gets the first one's answer. Keyed on arguments: the same print twice is a
+        machine started twice.
         """
-        # Applies to EVERY tool, not only the ones that declare
-        # `one_at_a_time`. That flag is about physical danger — a print that
-        # starts twice burns filament twice — and it was gating a check that
-        # is really about correctness, so the tools without it kept racing.
-        #
-        # Measured in ~/eagle.log, 2026-09-07, on a tool that does not declare
-        # it:
-        #
-        #     [Tool] > a3d_status (epoch=7) {printer=CC2}
-        #     [Tool] > a3d_status (epoch=8) {printer=CC2}
-        #     [Tool] ! a3d_status STALE (epoch 7 -> 8) - the turn moved on
-        #     [Tool] v a3d_status (10652ms)
-        #     [Tool] v a3d_status (10613ms)
-        #
-        # Started 39 ms apart, ran for ten and a half seconds each because the
-        # printer was unreachable, and both were answered. The model asked one
-        # question and got two identical replies, so it spoke twice. That is
-        # the double answer, and any slow tool can produce it: the turn moves
-        # on while the call is in flight and the model re-issues it.
+        # Applies to every tool: a slow tool re-issued by the model would answer twice.
         spec = TOOL_SPECS.get(fc.name)
 
         try:
             key = f"{fc.name}|{json.dumps(dict(fc.args or {}), sort_keys=True, default=str)}"
         except (TypeError, ValueError):
-            # Arguments that will not serialise cannot be compared, so the
-            # guard cannot tell whether this is a duplicate. For a tool whose
-            # second run is physically expensive that uncertainty is a refusal;
-            # for everything else it is cheaper to run it.
+            # Arguments that will not serialise cannot be compared: refuse for
+            # one_at_a_time tools, run otherwise.
             if spec and spec.one_at_a_time:
                 print(f"[Tool] ! {fc.name} refused - arguments could not be "
                       f"compared against the call already running")
@@ -2402,8 +2042,7 @@ class AethelarkLive:
                         f"{fc.name} failed: {e}",
                         guidance="Report the failure honestly; do not claim it "
                                  "worked.").to_response())
-            # Same answer, this call's id. The protocol needs one response per
-            # call, and the second caller asked the identical question.
+            # One response per call: same answer, this call's id.
             return types.FunctionResponse(id=fc.id, name=fc.name,
                                           response=first.response)
 
@@ -2421,16 +2060,13 @@ class AethelarkLive:
             return result
         finally:
             self._inflight_by_args.pop(key, None)
-            # A future nobody awaited logs "exception was never retrieved" on
-            # garbage collection, which is noise in a log that has to stay
-            # readable.
+            # Retrieve the exception so garbage collection does not log it.
             if future.done() and not future.cancelled():
                 future.exception()
 
     async def _execute_tool(self, fc, call_epoch: int = -1) -> types.FunctionResponse:
         name = fc.name
         args = dict(fc.args or {})
-        # Record the epoch at dispatch time so we can detect stale completions
         if call_epoch < 0:
             call_epoch = self._turn_epoch
 
@@ -2438,14 +2074,8 @@ class AethelarkLive:
         print(diag.tool_call(name, args, call_epoch))
         self.ui.set_state("THINKING")
 
-        # A turn the user did not ask for may LOOK but not TOUCH. Background
-        # tasks wake the model on a timer — the system monitor every 10s, the
-        # proactive check every 60 — and a woken model looks at its context,
-        # sees a mission mid-flight, and calls a tool. That is how pages kept
-        # spawning every few tens of seconds long after the mission had died.
-        #
-        # prompt.txt already asks for this. Asking is soft law; this is the
-        # dispatch gate it cannot route around.
+        # A turn the user did not ask for may look but not touch: background wake-ups
+        # must not act.
         if getattr(self, "_unprompted_turn", False) and name not in _READ_ONLY_TOOLS:
             print(f"[Tool] ⛔ {name} refused — nobody asked for this turn")
             return types.FunctionResponse(
@@ -2457,9 +2087,7 @@ class AethelarkLive:
                              "nothing at all. Do not take actions the user did "
                              "not ask for.").to_response())
 
-        # A tool the session never declared cannot be chosen honestly; a model
-        # that calls one anyway is guessing from its training, not reading the
-        # tool list. Refused at the same gate as the unprompted turn.
+        # A tool the session did not declare is refused.
         if not tool_enabled(name):
             print(f"[Tool] ⛔ {name} refused — switched off")
             guidance = ("Tell the user to switch the eagle to CODING mode, the "
@@ -2554,14 +2182,8 @@ class AethelarkLive:
                         print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
                         _stall = "screen"
                     self._pending_vision = (img_b, mime_t, user_text, angle)
-                    # A ToolResult, not a bare string. The refusal branch above
-                    # already returns one, so an accepted capture logging
-                    # "? no status reported" made the successful path the only
-                    # one the log could not speak about. The byte count rides
-                    # along because it is the one number that distinguishes a
-                    # real frame from a black one — measured 2026-09-03, a
-                    # camera frame came back at 9,775 bytes against 139,818 for
-                    # the screen, and nothing said so.
+                    # A ToolResult, with the byte count: it tells a real frame from a
+                    # black one.
                     result = ToolResult.success(
                         f"[VISION_ACTIVE] {_stall.capitalize()} captured. "
                         f"Immediately say ONE short natural sentence in the user's own language, "
@@ -2610,10 +2232,7 @@ class AethelarkLive:
             elif name == "developer_mode":
                 from actions.developer_mode import developer_mode
                 self.ui.set_state("WORKING")
-                # AWAIT the real launch result — agent.run() verifies the session
-                # actually spawned and is alive (~1-2s), then returns. The old
-                # fire-and-forget hardcoded "started" even when nothing launched
-                # (the "hallucination"). Now the eagle reports the truth.
+                # Await the launch: agent.run() confirms the session is alive.
                 r = await developer_mode(parameters=args, player=self.ui)
                 result = r or "Developer session started."
 
@@ -2643,13 +2262,6 @@ class AethelarkLive:
                 r = await loop.run_in_executor(self._tool_executor, lambda: web_search_action(parameters=args, player=self.ui))
                 result = r or "Done."
                 # Mirror results to the on-screen content panel.
-                #
-                # `web_search` returns a ToolResult now; this branch still asked
-                # it whether it startswith("No results"), which is a method a
-                # string has and a ToolResult does not. Every single call
-                # crashed with AttributeError -- including "how are you doing",
-                # which is how it was found. `ok` is the signal; the prose is
-                # for the panel.
                 _mode = args.get("mode", "search")
                 _ok = r.ok if isinstance(r, ToolResult) else bool(
                     r and not str(r).startswith(("No results", "Search failed")))
@@ -2699,56 +2311,43 @@ class AethelarkLive:
             elif name == "shutdown_aethelark":
                 self.ui.write_log("SYS: Shutdown requested — graceful shutdown in progress.")
                 self._shutdown_requested = True
-                # No self.speak("Goodbye.") here: speak() sends its text as a
-                # USER turn, so the model heard the user say goodbye and called
-                # this tool again -- three shutdowns per quit, measured live.
-                # The model says its own goodbye in the reply to this call.
-                # Schedule graceful shutdown: wait for goodbye audio, then clean exit
+                # No self.speak("Goodbye."): speak() sends a user turn, and the model
+                # would call this tool again. Wait for the model's own goodbye audio,
+                # then exit.
                 async def _graceful_shutdown():
                     await asyncio.sleep(2.5)  # let goodbye audio play
                     print("[Aethelark] 🔴 Graceful shutdown: closing session...")
                     self.ui.write_log("SYS: Shutting down...")
-                    # Stop audio streams
                     self.set_speaking(False)
-                    # Close the eagle's own browser, if web_agency ever
-                    # started one — see _shutdown_web_browser's docstring
-                    # for why nothing else does this. Off the event loop
-                    # thread: EagleBrowser.close() blocks synchronously for
-                    # up to a few seconds waiting on its teardown jobs.
+                    # Close the eagle's own browser, off the event loop: close() blocks
+                    # for a few seconds.
                     try:
                         await loop.run_in_executor(self._tool_executor,
                                                    _shutdown_web_browser)
                     except Exception as _e:
                         print(f"[main.py] Non-fatal error at line 1071: {_e}")
-                    # Close dashboard
                     if self._dashboard:
                         try:
                             await self._dashboard.broadcast({"type": "status", "state": "offline"})
                         except Exception as _e:
                             print(f"[main.py] Non-fatal error at line 1065: {_e}")
-                    # Signal the UI to close (runs on Qt thread)
+                    # Close the UI on the Qt thread.
                     try:
                         self.ui.request_shutdown()
                     except Exception as _e:
                         print(f"[main.py] Non-fatal error at line 1070: {_e}")
-                    # Final fallback — if Qt doesn't exit cleanly within 3s
+                    # Fallback if Qt has not exited within 3 s.
                     await asyncio.sleep(3)
                     print("[Aethelark] 🔴 Fallback exit.")
                     sys.exit(0)
                 asyncio.create_task(_graceful_shutdown())
 
             elif MODULE_BUS.owns(name):
-                # A domain module (a3d, …). Its own process, its own timeout,
-                # and `invoke` never raises — a module that is broken, missing
-                # or wedged degrades to a failed tool call, not a dead turn
-                # loop. Run on the executor like every other blocking tool so
-                # the audio path keeps its thread.
+                # A module tool runs in its own process with its own timeout; invoke
+                # never raises.
                 spec = TOOL_SPECS.get(name, ToolSpec())
-                # An internal tool takes a payload the harness builds -- the
-                # batch print is composed from the live screen by print_picked.
-                # The model is never offered one; a model that names one anyway
-                # is guessing, and is refused before the module is asked. This
-                # replaces a check written for exactly one such tool.
+                # Internal module tools take a payload the harness builds and are never
+                # offered to the model; a call naming one is refused.
                 if MODULE_BUS.is_internal(name):
                     result = ToolResult.failure(
                         f"'{name}' is not a tool you can call.",
@@ -2772,24 +2371,16 @@ class AethelarkLive:
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-        # Normalize ANY tool return (ToolResult or legacy string) into the
-        # structured contract, so the model gets an explicit ok/guidance signal
-        # instead of parsing prose. Legacy string tools are unaffected.
+        # Normalise any tool return into the ToolResult contract.
         tr = normalize(result)
 
-        # A narrow tool failing is not the task being impossible. Attach the
-        # general tool that covers the same ground, by mechanism rather than
-        # by hoping the model remembers the prompt — this is the exact point
-        # where "YouTube keeps that private" was returned about the user's own
-        # liked videos, with web_agency never tried.
+        # A narrow tool failing does not make the task impossible: attach the general
+        # tool that covers it.
         tr = with_fallback_guidance(name, tr)
-        # Nine tools call Gemini inside themselves and the brain runs on a free
-        # tier. A rate limit surfacing as a tool failure sends the user hunting
-        # a bug in something that works and will work again in a minute.
+        # A rate limit is a wait, not a tool failure.
         tr = explain_quota(tr)
 
         _elapsed_ms = (time.monotonic() - _t0) * 1000
-        # Check for stale result — epoch may have advanced during execution
         if call_epoch != self._turn_epoch:
             print(f"[Tool] ⚠ {name} STALE (epoch {call_epoch} → "
                   f"{self._turn_epoch}) — the turn moved on; returned anyway "
@@ -2798,7 +2389,6 @@ class AethelarkLive:
         else:
             print(diag.tool_result(name, tr, _elapsed_ms))
 
-        # Morph Dynamic Island with live card telemetry based on domain execution
         try:
             import json as _j
             parsed_data: dict = {}
@@ -2821,46 +2411,25 @@ class AethelarkLive:
                 except Exception:
                     pass
 
-            # Forward payload to UI dynamic island only for real module tools
+            # Forward payloads to the island only for real module tools.
             mod_key = MODULE_BUS.module_of(name)
             if mod_key:
                 payload = dict(parsed_data)
                 for k, v in args.items():
-                    # The confirmation token is spent by the time this runs and
-                    # the jobs string is the page's own selection echoed back;
-                    # neither is anything the card renders, and a token has no
-                    # business being written into the DOM.
+                    # The spent token and the echoed jobs string are not rendered.
                     if k in ("confirm_token", "jobs"):
                         continue
                     if k not in payload:
                         payload[k] = v
-                # One card per company, not one card per tool call. A price
-                # question calls quote, a quote payload carries no layers, and
-                # the drilldown into the seven-layer view therefore drew a card
-                # of em dashes. Tool results now fold into a card keyed by
-                # ticker, so the second view keeps what the first fetched.
+                # One card per company: results fold into a card keyed by ticker, so a
+                # later view keeps what an earlier one fetched.
                 card = CARD_STORE.absorb(name, payload, args)
-                # Not every answer is a card. Measured 2026-09-07 against the
-                # real binaries: 7 of atrade's 11 tools return a payload its
-                # cards cannot draw a single field of. `atrade watchlist`
-                # returns {count, tickers} -- nine companies with live prices,
-                # none of them under a name any card asks for -- and the
-                # capsule that went up for "how's my watchlist" was four em
-                # dashes and nothing else. `portfolio`, `compare`,
-                # `leaderboard`, `watch` and `unwatch` are the same shape.
-                #
-                # The module already declares what its cards draw (`shows`) and
-                # what makes two answers the same card (`about`). An answer
-                # earns the screen when it carries at least one drawn field
-                # BEYOND its own identity -- a bare ticker is what the question
-                # supplied, not something the module found out. Read from the
-                # manifest, so the host learns no module's name to do it, and a
-                # module that declares no face (a3d, alaw) is unaffected.
+                # Not every answer is a card: it earns the screen when it carries a
+                # field the module's cards draw beyond its own identity (manifest
+                # `shows` and `about`).
                 if self._card_is_drawable(name, card, args):
-                    # 0 hands the timing to the island's own dwell model — it
-                    # opens for 3s and earns more from interaction, up to 22.5s.
-                    # A flat 30 outlived the ceiling and ignored whether anyone
-                    # was still looking.
+                    # 0 lets the island's dwell model time it: 3 s, extended by
+                    # interaction up to 22.5 s.
                     self.ui.set_pill_context(mod_key, card, ttl_s=0)
                     self._refine_deck(name, card)
                 else:
@@ -2889,14 +2458,9 @@ class AethelarkLive:
         return result.ok, ("" if result.ok else result.message)
 
     def _invoke_module(self, name: str, args: dict, timeout_s: float) -> ToolResult:
-        """Run a module tool; if it needs an account, lend it the sign-in.
-
-        A module that answers `needs_account` has hit a login wall: its session
-        expired, or it was never handed one. The host owns the only place the
-        user signs in -- the eagle's browser -- so the host hands that site's
-        session over (core/module_bus/accounts.py) and runs the call once more.
-        Not for a tool that is permanent or asks for a confirmation: those are
-        never re-run behind the user's back; the model is told to call again.
+        """Run a module tool; if it answers needs_account, lend it the sign-in and
+        run it once more. Never re-run a permanent or confirmed tool: the model is
+        told to call again.
         """
         tr = MODULE_BUS.invoke(name, args, timeout_s=timeout_s)
         site = "" if tr.ok else str((tr.data or {}).get("needs_account") or "")
@@ -2925,8 +2489,9 @@ class AethelarkLive:
             **(tr.data or {}))
 
     def _on_site_signed_in(self, url: str) -> None:
-        """A sign-in in the eagle's browser completed: lend it to any module
-        that declared that account. Off-thread; it runs the module."""
+        """A sign-in in the eagle's browser completed: lend it to modules that
+        declared that account. Off-thread.
+        """
         from core.module_bus import accounts
 
         def work():
@@ -2937,9 +2502,9 @@ class AethelarkLive:
         threading.Thread(target=work, name="accounts", daemon=True).start()
 
     def _refine_deck(self, tool_name: str, card: dict) -> None:
-        """Record how this deck's cards are refined. Nothing is fetched until
-        the user picks a card (`refine_pick`): a download costs ~20s of robot
-        check, and only the picked part is ever printed."""
+        """Record how this deck's cards are refined. Nothing is fetched until the
+        user picks a card.
+        """
         self._deck_gen += 1
         cands = card.get("candidates") if isinstance(card, dict) else None
         try:
@@ -2979,24 +2544,11 @@ class AethelarkLive:
 
     @staticmethod
     def _card_is_drawable(tool_name: str, card: dict, args: dict | None = None) -> bool:
-        """Whether a module's own cards could draw anything in this answer.
-
-        Answered entirely from the module's manifest: `[island].about` is the
-        field that identifies the card, and each card's `shows` is what it
-        draws. A payload with none of those fields is not a card, and a payload
-        carrying only `about` is a card about nothing -- the ticker in it came
-        from the question, not from the answer.
-
-        A module that declares no `[island]` face keeps the old behaviour: its
-        answer goes to the screen exactly as it always did.
+        """Whether a module's cards could draw anything in this answer, from its
+        manifest: `about` identifies the card, `shows` is what it draws. A module
+        with no [island] face sends every answer to the screen.
         """
-        # Nothing at all is not a card, whatever the module. Measured
-        # 2026-09-07: `a3d fleet` and `a3d spool --shelf` answer with a
-        # top-level JSON ARRAY, and the unpacking above only ever reads an
-        # object -- so the card was handed {} and drew a printer, a model name
-        # and a READY state invented by the renderer. The renderer no longer
-        # invents them; this makes sure the empty payload never gets a card to
-        # invent them onto in the first place.
+        # An empty payload, including a top-level JSON array, is never a card.
         if not card:
             return False
         try:
@@ -3004,54 +2556,28 @@ class AethelarkLive:
         except Exception:
             return True
         if face is None or not face.cards:
-            # A module can ship a card and declare no face. It then makes
-            # no statement about what its cards draw, so there is nothing to
-            # ask and every answer went to the screen — including the ones
-            # whose template fills no row, which draw as em dashes end to end.
-            #
-            # Measured 2026-09-09 against the real binaries: of nine read-only
-            # tools on the one faceless module installed here, one filled 3 of
-            # its template's 30 placeholders and five filled none. Three more
-            # answer with a top-level JSON array, which the unpacking above
-            # turns into {} and the guard at the top of this method already
-            # refuses. The payloads and the rendered text are in
-            # tests/test_a_module_that_declares_no_face_still_earns_the_screen.py.
-            #
-            # The question is the same one the faced path asks — does the
-            # answer carry a drawn field beyond what the question supplied —
-            # only sourced from the template, because that is the only
-            # declaration a faceless module makes. An empty set means the
-            # module ships no template: carry on as before.
+            # A module with a card but no face: the answer must fill a field of its
+            # template beyond the question's own.
             fields = MODULE_BUS.island_fields(tool_name)
             if not fields:
                 return True
             asked = set(args or {})
             return _drawable_here_or_in_deck(card, fields, asked)
-        # The card that OPENS, not any card the module owns. Asking whether
-        # some card could eventually draw the answer is the wrong question:
-        # `atrade governance` on its own fills the seven-layer view's pay row
-        # and nothing at all on the capsule, and the capsule is what the user
-        # would be looking at. A drilldown nobody can see the top of is a card
-        # of em dashes with an extra click in front of it.
+        # Ask about the card that opens, not any card the module owns.
         opens = face.card(face.first) or face.cards[0]
         drawn = set(opens.shows)
         drawn.discard(face.about)
         return _drawable_here_or_in_deck(card, drawn, set())
 
     async def _schedule_tool_calls(self, tool_calls, call_epoch: int) -> list[types.FunctionResponse]:
-        """Scoreboard scheduler with RAW, WAW, WAR hazard detection.
-        Runs disjoint, read-only/independent tools concurrently,
-        while sequencing conflicting or exclusive tools.
+        """Scoreboard scheduler with RAW, WAW and WAR hazard detection: independent
+        tools run together, conflicting or exclusive ones in sequence.
         """
         running = {}  # task -> (tool_call, spec)
         results = {}  # tool_call_id -> FunctionResponse
 
-        # The same call twice in one batch -- a retry, a duplicated tool block
-        # -- runs once, and the copy gets the first one's answer. The in-flight
-        # guard in `_dispatch_one_tool` only sees copies that overlap in time,
-        # and a tool that writes a resource is queued behind its own twin: the
-        # twin started after the first finished, and a print that declares it
-        # writes the printer started twice.
+        # The same call twice in one batch runs once; the copy gets the first one's
+        # answer.
         twins = {}    # copy's id -> the call that actually runs
         first = {}    # identity -> that call
         unique = []
@@ -3068,16 +2594,13 @@ class AethelarkLive:
                 unique.append(fc)
         pending = list(unique)
         
-        # Sort pending by priority
         pending.sort(key=lambda fc: TOOL_SPECS.get(fc.name, ToolSpec()).priority, reverse=True)
         
         while pending or running:
-            # 1. Identify which pending tools can be issued now
             issued = []
             for fc in list(pending):
                 spec = TOOL_SPECS.get(fc.name, ToolSpec(exclusive=True))
                 
-                # Check for conflict with any currently running tools
                 conflict = False
                 for r_task, (r_fc, r_spec) in running.items():
                     if spec.exclusive or r_spec.exclusive:
@@ -3116,7 +2639,6 @@ class AethelarkLive:
                     issued.append(fc)
                     pending.remove(fc)
             
-            # 2. Start all issued tool calls
             for fc in issued:
                 spec = TOOL_SPECS.get(fc.name, ToolSpec(exclusive=True))
                 
@@ -3152,7 +2674,6 @@ class AethelarkLive:
             if not running:
                 break
                 
-            # 3. Wait for at least one running task to complete
             done, _ = await asyncio.wait(running.keys(), return_when=asyncio.FIRST_COMPLETED)
             
             for task in done:
@@ -3166,7 +2687,6 @@ class AethelarkLive:
                 results[copy_id] = types.FunctionResponse(
                     id=copy_id, name=original.name, response=done.response)
 
-        # Reassemble results in the original order of tool_calls
         return [results[fc.id] for fc in tool_calls if fc.id in results]
 
     async def _send_realtime(self):
@@ -3197,12 +2717,9 @@ class AethelarkLive:
             self._mic_drops += 1
 
     def _enqueue_mic(self, msg) -> None:
-        """Send one mic frame to Gemini. Event-loop thread only.
-
-        Drop-oldest on overflow keeps mic latency bounded.
-        When mic_shield_enabled is active, acoustic keystrokes and non-speech
-        are zeroed out while idle to protect privacy and prevent hallucinations,
-        bursting pre-roll frames on speech start for 0-latency consonant fidelity.
+        """Send one mic frame to Gemini. Event-loop thread only. Drops the oldest on
+        overflow. With mic_shield_enabled, non-speech is zeroed while idle and
+        pre-roll is sent at speech onset.
         """
         data = msg.get("data")
         if data is None:
@@ -3218,7 +2735,6 @@ class AethelarkLive:
 
         if self._hearing:
             if event == "start":
-                # Speech just began: burst pre-roll lead-in to preserve opening consonants
                 preroll = self._hearing_vad.take_preroll()
                 mime = msg.get("mime_type", "audio/pcm")
                 for pre in preroll:
@@ -3227,19 +2743,14 @@ class AethelarkLive:
             self._trace_mic_frame(data)
             self._push_mic_queue(msg)
         else:
-            # Shield active: keystrokes and background noise silenced to zero bytes.
-            # Preserves WebSocket audio clock with zero acoustic leakage.
+            # Shield: send zeroed frames, which keeps the audio clock running.
             mime = msg.get("mime_type", "audio/pcm")
             self._push_mic_queue({"data": b"\x00" * len(data), "mime_type": mime})
 
     def _on_mic_frame(self, data: bytes) -> None:
-        """Every mic frame, on the event loop. Sent, or listened to locally.
-
-        While the eagle speaks nothing is sent: Gemini's voice detection
-        cannot tell the user from the eagle's own voice in the speakers, and
-        every reply would interrupt itself. The frame goes to the barge-in
-        detector instead, which can -- and when it hears the user talking over
-        the eagle, the eagle stops and the user is heard from their first word.
+        """Every mic frame, on the event loop. While the eagle speaks nothing is
+        sent, because Gemini cannot tell the user from the eagle's own voice; the
+        frame goes to the barge-in detector instead.
         """
         with self._speaking_lock:
             speaking = self._is_speaking
@@ -3248,10 +2759,8 @@ class AethelarkLive:
             self._enqueue_mic({"data": data, "mime_type": "audio/pcm"})
             return
         if not self._barge_reply:
-            # A reply just started. Reset here, on the event loop, rather than
-            # in set_speaking, which the playback thread calls: the detector
-            # is only ever touched from one thread. The setting is read once
-            # per reply, not sixteen times a second.
+            # A reply just started: reset the detector here, on the event loop. The
+            # setting is read once per reply.
             self._barge_reply = True
             self._barge_on = prefs.enabled("barge_in_enabled")
             self._mic_shield_on = prefs.enabled("mic_shield_enabled")
@@ -3265,8 +2774,8 @@ class AethelarkLive:
         heard = self._barge.take_preroll()
         print(f"[Aethelark] 🗣 Barge-in — {self._barge.describe()}")
         self.interrupt()
-        # What the user said while the detector was deciding, so the server
-        # hears their first word and not their third.
+        # What the user said while the detector was deciding, so the server hears their
+        # first word.
         for frame in heard:
             self._enqueue_mic({"data": frame, "mime_type": "audio/pcm"})
 
@@ -3277,7 +2786,7 @@ class AethelarkLive:
         def callback(indata, frames, time_info, status):
             if self.ui.muted:
                 return
-            # Schedule on event loop thread — never block the PortAudio callback
+            # Never block the PortAudio callback.
             loop.call_soon_threadsafe(self._on_mic_frame, indata.tobytes())
 
         try:
@@ -3307,23 +2816,19 @@ class AethelarkLive:
             while True:
                 async for response in session.receive():
 
-                    # A stop just happened. What the user said before it is
-                    # its own line; what they say next starts a new one.
+                    # After a stop, what the user says next starts a new line.
                     if self._close_heard:
                         self._close_heard = False
                         self._log_heard(in_buf)
                         in_buf = []
 
-                    # ── Session resumption: capture the rolling handle ────────
-                    # The server emits a fresh handle at safe checkpoints. Store
-                    # the latest resumable one so a reconnect restores context.
+                    # Store the latest resumption handle so a reconnect restores
+                    # context.
                     sru = response.session_resumption_update
                     if sru is not None and sru.resumable and sru.new_handle:
                         self._resume_handle = sru.new_handle
 
-                    # ── GoAway: server is about to close this connection ─────
-                    # Reconnecting proactively (with the handle we already hold)
-                    # avoids a hard 1011 mid-turn. Break out to trigger reconnect.
+                    # GoAway: reconnect now with the handle, before a hard 1011.
                     if response.go_away is not None:
                         _left = getattr(response.go_away, "time_left", None)
                         print(f"[Aethelark] 🔻 GoAway received (time_left={_left}) — reconnecting with resume handle")
@@ -3333,8 +2838,8 @@ class AethelarkLive:
 
                     self._last_server_activity = time.monotonic()
 
-                    # First byte of the ANSWER, not of the connection, and not
-                    # of the user's own transcription.
+                    # First byte of the answer, not of the connection or the user's
+                    # transcription.
                     _sc = response.server_content
                     _answered = bool(
                         response.data                       # audio payload
@@ -3342,10 +2847,7 @@ class AethelarkLive:
                         or (_sc and (getattr(_sc, "model_turn", None)
                                      or getattr(_sc, "output_transcription", None)
                                      or getattr(_sc, "turn_complete", None))))
-                    # Not while a stopped answer is still being discarded: its
-                    # tail arrives after the user has started talking over it,
-                    # and marking it made the new question's response time
-                    # negative (-636 ms, live).
+                    # Not while a stopped answer is still being discarded.
                     if _answered and not self._interrupted:
                         self._trace_mark("first_token")
 
@@ -3357,9 +2859,9 @@ class AethelarkLive:
                             self._turn_had_audio = True
                             if self._turn_done_event and self._turn_done_event.is_set():
                                 self._turn_done_event.clear()
-                            # Split into ~50 ms chunks so interrupt() stops audio within 50 ms
-                            # (24000 Hz × 2 bytes/sample × 0.05 s = 2400 bytes per slice)
-                            # Tag each frame with the current turn_epoch for epoch-aware barge-in
+                            # About 50 ms chunks (2400 bytes at 24 kHz, 16-bit) so
+                            # interrupt() stops audio within 50 ms; each tagged with the
+                            # turn epoch.
                             _audio_data = response.data
                             _SLICE = 2400
                             _epoch = self._turn_epoch
@@ -3370,23 +2872,15 @@ class AethelarkLive:
                                     try:
                                         audio_q.put_nowait(frame)
                                     except queue.Full:
-                                        # With 200-frame buffer this should be extremely rare.
-                                        # Log instead of drop-oldest — dropping output frames
-                                        # corrupts speech and causes R2D2 glitches.
+                                        # Log rather than drop output frames: dropping
+                                        # corrupts speech.
                                         print(f"[Aethelark] ⚠️ Playback queue overflow — frame dropped (epoch={_epoch})")
 
                     if response.server_content:
                         sc = response.server_content
 
-                        # Text parts of the model turn. The model is configured
-                        # for AUDIO out, but a turn can still come back as text
-                        # — and those turns are silent, because response.data is
-                        # empty for them. Capture the text so turn_complete can
-                        # voice it instead of the conversation just stopping.
-                        #
-                        # `thought` parts are the model's INTERNAL reasoning and
-                        # must never be spoken or shown — reading its own private
-                        # monologue aloud would be worse than saying nothing.
+                        # Text parts of an audio turn: kept so turn_complete can surface
+                        # a silent turn. `thought` parts are never spoken or shown.
                         mt = getattr(sc, "model_turn", None)
                         if mt and getattr(mt, "parts", None):
                             for _p in mt.parts:
@@ -3401,34 +2895,21 @@ class AethelarkLive:
                                 out_buf.append(txt)
 
                         if sc.input_transcription and sc.input_transcription.text:
-                            # RAW, and joined with nothing. The transcription
-                            # streams mid-word ("Sa" then "ve"), and cleaning
-                            # each fragment stripped its spacing before a
-                            # " ".join put a space back in the middle of the
-                            # word. Live, "Say the word ready" was rendered
-                            # "Sa ve word rea dy" — and that mangled string is
-                            # what `_speculate` was matching against, so the
-                            # intent layer that exists to buy a head start was
-                            # being fed nonsense. The API's own chunks already
-                            # carry their leading spaces; clean ONCE, at the end.
+                            # Raw, joined with nothing: the transcription streams mid-
+                            # word and carries its own spaces. Clean once, at the end.
                             raw = sc.input_transcription.text
                             if raw:
                                 in_buf.append(raw)
                                 self._last_user_speech = time.monotonic()
                                 note_user_turn(raw)
-                                # Heard by the server, from whichever
-                                # microphone: the turn is the user's.
+                                # Heard by the server: the turn is the user's.
                                 self._unprompted_turn = False
-                                # While they are STILL TALKING. This is the
-                                # only point early enough for a prediction to
-                                # buy anything.
+                                # While they are still talking, the only point early
+                                # enough to predict.
                                 self._speculate(_clean_transcript("".join(in_buf)))
 
-                        # The server stopped the answer it was sending: the user
-                        # spoke over it, or typed something. Whatever was stopped
-                        # is over. A local stop no longer needs to discard
-                        # anything, and without one, the audio still queued for
-                        # the speakers belongs to an answer that no longer exists.
+                        # The server stopped the answer it was sending: drop what is
+                        # queued for it.
                         if getattr(sc, "interrupted", False):
                             self._model_turn_active = False
                             if self._interrupted:
@@ -3440,10 +2921,8 @@ class AethelarkLive:
                             self._model_turn_active = False
                             self._quota_strikes = 0
                             self._speculated = False
-                            # The end of a STOPPED answer is not the end of the
-                            # turn being timed: that belongs to whatever the
-                            # user said over it, and closing it here threw it
-                            # away before its answer arrived.
+                            # The end of a stopped answer is not the end of the turn
+                            # being timed.
                             if not self._interrupted:
                                 self._trace_mark("complete")
                                 self._trace_finish()
@@ -3451,11 +2930,8 @@ class AethelarkLive:
                             if self._turn_done_event:
                                 self._turn_done_event.set()
 
-                            # If this turn_complete ends an interrupted response, clear the
-                            # flag and skip all further processing for that turn.
-                            # in_buf is kept: the stop already closed the line
-                            # before it, and anything in it now is the user
-                            # talking over the eagle, which is the next turn.
+                            # A turn_complete ending an interrupted response: clear the
+                            # flag and skip the rest. in_buf is the next turn.
                             if self._interrupted:
                                 self._interrupted = False
                                 out_buf = []
@@ -3463,16 +2939,8 @@ class AethelarkLive:
                                 self._turn_had_audio = False
                                 continue
 
-                            # A turn that returns text instead of audio is silent.
-                            # It should no longer happen — include_thoughts=False
-                            # stops reasoning being streamed — so surface it
-                            # loudly rather than papering over it.
-                            #
-                            # Deliberately NOT re-voiced through a second TTS
-                            # engine: that swaps voice mid-conversation and adds
-                            # a synthesis round-trip, which is worse than the
-                            # problem. If this ever fires, the fix belongs in the
-                            # session config, not in a substitute voice.
+                            # A turn that returns text instead of audio is silent: log
+                            # it loudly. Not re-voiced through another TTS engine.
                             _textonly = " ".join(t.strip() for t in text_buf if t.strip()).strip()
                             text_buf = []
                             if _textonly and not self._turn_had_audio:
@@ -3495,7 +2963,8 @@ class AethelarkLive:
                                     }))
                             out_buf = []
 
-                            # Vision injection: model finished tool-response turn → now send the image
+                            # Vision: the tool-response turn finished, so send the image
+                            # now.
                             if self._pending_vision and session:
                                 import base64 as _b64
                                 img_b, mime_t, question, angle = self._pending_vision
@@ -3510,16 +2979,12 @@ class AethelarkLive:
                                     turn_complete=True,
                                 )
                                 # The picture is in; the next capture may go.
-                                # A camera used to hold this for one more turn
-                                # to close a live view the web shell never had.
                                 self._vision_busy = False
 
                     if response.tool_call:
                         self._model_turn_active = True
-                        # Dispatch and RETURN TO THE WIRE. Awaiting the batch
-                        # here made the session deaf for the tool's whole
-                        # duration — no audio, no go_away, no barge-in, and a
-                        # watchdog that counted the silence as a dead session.
+                        # Dispatch and return to the wire: awaiting the batch here made
+                        # the session deaf for the tool's duration.
                         self._dispatch_tool_calls(
                             response.tool_call.function_calls,
                             call_epoch=self._turn_epoch,
@@ -3528,8 +2993,7 @@ class AethelarkLive:
         except _ReconnectSignal:
             raise  # intentional graceful reconnect — no error logging
         except Exception as e:
-            # Known transient server drops are reported cleanly by the run-loop
-            # handler; skip the redundant traceback to keep the console readable.
+            # Known transient server drops are reported by the run loop; no traceback.
             _es = str(e)
             if self._go_away_reconnect and _es.startswith("1000"):
                 print("[Aethelark] Recv: session closed to refresh its tools")
@@ -3542,12 +3006,8 @@ class AethelarkLive:
 
     def _play_audio_loop(self):
         print("[Aethelark] 🔊 Playback thread started")
-        # Play at the model's NATIVE 24 kHz so we don't resample every 50 ms
-        # frame. The previous path opened at 48 kHz and upsampled each frame with
-        # numpy (plus an RMS envelope the web pill discards) — ~20×/second of
-        # GIL-holding CPU fighting the live-audio pipeline, which is exactly what
-        # made voice feel sluggish. Fall back to 48 kHz + resample only if the
-        # device refuses 24 kHz.
+        # Play at the model's native 24 kHz; fall back to 48 kHz with resampling only if
+        # the device refuses.
         native_rate = RECEIVE_SAMPLE_RATE  # 24000
         resample = False
         stream = None
@@ -3558,8 +3018,7 @@ class AethelarkLive:
             playback_rate = native_rate
         except Exception as e_native:
             print(f"[Aethelark] ⚠️ 24kHz output unavailable ({e_native}); using 48kHz+resample")
-            # Close the half-opened 24kHz stream (if the failure was in start())
-            # so we don't leak a device handle before retrying.
+            # Close the half-opened stream before retrying, so no device handle leaks.
             try:
                 if stream is not None:
                     stream.close()
@@ -3576,8 +3035,7 @@ class AethelarkLive:
         except Exception:
             pass
 
-        # Prime the ring buffer with a little silence so the first write doesn't
-        # race the DAC read pointer (was causing first-word clicks / speed-up).
+        # Prime the buffer with silence so the first write does not race the DAC.
         try:
             stream.write(b'\x00' * (playback_rate * 2 * 80 // 1000))  # 80ms silence
         except Exception as _e:
@@ -3590,8 +3048,7 @@ class AethelarkLive:
         if audio_in_queue is None or play_stop_event is None or loop is None:
             return
 
-        # Only compute the audio-level envelope when the UI actually renders it
-        # (classic QPainter pill does; the web pill is CSS-animated → no-op).
+        # Only compute the level envelope when the UI renders it.
         wants_level = getattr(self.ui, "consumes_audio_level", True)
 
         def _is_speaking_now() -> bool:
@@ -3603,18 +3060,15 @@ class AethelarkLive:
                 try:
                     item = audio_in_queue.get(timeout=0.05)
                 except queue.Empty:
-                    # Nothing to play: the speakers are going quiet. A pause
-                    # mid-answer -- a tool running -- must not keep the
-                    # barge-in threshold as high as if the eagle were talking.
+                    # Nothing to play: lower the barge-in threshold during a pause mid-
+                    # answer.
                     self._play_peak *= 0.6
                     if (
                         self._turn_done_event
                         and self._turn_done_event.is_set()
                         and audio_in_queue.empty()
                     ):
-                        # End of turn: drop the SPEAKING state once (skips the GUI
-                        # reschedule if we're already not speaking, e.g. after a
-                        # barge-in interrupt already flipped it).
+                        # End of turn: drop SPEAKING once.
                         if _is_speaking_now():
                             self.set_speaking(False)
                         loop.call_soon_threadsafe(self._turn_done_event.clear)
@@ -3624,19 +3078,17 @@ class AethelarkLive:
                 if frame_epoch < self._turn_epoch:
                     continue
 
-                # Edge-trigger SPEAKING off the SHARED flag, not a local bool, so
-                # it correctly re-arms after interrupt() externally forced it False
-                # (a local latch would stay stale-True and leave the mic ungated).
+                # Edge-trigger on the shared flag so it re-arms after interrupt() forced
+                # it False.
                 if not _is_speaking_now():
                     self.set_speaking(True)
 
-                # How loud this is, for telling the user apart from the echo
-                # of it (core/barge_in.py). Fast up, slow down.
+                # Playback level, for telling the user from their echo
+                # (core/barge_in.py). Fast up, slow down.
                 self._play_peak = max(_rms(chunk) or 0.0, self._play_peak * 0.6)
 
                 out = chunk
-                # Skip numpy entirely on the common path (native rate + web UI):
-                # just hand the raw PCM straight to the device.
+                # Native rate and web UI: hand raw PCM to the device, no numpy.
                 if resample or wants_level:
                     try:
                         import numpy as np
@@ -3650,9 +3102,7 @@ class AethelarkLive:
                         print(f"[Aethelark] Resampling error: {re_err}")
                         out = chunk
 
-                # The user hears the speaker, not the queue. Marking here — at
-                # the device write — is what makes `audio` our own playback
-                # cost rather than a number we could blame on the network.
+                # Marked at the device write, so `audio` is our own playback cost.
                 self._trace_mark("first_audio")
 
                 try:
@@ -3671,16 +3121,10 @@ class AethelarkLive:
                 print(f"[main.py] Non-fatal error at line 1518: {_e}")
             print("[Aethelark] 🔊 Playback thread stopped")
 
-    # ── Morning briefing ────────────────────────────────────────────────────────
 
     async def _send_startup_briefing(self) -> None:
-        """
-        Two-phase briefing optimized for speed:
-          Phase 1 — instant greeting (no tools) → speech starts in <1s
-          Phase 2 — news pre-fetched in a background thread while Phase 1 plays,
-                    delivered as ready text (no Gemini tool-call round-trip) and
-                    shown on the UI content panel. Waits for turn_complete event
-                    instead of a fixed sleep so there is no unnecessary gap.
+        """Two-phase briefing: an instant greeting, then news fetched in parallel and
+        sent as text once the greeting's turn completes.
         """
         memory   = load_memory()
         identity = memory.get("identity", {})
@@ -3693,7 +3137,6 @@ class AethelarkLive:
         name = _val("name")
         time_str = datetime.now().strftime("%H:%M")
 
-        # Start fetching news immediately — runs in parallel while phase 1 plays
         loop = asyncio.get_event_loop()
         news_future = loop.run_in_executor(self._tool_executor, _fetch_news_sync, "top world news today")
 
@@ -3701,20 +3144,15 @@ class AethelarkLive:
         if not self.session:
             return
 
-        # ── Phase 1: instant greeting ─────────────────────────────────────────
         lang_clause = f" Respond in {lang}." if lang else ""
         name_clause = f" Address the user as {name}." if name else ""
-        # Tagged as core/prompt.txt says app messages are, and marked as a
-        # turn nobody asked for, so the dispatch gate -- not only the prompt --
-        # keeps it from acting. The phase-2 text said "[BRIEFING]" and phase 1
-        # carried no tag at all, while the prompt told the model to expect
-        # "[STARTUP_BRIEFING]".
+        # Tagged [STARTUP_BRIEFING] and marked unprompted, so the dispatch gate keeps it
+        # from acting.
         p1 = (
             f"[STARTUP_BRIEFING] Greet the user, mention it is {time_str}, and say you are fetching today's news now. "
             f"One short sentence only. Do not call any tools.{lang_clause}{name_clause}"
         )
 
-        # Clear the turn-done event so we can wait for Phase 1 to finish
         if self._turn_done_event:
             self._turn_done_event.clear()
 
@@ -3725,13 +3163,11 @@ class AethelarkLive:
         )
         self.ui.write_log("SYS: Briefing phase 1 (greeting) sent.")
 
-        # ── Phase 2: fire as soon as Phase 1 audio is done ───────────────────
         async def _deliver_news():
             try:
                 lang_str = f" Respond in {lang}." if lang else ""
 
-                # Wait for news fetch (already running) and Phase 1 turn-complete
-                # in parallel — whichever takes longer determines the wait time
+                # Wait for the news fetch and the greeting's turn_complete together.
                 news_done   = asyncio.wrap_future(news_future)
                 turn_waited = False
                 if self._turn_done_event:
@@ -3741,7 +3177,6 @@ class AethelarkLive:
                     except asyncio.TimeoutError:
                         pass
 
-                # If turn_complete didn't fire (timeout), give a small buffer
                 if not turn_waited:
                     await asyncio.sleep(1.0)
 
@@ -3754,12 +3189,10 @@ class AethelarkLive:
                     return
 
                 if news_text and len(news_text) > 60:
-                    # Show on UI content panel immediately
                     self.ui.show_content("NEWS — top world news today", news_text)
 
-                    # The list goes to the dashboard's log, which is closed
-                    # unless the user opened it -- so the model offers to read
-                    # more instead of pointing at a screen that is not there.
+                    # The dashboard log is usually closed, so the model offers to read
+                    # more instead of pointing at it.
                     p2 = (
                         f"[STARTUP_BRIEFING] Here are today's top news headlines:\n{news_text}\n\n"
                         "Pick ONE headline, summarise it in one sentence, then offer to "
@@ -3772,8 +3205,7 @@ class AethelarkLive:
                     )
 
                 if self._unprompted_turn is False:
-                    # The user spoke while phase 1 played. Their turn wins;
-                    # the headlines can wait until they ask.
+                    # The user spoke while the greeting played: their turn wins.
                     return
                 await self.session.send_client_content(
                     turns={"parts": [{"text": p2}]},
@@ -3786,13 +3218,10 @@ class AethelarkLive:
 
         asyncio.create_task(_deliver_news())
 
-    # ── System monitor ──────────────────────────────────────────────────────────
 
     async def _run_system_monitor(self) -> None:
-        """Background task: voice alerts when metrics exceed thresholds.
-
-        Off unless the user turned it on. Checked every cycle rather than once,
-        so the Settings switch takes effect without a restart.
+        """Voice alerts when metrics cross thresholds. Off unless switched on;
+        checked every cycle so the switch needs no restart.
         """
         while True:
             await asyncio.sleep(10)
@@ -3809,13 +3238,10 @@ class AethelarkLive:
                 except Exception as e:
                     print(f"[Monitor] ⚠️ Could not send alert: {e}")
 
-    # ── Proactive mode ──────────────────────────────────────────────────────────
 
     async def _run_proactive_mode(self) -> None:
-        """
-        Background task: periodically checks if the user has been silent long enough,
-        then hands time + memory context to Gemini so it can decide what (if anything)
-        to say proactively. No hardcoded rules — Gemini makes the call.
+        """After a long silence, hand time and memory to Gemini to decide whether to
+        say anything.
         """
         while True:
             await asyncio.sleep(60)   # evaluate once per minute
@@ -3832,8 +3258,8 @@ class AethelarkLive:
                 continue
 
             self._proactive.mark_triggered()
-            # The user did not ask for this turn, so nothing it decides may
-            # act on the world. Cleared when he next speaks.
+            # An unprompted turn: nothing it decides may act. Cleared when the user next
+            # speaks.
             self._unprompted_turn = True
 
             try:
@@ -3848,11 +3274,7 @@ class AethelarkLive:
                 print(f"[Proactive] ⚠️ {e}")
 
     def _on_phone_upload(self, path) -> None:
-        """A phone sent a file. It is what "this file" means from now on.
-
-        Uploads were saved and then reached nothing: file_processor's "the
-        uploaded file" read the shell's current_file, which is always None.
-        """
+        """A phone sent a file: it is what "this file" means from now on."""
         self._last_upload = str(path)
         self.ui.write_log(f"SYS: Got {Path(path).name} from your phone.")
 
@@ -3860,7 +3282,6 @@ class AethelarkLive:
         self.ui.write_log("SYS: Phone connected via Remote Dashboard.")
         self.ui.notify_phone_connected()
 
-    # ── dashboard command relay ─────────────────────────────────────────────
 
     async def _process_dashboard_commands(self) -> None:
         dashboard = self._dashboard
@@ -3873,7 +3294,6 @@ class AethelarkLive:
                 )
                 if not text:
                     continue
-                # Wait up to 8s for session to become ready after a wake
                 for _ in range(80):
                     if self.session:
                         break
@@ -3895,22 +3315,10 @@ class AethelarkLive:
                 print(f"[Dashboard] Command error: {e}")
                 await asyncio.sleep(0.5)
 
-    # ── Queue depth monitor ───────────────────────────────────────────────────
 
     def _session_is_wedged(self, now: float) -> bool:
-        """Has the user asked something the server has simply never answered?
-
-        Both halves matter. `silent_for` alone would fire on an idle session,
-        where silence is the correct behaviour and reconnecting is pure churn.
-        `user_waiting` alone would fire the instant anyone spoke. Together they
-        describe the one state worth recovering from: a question was asked, and
-        nothing at all has come back for longer than any real answer takes.
-
-        Work in flight is proof of life. A tool that legitimately runs longer
-        than the stall window — send_message budgets 90s, swarm_mode 300s — is
-        not a wedge, and reconnecting on top of it kills the very work the user
-        asked for. So an in-flight tool suppresses the watchdog for exactly as
-        long as it runs, and not one tick longer.
+        """Has the user asked something the server never answered? Needs both a
+        waiting user and silence; a tool in flight counts as life.
         """
         if self._inflight_tools:
             return False
@@ -3919,17 +3327,8 @@ class AethelarkLive:
         return user_waiting and silent_for > _TURN_STALL_S
 
     def _batch_needs_exclusion(self, function_calls) -> bool:
-        """Must this batch be serialised against other batches?
-
-        While tool batches were awaited inline they could never overlap, so the
-        scoreboard in _schedule_tool_calls only ever had to resolve hazards
-        WITHIN a batch. Concurrent dispatch removes that free guarantee: two
-        batches could now drive the mouse, or write files, at the same time.
-
-        Read-only batches are exempt on purpose. TOOL_SPECS marks swarm_status
-        and system_status non-exclusive precisely so "what are you building?"
-        can answer while the building happens — putting a blunt lock across all
-        batches would break the exact interaction this change exists to enable.
+        """Must this batch be serialised against other batches? Read-only batches are
+        exempt so a progress question can answer while work runs.
         """
         for fc in function_calls:
             spec = TOOL_SPECS.get(fc.name, ToolSpec(exclusive=True))
@@ -3938,18 +3337,16 @@ class AethelarkLive:
         return False
 
     async def _run_and_reply(self, function_calls, call_epoch: int, session) -> None:
-        """Run a tool batch and send its response. Always awaited from a
-        background task — never from the receive loop, which must stay on the
-        wire so audio, go_away frames and barge-ins keep being seen."""
+        """Run a tool batch and send its response, from a background task so the
+        receive loop stays on the wire.
+        """
         try:
             guard = (self._tool_batch_lock
                      if self._batch_needs_exclusion(function_calls)
                      else contextlib.nullcontext())
             async with guard:
-                # Marked after the lock is held, so `to_action` counts time
-                # spent queued behind another batch. That wait is latency the
-                # user experiences; marking at dispatch instead would make a
-                # contended pipeline look identical to an idle one.
+                # Marked after the lock is held, so to_action counts time queued behind
+                # another batch.
                 self._trace_mark("first_tool")
                 fn_responses = await self._schedule_tool_calls(function_calls, call_epoch)
             if fn_responses:
@@ -3957,19 +3354,14 @@ class AethelarkLive:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            # The batch scheduler already converts individual tool failures into
-            # ToolResult.failure responses, so reaching here means the dispatch
-            # itself broke (usually a session closed underneath us). Nothing to
-            # send it to — log and let the reconnect path handle the session.
+            # Tool failures are already ToolResults, so this is a broken dispatch
+            # (usually a closed session): log it and let the reconnect path handle it.
             print(f"[Aethelark] ❌ Tool dispatch failed: {type(e).__name__}: {e}")
 
     def _dispatch_tool_calls(self, function_calls, call_epoch: int, session):
-        """Hand a tool batch to the event loop and return immediately.
-
-        The task is held in `_inflight_tools` for two reasons: asyncio only
-        keeps a weak reference to running tasks, so an untracked task can be
-        garbage-collected mid-flight; and the wedge watchdog needs to know that
-        work is happening before it decides silence means death.
+        """Hand a tool batch to the event loop and return. Held in _inflight_tools:
+        asyncio keeps only a weak reference, and the wedge watchdog needs to see
+        work.
         """
         task = asyncio.create_task(
             self._run_and_reply(function_calls, call_epoch, session)
@@ -3979,13 +3371,8 @@ class AethelarkLive:
         return task
 
     async def _cancel_inflight_tools(self) -> None:
-        """Drop any tool still running when its session ends.
-
-        While dispatch was awaited inline, tearing down the TaskGroup cancelled
-        the running tool as a side effect. Backgrounding the task removes that
-        guarantee, and a tool that outlives its session is not harmless: it
-        holds the batch lock, it keeps the wedge watchdog suppressed into the
-        NEXT session, and it eventually answers a socket that is already gone.
+        """Drop any tool still running when its session ends: it would hold the batch
+        lock, suppress the next session's watchdog and answer a dead socket.
         """
         tasks = list(self._inflight_tools)
         if not tasks:
@@ -3997,14 +3384,7 @@ class AethelarkLive:
         self._inflight_tools.clear()
 
     async def _monitor_queue_depth(self) -> None:
-        """Watches session health fast, prints telemetry slowly.
-
-        These were one loop on a 30s sleep, which meant a 25s stall threshold
-        took up to 55s to act on — the log cadence was silently deciding how
-        long the user sat in front of a mute eagle. They are separate jobs with
-        separate natural rates, so the loop now ticks fast for health and
-        counts ticks for telemetry: same console noise, ~2x faster recovery.
-        """
+        """Watches session health fast and prints telemetry every Nth tick."""
         tick = 0
         while True:
             await asyncio.sleep(_WATCHDOG_TICK_S)
@@ -4027,10 +3407,7 @@ class AethelarkLive:
                     f"mic_drops={drops}"
                 )
 
-            # ── Wedged-session watchdog ──────────────────────────────────────
-            # Telemetry used to only PRINT. When a session went quiet there was
-            # full observability of the freeze and zero recovery from it: the
-            # user watched healthy-looking counters while the eagle sat mute.
+            # Wedged-session watchdog.
             if self._session_is_wedged(time.monotonic()):
                 silent_for = time.monotonic() - self._last_server_activity
                 print(f"[Aethelark] ⏳ No server response for {silent_for:.0f}s "
@@ -4045,14 +3422,10 @@ class AethelarkLive:
                     except Exception as e:
                         print(f"[Aethelark] watchdog close failed: {e}")
 
-    # ── main loop ───────────────────────────────────────────────────────────
 
     async def _start_dashboard(self) -> bool:
-        """Serve the phone remote on the local network.
-
-        Off by default: it binds every interface and speaks for the eagle to
-        whoever pairs with it, which is not something to switch on for someone
-        who never asked. Settings turns it on.
+        """Serve the phone remote on the local network. Off by default: it binds
+        every interface.
         """
         if self._dashboard is not None:
             return True
@@ -4062,7 +3435,6 @@ class AethelarkLive:
             self._dashboard.set_connect_callback(self._on_phone_connected)
             self._dashboard.set_upload_callback(self._on_phone_upload)
             asyncio.create_task(self._dashboard.serve())
-            # Runs for the whole lifetime, not just inside an active session
             asyncio.create_task(self._process_dashboard_commands())
             return True
         except Exception as e:
@@ -4071,11 +3443,9 @@ class AethelarkLive:
             return False
 
     def reload_modules(self) -> None:
-        """Pick up a module installed or removed while the eagle runs.
-
-        A Live session's tool list is fixed when it connects, so new tools only
-        reach the model through a new connection. It resumes with the handle,
-        so the conversation carries on; a turn in flight finishes first.
+        """Pick up a module installed or removed while the eagle runs. A session's
+        tool list is fixed at connect, so it reconnects with the resume handle
+        after any turn in flight.
         """
         added, removed = reload_modules()
         if not (added or removed):
@@ -4184,7 +3554,7 @@ class AethelarkLive:
                     self.ui.set_state("THINKING")
                 config = self._build_config()
 
-                # Fresh client on every reconnect — avoids stale HTTP session state
+                # Fresh client on every reconnect.
                 client = genai.Client(
                     api_key=_get_api_key(),
                     http_options={"api_version": "v1beta"}
@@ -4205,7 +3575,7 @@ class AethelarkLive:
                         self._mic_drops       = 0
                         self._turn_done_event = asyncio.Event()
 
-                        # Reset transient state that must not carry over from a previous session
+                        # Reset transient state from the previous session.
                         self._pending_vision       = None
                         self._vision_busy          = False
                         self._vision_last_time     = 0.0
@@ -4238,7 +3608,6 @@ class AethelarkLive:
                         if self._dashboard:
                             await self._dashboard.broadcast({"type": "status", "state": "active"})
 
-                        # Start playback thread
                         play_thread = threading.Thread(
                             target=self._play_audio_loop,
                             name="AethelarkPlaybackThread",
@@ -4255,15 +3624,13 @@ class AethelarkLive:
                         tg.create_task(self._run_proactive_mode())
                         tg.create_task(self._monitor_queue_depth())
 
-                        # Morning briefing — fires once per process launch (if enabled)
                         if not self._briefing_sent and get_brief_enabled():
                             self._briefing_sent = True
                             tg.create_task(self._send_startup_briefing())
                 finally:
                     if self._play_stop_event:
                         self._play_stop_event.set()
-                    # Tool tasks live outside the TaskGroup, so nothing else
-                    # will stop them when this session goes away.
+                    # Tool tasks live outside the TaskGroup, so stop them here.
                     await self._cancel_inflight_tools()
 
             except KeyboardInterrupt:
@@ -4271,13 +3638,8 @@ class AethelarkLive:
             except SystemExit:
                 raise
             except BaseException as e:
-                # Catches both Exception and BaseExceptionGroup (Python 3.11+
-                # TaskGroup raises BaseExceptionGroup when tasks are cancelled
-                # externally, which `except Exception` would miss, letting the
-                # exception escape the while-loop and causing asyncio.run() to
-                # start shutdown — resulting in "executor after shutdown" errors).
-                # Unwrap the group so the true cause (1011 APIError, GoAway signal,
-                # bad key) is visible for classification.
+                # Catch BaseExceptionGroup too (TaskGroup raises it on cancellation) and
+                # unwrap it so the real cause can be classified.
                 all_excs = _flatten_exc(e)
                 err_blob = " | ".join(s for s in (str(x) for x in all_excs) if s)
 
@@ -4286,24 +3648,12 @@ class AethelarkLive:
                 )
                 self._go_away_reconnect = False
 
-                # A session that lived long enough to prove the network is fine
-                # hands the next reconnect a clean base delay, so an outage that
-                # ended hours ago can no longer cost a full minute of silence.
+                # A session that lived long enough resets the reconnect delay.
                 self._backoff.on_failure()
 
-                # The event loop itself is unusable. Its default executor —
-                # the thread pool asyncio hands getaddrinfo and to_thread — has
-                # been shut down, so every DNS lookup from here fails and every
-                # reconnect fails with it. Retrying is not a recovery, it is a
-                # spin: measured 2026-09-07, one session did this every three
-                # seconds for the rest of its life, window up, pill animating,
-                # nothing working.
-                #
-                # Nothing in this loop can rebuild a default executor, so the
-                # only real recovery is a new loop. Raise, and let `_run_core`
-                # start one. It is bounded to five attempts, so a permanently
-                # broken machine still stops and says so instead of hiding the
-                # cause under identical errors.
+                # The loop's default executor is shut down, so every DNS lookup and
+                # reconnect fails: raise and let _run_core start a new loop (bounded to
+                # five).
                 if "cannot schedule new futures" in err_blob:
                     self.ui.write_log(
                         "ERR: the event loop died — restarting the core.")
@@ -4314,18 +3664,14 @@ class AethelarkLive:
                         "a fresh loop is required") from e
 
                 if graceful:
-                    # Server asked us to migrate connections (GoAway). Expected —
-                    # resume immediately with the handle we already hold.
+                    # GoAway: resume at once with the handle.
                     print("[Aethelark] Graceful reconnect — resuming session with handle.")
                     self._backoff.set(1)
 
                 elif ("API key not valid" in err_blob or "API_KEY_INVALID" in err_blob
                       or "API key expired" in err_blob):
-                    # Genuinely invalid key — stop hammering the API, prompt re-config.
-                    # NOTE: a WebSocket 1007 is NOT an API-key signal (it's a generic
-                    # "invalid frame payload" close — e.g. the audio-content-type
-                    # hiccup below), so it must never land here or a transient blip
-                    # tears the whole app down demanding a relaunch.
+                    # Invalid key: stop and ask for a new one. A WebSocket 1007 is not a
+                    # key error.
                     print(f"[Aethelark] Error: invalid API key — {err_blob[:200]}")
                     self.ui.write_log("ERR: Google refused the Gemini key. Enter a new one.")
                     self.ui.set_state("SLEEPING")
@@ -4338,21 +3684,16 @@ class AethelarkLive:
                     continue
 
                 elif "CONTENT_TYPE_AUDIO" in err_blob or "audio content type" in err_blob:
-                    # The native-audio model sometimes rejects audio right after a
-                    # RESUMED reconnect (server returns 1007). It is not a key or a
-                    # fatal error — the resume handle is the trigger. Drop it and do
-                    # a clean COLD reconnect; a fresh session accepts audio again.
+                    # A 1007 right after a resumed reconnect: drop the handle and
+                    # reconnect cold.
                     print(f"[Aethelark] Audio content-type rejected on resume — cold reconnecting. {err_blob[:160]}")
                     self.ui.write_log("NET: Refreshing the audio session…")
                     self._resume_handle = None
                     self._backoff.set(2)
 
                 elif looks_like_quota(err_blob):
-                    # Google's free tier ran out. Measured 2026-09-23: sessions
-                    # died with "1011 ... Resource has been exhausted (e.g.
-                    # check quota)", the 1011 branch below took it for a
-                    # dropped line, reconnected every two seconds and told the
-                    # user "resuming…" -- about a limit, not a network.
+                    # Free-tier quota exhausted (a 1011 saying "Resource has been
+                    # exhausted"): wait, do not reconnect every two seconds.
                     self._quota_strikes += 1
                     wait = _QUOTA_WAITS_S[min(self._quota_strikes,
                                               len(_QUOTA_WAITS_S)) - 1]
@@ -4364,8 +3705,8 @@ class AethelarkLive:
                     self.ui.write_log(f"NET: {notice}.")
 
                 elif "1011" in err_blob or "1007" in err_blob or "ConnectionClosedError" in err_blob:
-                    # Server-side internal error / connection drop — transient.
-                    # Reconnect quickly WITH the resume handle to restore context.
+                    # Transient server error or drop: reconnect quickly with the resume
+                    # handle.
                     print(f"[Aethelark] Gemini connection dropped (1011/1007/closed) — resuming. {err_blob[:160]}")
                     self.ui.write_log("NET: Gemini dropped the connection — resuming…")
                     self._backoff.set(2)
@@ -4384,14 +3725,13 @@ class AethelarkLive:
                             "(a VPN may be required)"
                         )
                     else:
-                        # Genuinely unexpected — keep the full traceback for debugging.
+                        # Unexpected: keep the full traceback.
                         print(f"[Aethelark] Error ({type(e).__name__}): {e}")
                         traceback.print_exc()
                         self._backoff.set(ConnectionBackoff.BASE)
 
-                # Stale-handle recovery: if we were resuming but never reached a live
-                # session, the handle is likely expired/rejected — drop it so the next
-                # attempt is a clean cold start rather than looping on a dead handle.
+                # Resuming never reached a live session: the handle is likely dead, so
+                # drop it.
                 if self._resume_handle is not None and not connected_ok:
                     print("[Aethelark] Resume handle unusable — clearing for cold reconnect.")
                     self._resume_handle = None
@@ -4401,9 +3741,8 @@ class AethelarkLive:
             self.set_speaking(False)
             self.ui.set_state("SLEEPING")
             if notice:
-                # After SLEEPING, not before: every state change repaints the
-                # island, so a notice shown first would be gone at once. The
-                # next state change -- reconnecting -- clears it.
+                # After sleeping: every state change repaints the island, so a notice
+                # shown first would vanish.
                 show = getattr(self.ui, "show_notice", None)
                 if show is not None:
                     show(notice)
@@ -4416,18 +3755,8 @@ class AethelarkLive:
             await asyncio.sleep(delay)
 
 def _run_core(ui, start, *, sleep=time.sleep, max_restarts: int = 5) -> None:
-    """Run the assistant core, and do not let it die quietly.
-
-    The core used to run bare on a daemon thread. Anything raised by the
-    AethelarkLive constructor, or any non-KeyboardInterrupt escape from run(),
-    killed that thread with no supervision and no output — leaving the window
-    open, the pill animating, and nothing working, with no indication that
-    anything was wrong. A beautiful dead window is the worst failure mode
-    available, because it looks fine.
-
-    Restarts are bounded on purpose: endlessly restarting something that is
-    permanently broken buries the cause under identical errors. Better to stop
-    and say so.
+    """Run the assistant core under supervision, so a crash is reported instead of
+    leaving a live-looking dead window. Restarts are bounded.
     """
     attempt = 0
     while True:
@@ -4455,7 +3784,6 @@ def _run_core(ui, start, *, sleep=time.sleep, max_restarts: int = 5) -> None:
 
 
 def _safe_log(ui, text: str) -> None:
-    """The supervisor must survive a UI that is itself broken."""
     try:
         ui.write_log(text)
     except Exception:
