@@ -58,9 +58,9 @@ def _start_guidance(detail: str) -> str:
     return (_LOCKED_GUIDANCE if _PROFILE_LOCKED in (detail or "").lower()
             else _NO_BROWSER_GUIDANCE)
 
-_NO_HANDOFF_WINDOW = (
-    "the eagle's browser runs invisibly and there is no way to hand this "
-    "specific window to them yet")
+_HANDOFF_HOW = (
+    "call web_agency with action='sign_in' and url set to this page to put the "
+    "eagle's browser in front of the user; it goes away by itself when they finish")
 
 # One sense per process, so the failure count that drives escalation survives across
 # calls.
@@ -596,7 +596,7 @@ def _look(browser, want_pixels: bool) -> ToolResult:
             lines.append(f"({escalation_note})")
         if needs_human:
             lines.append(f"This needs the user — {needs_human} "
-                        f"({_NO_HANDOFF_WINDOW}).")
+                        f"({_HANDOFF_HOW}).")
         return ToolResult.failure(
             "\n".join(lines),
             guidance=("The page may be genuinely empty, still loading, or "
@@ -620,7 +620,7 @@ def _look(browser, want_pixels: bool) -> ToolResult:
                          f"{_remedy_for(current_url)}")
         else:
             lines.append(f"This needs the user — {needs_human} "
-                        f"({_NO_HANDOFF_WINDOW}).")
+                        f"({_HANDOFF_HOW}).")
 
     if cookie_choice:
         lines.append(
@@ -829,7 +829,7 @@ def _gate_type(page):
             raise _ConsentBlocked(
                 f"Refused to type into '{node.name}' because it is a "
                 "password field.",
-                f"This needs the user to sign in themselves — {_NO_HANDOFF_WINDOW}. "
+                f"This needs the user to sign in themselves — {_HANDOFF_HOW}. "
                 "Tell them what the page is asking for; do not type a "
                 "password on their behalf.")
         # `nodes` is the same collect that produced `node`.
@@ -837,7 +837,7 @@ def _gate_type(page):
         if reason:
             raise _ConsentBlocked(
                 f"Refused to type into '{node.name}' — {reason}.",
-                f"This needs the user — {_NO_HANDOFF_WINDOW}. Tell them "
+                f"This needs the user — {_HANDOFF_HOW}. Tell them "
                 "what the page is asking for and let them handle it "
                 "themselves.")
     return gate
