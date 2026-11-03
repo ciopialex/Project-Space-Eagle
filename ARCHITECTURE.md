@@ -331,7 +331,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/system_monitor.py` | A cache with a TTL, not a thread that never stops. |
 | `actions/visual_verifier.py` | Autonomous visual web verification (Playwright coupling). |
 | `actions/weather_report.py` | The weather, said out loud. |
-| `actions/web_agency.py` | Use a website the way a person would. |
+| `actions/web_agency.py` | Use a website the way a person would: one way of perceiving any page and acting in |
 | `actions/web_search.py` | Bounded search across Gemini Grounding and DuckDuckGo. |
 | `actions/youtube_api.py` | The user's own YouTube account, through the API they already authorised. |
 | `actions/youtube_setup.py` | Connecting YouTube, as one button that knows which wall you are at. |
