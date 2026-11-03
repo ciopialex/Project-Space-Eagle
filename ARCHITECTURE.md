@@ -301,9 +301,9 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/grounding/vision.py` | Vision grounding — the fallback for surfaces that publish no structure. |
 | `actions/grounding/waiting.py` | Wait for an element to be genuinely ready, the way a person does. |
 | `actions/grounding/web/attach.py` | Reach into the Chrome the eagle already opened for the user. |
-| `actions/grounding/web/browser.py` | One browser the eagle owns, kept warm, running in its own thread. |
+| `actions/grounding/web/browser.py` | One browser the eagle owns, kept warm, on its own thread. |
 | `actions/grounding/web/chrome_link.py` | Work in the user's own Chrome, where they are already signed in. |
-| `actions/grounding/web/consent.py` | The line the eagle does not cross by itself. |
+| `actions/grounding/web/consent.py` | The line the eagle does not cross by itself: controls that commit something are |
 | `actions/grounding/web/grounder.py` | Locate a control on a web page, by the words a person would use for it. |
 | `actions/grounding/web/handoff.py` | Hand the keyboard back when the site is asking for a person. |
 | `actions/grounding/web/outcome.py` | Did the click actually DO something? |
