@@ -32,6 +32,7 @@ NODES = [
     ("delegation", "Agent adapters", "actions/agent_delegation.py"),
     ("session", "HeadlessSession", "core/agent_session.py"),
     ("cli", "claude / agy CLI", None),
+    ("ambient", "Module events watcher", "core/ambient.py"),
     ("esc", "Held requests and notes", "core/escalations.py"),
     ("confirm", "Spoken-yes gate", "core/confirm.py"),
     ("shell", "WebShellUI host", "aethelark_web.py"),
@@ -50,6 +51,9 @@ EDGES = [
     ("dispatch", "bus", "module tool", "main.py", "MODULE_BUS.invoke"),
     ("bus", "confirm", "irreversible tool", "core/module_bus/bus.py", "_check_confirmation"),
     ("bus", "modules", "one process per call, JSON on stdout", "core/module_bus/bus.py", "subprocess.Popen"),
+    ("dispatch", "shell", "module answer as a card", "main.py", "self.ui.set_pill_context"),
+    ("modules", "ambient", "latest event, one JSON file per module", "aethelark_web.py", "AmbientWatcher("),
+    ("ambient", "shell", "read every 2 s", "aethelark_web.py", "self._ambient_timer.start(2000)"),
     ("dispatch", "coding", "coding tool", "main.py", "from actions.developer_mode import developer_mode"),
     ("coding", "delegation", "agent.run", "actions/developer_mode.py", "agent.run("),
     ("delegation", "session", "start or resume", "actions/agent_delegation.py", "HeadlessSession"),
@@ -294,6 +298,92 @@ def _island() -> list[str]:
     return out
 
 
+# --------------------------------------------------------------- modules
+
+FIXTURES = "tests/fixtures/module_bus/manifests"
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|")
+
+
+def _tool_row(m, t) -> str:
+    argv = " ".join([m.binary, *t.argv])
+    before = []
+    if t.confirm:
+        before.append("asks the user")
+    if t.danger != "safe":
+        before.append(t.danger)
+    if t.internal:
+        before.append("host only, not offered to the model")
+    limits = []
+    if t.one_at_a_time:
+        limits.append("one at a time")
+    if t.exclusive:
+        limits.append("runs alone")
+    touches = ", ".join([*(f"reads {r}" for r in t.reads), *(f"writes {w}" for w in t.writes),
+                         *limits])
+    secs = f"{t.seconds:g}" if t.seconds is not None else "default"
+    return (f"| `{t.qualified_name}` | `{_cell(argv)}` | {', '.join(before)} | {secs} "
+            f"| {touches} |")
+
+
+def _module_block(title: str, entry: dict, m) -> list[str]:
+    out = [f"### {title} (`{m.key}`)", "",
+           f"Installed from `{entry.get('source', '?')}`. Command `{m.binary}`, answers in "
+           f"{m.output}. How it works inside: `ARCHITECTURE.md` in that repository.", ""]
+    for a in m.accounts:
+        out.append(f"- **Signs in to** `{a.site}` in the eagle's browser; the module receives "
+                   f"that site's cookies on stdin through `{m.binary} {' '.join(a.receive)}`.")
+    if m.events:
+        prio = ", ".join(f"{k} {v}" for k, v in sorted(m.events.priority.items(),
+                                                       key=lambda kv: -kv[1]))
+        out.append(f"- **Speaks unprompted** through `{m.events.listener}`"
+                   + (f"; event priorities: {prio}." if prio else "; no event priorities set."))
+    if m.deck:
+        out.append(f"- **Deck:** each candidate is refined in the background with "
+                   f"`{m.key}_{m.deck.refine}`, passing its `{m.deck.key}` as `{m.deck.param}`.")
+    if m.island:
+        cards = ", ".join(f"`{c.name}` {c.width}×{c.height}" for c in m.island.cards)
+        out.append(f"- **Island cards:** {cards}; a card is about `{m.island.about}`, opens on "
+                   f"`{m.island.first}`" + (f", answers stay fresh {m.island.fresh_for:g} s"
+                                             if m.island.fresh_for else "") + ".")
+    elif m.island_config:
+        keys = ", ".join(f"`{k}`" for k in m.island_config)
+        out.append(f"- **Island:** declares {keys} but no cards, so an answer goes on screen "
+                   f"when it fills a field the module's `{m.template}` uses "
+                   f"(`ModuleBus.island_fields`).")
+    out += ["", "| tool | runs | before it runs | seconds | touches |", "|---|---|---|---|---|"]
+    out += [_tool_row(m, t) for t in m.tools]
+    out.append("")
+    return out
+
+
+def _modules() -> list[str]:
+    import tomllib
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from core.module_bus.manifest import load_manifest
+    catalog = tomllib.loads(_read("core/module_bus/catalog.toml")).get("modules", {})
+    found = {p.stem: load_manifest(p) for p in sorted((ROOT / FIXTURES).glob("*.toml"))}
+    out = []
+    listed = set()
+    for name, entry in catalog.items():
+        keys = [k for k in [name, *entry.get("aliases", [])] if k in found]
+        if not keys:
+            out.append(f"### {entry.get('title', name)}\n\nIn the catalog, but `{FIXTURES}` has "
+                       f"no copy of its manifest.\n")
+            continue
+        listed.add(keys[0])
+        out += _module_block(entry.get("title", name), entry, found[keys[0]])
+    rest = sorted(set(found) - listed)
+    if rest:
+        out.append("Fixtures for modules not in the catalog: "
+                   + ", ".join(f"`{k}`" for k in rest) + ".")
+        out.append("")
+    return out
+
+
 # ------------------------------------------------------------ file index
 
 def _files() -> list[str]:
@@ -356,6 +446,15 @@ def generate() -> str:
         "|---|---|---|---|",
         *[f"| `{n}` | {g} | {w} | {d} |" for n, g, w, d in tools],
         "",
+        "## Modules",
+        "",
+        "The modules `eagle install` knows by name (`core/module_bus/catalog.toml`), read "
+        f"from the copies of their manifests in `{FIXTURES}`. A tool is offered to the model "
+        "as `<key>_<name>` and runs as one process: the command line below, with the "
+        "call's arguments filled in. When a module's manifest changes, copy it over its "
+        "fixture and regenerate.",
+        "",
+        *_modules(),
         "## Island states",
         "",
         "From `GEOM` in `web/pill.html`. Rules for the state machine are in `CLAUDE.md`.",

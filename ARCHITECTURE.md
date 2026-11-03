@@ -19,6 +19,7 @@ flowchart LR
   delegation["Agent adapters<br/><small>actions/agent_delegation.py</small>"]
   session["HeadlessSession<br/><small>core/agent_session.py</small>"]
   cli(["claude / agy CLI"])
+  ambient["Module events watcher<br/><small>core/ambient.py</small>"]
   esc["Held requests and notes<br/><small>core/escalations.py</small>"]
   confirm["Spoken-yes gate<br/><small>core/confirm.py</small>"]
   shell["WebShellUI host<br/><small>aethelark_web.py</small>"]
@@ -33,6 +34,9 @@ flowchart LR
   dispatch -->|"module tool"| bus
   bus -->|"irreversible tool"| confirm
   bus -->|"one process per call, JSON on stdout"| modules
+  dispatch -->|"module answer as a card"| shell
+  modules -->|"latest event, one JSON file per module"| ambient
+  ambient -->|"read every 2 s"| shell
   dispatch -->|"coding tool"| coding
   coding -->|"agent.run"| delegation
   delegation -->|"start or resume"| session
@@ -91,6 +95,76 @@ Declared in `main.py` `TOOL_DECLARATIONS`, run by `AethelarkLive._execute_tool`.
 | `shutdown_aethelark` | always | main.py | Quits the Aethelark app completely. |
 | `file_processor` | labs | actions.file_processor | Processes a file the user sent from their phone (the remote dashboard's upload), or any file given by its full |
 | `save_memory` | always | main.py | Save an important personal fact about the user to long-term memory. |
+
+## Modules
+
+The modules `eagle install` knows by name (`core/module_bus/catalog.toml`), read from the copies of their manifests in `tests/fixtures/module_bus/manifests`. A tool is offered to the model as `<key>_<name>` and runs as one process: the command line below, with the call's arguments filled in. When a module's manifest changes, copy it over its fixture and regenerate.
+
+### Aethelark-Trade (`atrade`)
+
+Installed from `git+https://github.com/ciopialex/Aethelark-Trade`. Command `atrade`, answers in json. How it works inside: `ARCHITECTURE.md` in that repository.
+
+- **Speaks unprompted** through `atrade listen`; no event priorities set.
+- **Island cards:** `small` 320×62, `medium` 440×236, `large` 440×364; a card is about `ticker`, opens on `small`, answers stay fresh 60 s.
+
+| tool | runs | before it runs | seconds | touches |
+|---|---|---|---|---|
+| `atrade_quote` | `atrade quote {ticker} --json` |  | 90 | reads net |
+| `atrade_analyze` | `atrade analyze {ticker} --json` |  | 180 | reads web |
+| `atrade_governance` | `atrade governance {ticker} --json` |  | 60 | reads web |
+| `atrade_compare` | `atrade compare {ticker_a} {ticker_b} --json` |  | 300 | reads web |
+| `atrade_leaderboard` | `atrade leaderboard --json` |  | 600 | reads web |
+| `atrade_insider` | `atrade insider {ticker} --days={days} --json` |  | 90 | reads net |
+| `atrade_watchlist` | `atrade watchlist --json` |  | 90 | reads net |
+| `atrade_watch` | `atrade watch {ticker} --json` | undoable | 90 | reads net |
+| `atrade_unwatch` | `atrade unwatch {ticker} --json` | undoable | 90 | reads net |
+| `atrade_portfolio` | `atrade portfolio --json` |  | 90 | reads net |
+| `atrade_owners` | `atrade owners {ticker} --json` |  | 90 | reads net |
+| `atrade_contact` | `atrade contact {email} --json` | undoable | 60 |  |
+
+### Aethelark-3D (`a3d`)
+
+Installed from `git+https://github.com/ciopialex/Aethelark-3D`. Command `a3d`, answers in json. How it works inside: `ARCHITECTURE.md` in that repository.
+
+- **Signs in to** `makerworld.com` in the eagle's browser; the module receives that site's cookies on stdin through `a3d session --json`.
+- **Speaks unprompted** through `a3d listen --fleet`; event priorities: printer_error 100, printer_paused 95, spool_low_alert 80, first_layer_passed 35, print_complete 30, print_progress 25, purgex_savings_achieved 20, printer_standby 5.
+- **Deck:** each candidate is refined in the background with `a3d_download`, passing its `id` as `query_or_id`.
+- **Island:** declares `about`, `dwell`, `live`, `live_param` but no cards, so an answer goes on screen when it fills a field the module's `template.html` uses (`ModuleBus.island_fields`).
+
+| tool | runs | before it runs | seconds | touches |
+|---|---|---|---|---|
+| `a3d_search` | `a3d search {query} --limit={limit} --sort={sort} --json` |  | 90 | reads net |
+| `a3d_download` | `a3d download {query_or_id} --sort={sort} --printer={printer} --json` | undoable | 120 | writes file, one at a time, runs alone |
+| `a3d_browse` | `a3d browse {query} --limit={limit} --printer={printer} --json` | undoable | 240 | reads web, one at a time |
+| `a3d_camera` | `a3d camera --printer={printer} --state={state} --json` | host only, not offered to the model | 20 | reads net |
+| `a3d_print_batch` | `a3d print-batch {jobs} --json` | asks the user, permanent, host only, not offered to the model | 600 | writes printer, one at a time, runs alone |
+| `a3d_quote` | `a3d quote {model} --grams={grams} --hours={hours} --material={material} --margin={margin} --json` |  | 90 | reads net |
+| `a3d_rates` | `a3d rates --currency={currency} --electricity={electricity} --filament={filament} --material={material} --watts={watts} --printer-price={printer_price} --printer-life={printer_life} --failure-rate={failure_rate} --labour-minutes={labour_minutes} --labour-rate={labour_rate} --margin={margin} --json` |  | 90 | reads net |
+| `a3d_local` | `a3d local {name} --dir={directory} --printer={printer} --json` |  | 60 | reads files |
+| `a3d_discover` | `a3d discover --json` |  | 60 | reads net |
+| `a3d_reviews` | `a3d reviews {query_or_id} --json` |  | 60 | reads net |
+| `a3d_open` | `a3d open {query_or_id} --json` |  | 60 |  |
+| `a3d_pair` | `a3d pair {printer} --code={access_code} --json` |  | 60 | reads net, writes net |
+| `a3d_printers` | `a3d fleet --json` |  | 90 | reads net |
+| `a3d_status` | `a3d status --printer={printer} --json` |  | 90 | reads net |
+| `a3d_shelf` | `a3d spool --shelf --json` |  | 90 | reads net |
+| `a3d_spool` | `a3d spool --printer={printer} --slot={slot} --json` |  | 90 | reads net |
+| `a3d_load_spool` | `a3d spool --load={material} --printer={printer} --slot={slot} --color={color} --grams={grams} --new={new} --size={size} --nozzle-temp={nozzle_temp} --bed-temp={bed_temp} --json` | undoable | 60 | writes files |
+| `a3d_filament` | `a3d filament {query} --printer={printer} --json` |  | 90 | reads net |
+| `a3d_vault` | `a3d vault --json` |  | 90 | reads net |
+| `a3d_doctor` | `a3d doctor --printer={printer} --json` |  | 90 | reads net |
+| `a3d_light` | `a3d light {state} --printer={printer} --json` | undoable | 90 | reads net, writes printer |
+| `a3d_speed` | `a3d speed {mode} --printer={printer} --json` | undoable | 60 | reads net, writes printer |
+| `a3d_beacon` | `a3d beacon {printer} --mode={mode} --json` | undoable | 90 | reads net, writes printer |
+| `a3d_alias` | `a3d alias {action} --name={name} --printer={printer} --json` | undoable | 90 | reads net |
+| `a3d_canvas` | `a3d canvas {printer} {state} --slots={slots} --json` | undoable | 60 |  |
+| `a3d_remove` | `a3d fleet --remove {printer} --json` | asks the user, undoable | 90 | reads net |
+| `a3d_print` | `a3d print {query_or_id} --printer={printer} --filament={filament} --nozzle-temp={nozzle_temp} --bed-temp={bed_temp} --leveling={leveling} --want-purgex={purgex} --json` | asks the user, permanent | 900 | reads net, writes printer, one at a time |
+| `a3d_pause` | `a3d pause --printer={printer} --json` | undoable | 60 | reads net, writes printer |
+| `a3d_resume` | `a3d resume --printer={printer} --json` | undoable | 60 | reads net, writes printer |
+| `a3d_stop` | `a3d stop --printer={printer} --json` | asks the user, permanent | 60 | reads net, writes printer |
+
+Fixtures for modules not in the catalog: `alaw`.
 
 ## Island states
 
