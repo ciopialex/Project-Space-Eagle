@@ -280,7 +280,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/desktop.py` |  |
 | `actions/dev_agent.py` |  |
 | `actions/developer_mode.py` |  |
-| `actions/file_controller.py` | File operations exposed to the model as one tool. |
+| `actions/file_controller.py` | File operations exposed to the model as one tool, on the user's real filesystem. |
 | `actions/file_processor.py` | file_processor.py — Aethelark Universal File Processor |
 | `actions/flight_finder.py` |  |
 | `actions/flights/dates.py` |  |
@@ -345,7 +345,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/aesthetics.py` | The taste layer. |
 | `core/agent_catalog.py` | Coding-agent CLIs the eagle can launch and drive. |
 | `core/agent_session.py` | A live coding-agent session that is a protocol, not a terminal. |
-| `core/agent_stream.py` | Drive a coding-agent CLI as a typed event stream instead of a repainting TUI. |
+| `core/agent_stream.py` | Drive a coding-agent CLI as a typed event stream instead of scraping a terminal |
 | `core/ambient.py` | What a module says when nobody asked it anything. |
 | `core/barge_in.py` | The user talking over the eagle: hearing it without hearing the eagle itself. |
 | `core/capabilities.py` | What Aethelark can do, as data rather than prose. |
@@ -372,7 +372,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/mission_handoff.py` | Tell an outside agent what the eagle IS, before asking it for a plan. |
 | `core/mission_ladder.py` | Ways of doing one step, cheapest and most exact first. |
 | `core/mission_planner.py` | Break a spoken goal into steps small enough to grind through. |
-| `core/mission_runners.py` | The rungs, bound to real tools. |
+| `core/mission_runners.py` | The rungs, bound to real tools. Each runner is (step) -> (ok, detail), and ok |
 | `core/mission_store.py` | Keep the mission across a reconnect, and leave a note when it gives up. |
 | `core/models.py` | Which Gemini model each job runs on — in one place, not fourteen. |
 | `core/module_bus/accounts.py` | A module borrows a sign-in the user made in the eagle's own browser. |

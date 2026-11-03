@@ -1,27 +1,11 @@
-"""File operations exposed to the model as one tool.
+"""File operations exposed to the model as one tool, on the user's real filesystem.
 
-Everything here runs on the user's real filesystem at the request of a
-language model, so the containment rule is the design, not a detail: every
-path is resolved and checked against the allowed roots by ONE gate, and no
-operation can reach the filesystem without passing through it.
+Every path is resolved and checked against the allowed roots by one gate,
+_resolve; no function can get a Path without it. Resolution comes first, so a
+symlink cannot step outside. Not defended: a path component swapped for a symlink
+between the check and the operation (would need openat2/O_NOFOLLOW).
 
-That is a structural choice rather than a stylistic one. The previous version
-checked containment at each call site, which meant it could be - and was -
-forgotten: `rename` validated the source but never the destination, so a
-new_name of "../../../.ssh/authorized_keys" moved a file clean out of the home
-directory, and `disk_usage` probed any path at all. Here a function physically
-cannot obtain a Path without `_resolve` having approved it.
-
-Resolution happens before the check, so symlinks cannot be used to step
-outside: a link inside the home directory pointing at /etc resolves to /etc
-and is refused. What this does NOT defend against is an attacker who can
-replace a path component with a symlink in the window between the check and
-the operation. Closing that properly needs openat2/O_NOFOLLOW per component,
-which is out of proportion for a local assistant acting for the person who
-owns the files - but it is a known limit, not an oversight.
-
-Deletion always goes to the trash. There is no code path here that
-unlinks a user file permanently.
+Deletion always goes to the trash.
 """
 from __future__ import annotations
 
@@ -45,9 +29,7 @@ _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 # The only tree the tool may touch.
 _SAFE_ROOTS: tuple[Path, ...] = (Path.home(),)
 
-# Directories that are enormous, uninteresting, and mostly machine-generated.
-# Walking them turns a "find my invoice" into a minute of disk churn while the
-# user waits mid-conversation.
+# Huge, machine-generated directories skipped when walking.
 _SKIP_DIRS = frozenset({
     ".git", ".venv", "venv", "node_modules", "__pycache__", ".cache",
     ".local", ".npm", ".cargo", ".rustup", ".gradle", ".m2", ".nuget",
@@ -62,8 +44,6 @@ class _Denied(Exception):
     """A path resolved outside the allowed roots."""
 
 
-# ── the one gate ────────────────────────────────────────────────────────────
-
 def _xdg(var: str, default: str) -> Path:
     """A well-known user directory, honouring the XDG override on Linux."""
     if _OS == "Linux":
@@ -74,8 +54,7 @@ def _xdg(var: str, default: str) -> Path:
 
 
 def _shortcuts() -> dict[str, Path]:
-    # Built per call: XDG variables and even the home directory can change
-    # inside a session, and a cached map would quietly serve stale paths.
+    # Built per call: XDG variables and the home directory can change.
     return {
         "desktop":   _xdg("XDG_DESKTOP_DIR", "Desktop"),
         "downloads": _xdg("XDG_DOWNLOAD_DIR", "Downloads"),
@@ -88,42 +67,23 @@ def _shortcuts() -> dict[str, Path]:
 
 
 def _resolve(raw: str, *parts: str) -> Path:
-    """Resolve `raw` (plus optional child components) and prove containment.
-
-    Raises _Denied for anything outside _SAFE_ROOTS. Every filesystem access
-    in this module goes through here - that is what makes the guarantee hold
-    even for code added later.
+    """Resolve `raw` (plus optional child components) and prove containment. Raises
+    _Denied outside _SAFE_ROOTS.
     """
-    # A shortcut is a shortcut whether or not something follows it. This used
-    # to match the whole string, so "desktop" landed on the real Desktop and
-    # "desktop/notes.txt" fell through to a path relative to whatever directory
-    # the app happened to be launched from -- and on 2026-09-05 that put a
-    # user's notes in a `desktop/` folder inside the source tree while the file
-    # they were watching on their actual Desktop stayed empty. The eagle
-    # reported success five times.
+    # A shortcut word is a shortcut whether or not something follows it
+    # ("desktop/notes.txt").
     text = str(raw).strip()
     shortcuts = _shortcuts()
     base = shortcuts.get(text.lower())
     if base is None:
         head, slash, tail = text.replace("\\", "/").partition("/")
         root = shortcuts.get(head.strip().lower())
-        # Only when something actually follows it: "desktop" alone is handled
-        # above, and a bare "desktop/" is the same folder.
+        # Only when something follows it.
         if root is not None and slash:
             base = root / tail
         else:
-            # `Path(text).expanduser()` is a filesystem question, not string
-            # handling, and it raises for input the model can plausibly
-            # produce. `~\..\..\etc\passwd` -- a Windows-shaped path, which
-            # a model writes without thinking -- is read as a USERNAME of
-            # `\..\..\etc\passwd`, and looking that user up raises
-            # RuntimeError("Could not determine home directory") straight out
-            # of this function. An embedded null raises ValueError the same way.
-            #
-            # Both used to escape `_resolve` uncaught, so a malformed path
-            # crashed the tool instead of being refused by it -- and every
-            # refusal here is deliberately shaped to tell the model not to
-            # retry a different spelling. A crash says nothing of the kind.
+            # expanduser() raises on input a model can produce ("~\..\etc", a null
+            # byte): refuse it rather than crash.
             try:
                 base = Path(text).expanduser()
             except (OSError, RuntimeError, ValueError) as e:
@@ -132,8 +92,7 @@ def _resolve(raw: str, *parts: str) -> Path:
     for part in parts:
         if not part:
             continue
-        # An absolute component would replace the base entirely under pathlib's
-        # join, so a "name" of "/etc/passwd" must never be treated as a child.
+        # An absolute component would replace the base under pathlib's join.
         candidate = Path(part)
         if candidate.is_absolute() or candidate.drive:
             raise _Denied(part)
@@ -142,8 +101,7 @@ def _resolve(raw: str, *parts: str) -> Path:
     try:
         resolved = base.expanduser().resolve()
     except (OSError, RuntimeError, ValueError) as e:
-        # RuntimeError: symlink loop, or an unresolvable ~user.
-        # ValueError: an embedded null byte.
+        # RuntimeError: symlink loop or unresolvable ~user. ValueError: a null byte.
         raise _Denied(base) from e
 
     for root in _SAFE_ROOTS:
@@ -158,10 +116,8 @@ def _resolve(raw: str, *parts: str) -> Path:
 
 
 def _bare_name(name: str) -> str:
-    """A single filename - no separators, no traversal, no drive.
-
-    Used where a name is written into an existing parent (rename), because
-    there the parent is already approved and only the leaf may vary.
+    """A single filename: no separators, no traversal, no drive. For a leaf written
+    into an approved parent.
     """
     cleaned = (name or "").strip()
     if not cleaned or cleaned in {".", ".."}:
@@ -174,16 +130,9 @@ def _bare_name(name: str) -> str:
 
 
 def _guard(fn):
-    """Turn containment failures and OS errors into answers, not tracebacks.
-
-    The model receives this string, so it has to read as an outcome. Paths are
-    reported as the resolved value on purpose: when a request is refused the
-    user should see exactly what it resolved to.
-
-    Each is returned as `Failed` rather than a bare string. It is still a
-    `str` — every caller and every containment test is unaffected — but the
-    entrypoint can now tell a refusal from a result without reading the prose,
-    which is what let "Access denied" reach the model as a completed action.
+    """Turn containment failures and OS errors into answers. Paths are reported
+    resolved. Returned as Failed (a str subclass) so the entry point can tell a
+    refusal from a result.
     """
     def wrapper(*args, **kwargs):
         try:
@@ -214,8 +163,6 @@ def _guard(fn):
     return wrapper
 
 
-# ── formatting ──────────────────────────────────────────────────────────────
-
 def _format_size(num_bytes: float) -> str:
     size = float(num_bytes)
     for unit in ("B", "KB", "MB", "GB", "TB"):
@@ -226,12 +173,8 @@ def _format_size(num_bytes: float) -> str:
 
 
 def _walk(root: Path, max_dirs: int = _MAX_DIRS_WALKED):
-    """Yield files beneath `root`, bounded and pruned.
-
-    os.walk with topdown pruning, not rglob: pruning means a skipped directory
-    is never descended into at all, where rglob would enumerate every entry
-    first and filter afterwards. On a home directory that is the difference
-    between touching a few thousand paths and a few hundred thousand.
+    """Files beneath `root`, bounded and pruned with os.walk so skipped directories
+    are never descended into.
     """
     walked = 0
     for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
@@ -246,14 +189,12 @@ def _walk(root: Path, max_dirs: int = _MAX_DIRS_WALKED):
 
 
 def _stat_or_none(path: Path):
-    """One unreadable entry must not abort a whole listing."""
+    """One unreadable entry must not abort a listing."""
     try:
         return path.stat()
     except OSError:
         return None
 
-
-# ── operations ──────────────────────────────────────────────────────────────
 
 @_guard
 def list_files(path: str = "desktop", show_hidden: bool = False) -> str:
@@ -286,12 +227,8 @@ _IRREVERSIBLE = (
 
 
 def _stage_or_refuse(target: Path):
-    """Capture what a write is about to destroy.
-
-    Returns (token, refusal). A None token means the prior contents cannot be
-    preserved - which is the definition of an irreversible write, and the only
-    case in this module that needs a human. Everything else just proceeds,
-    because it can be taken back.
+    """Capture what a write is about to destroy. Returns (token, refusal); no token
+    means the write is irreversible and needs a human.
     """
     token = journal.stage(target)
     if token is None:
@@ -334,8 +271,7 @@ def delete_file(path: str, name: str = "") -> str:
                       guidance="Ask the user to confirm the name — it may have "
                                "been misheard. Do not guess a similar file.")
 
-    # The well-known directories themselves are never deletable, however the
-    # request is phrased.
+    # The well-known directories themselves are never deletable.
     protected = {p.resolve() for p in _shortcuts().values()}
     if target in protected:
         return Failed(f"Protected directory, cannot delete: {target.name}",
@@ -350,11 +286,8 @@ def delete_file(path: str, name: str = "") -> str:
                      "missing; do not fall back to removing the file another "
                      "way.")
 
-    # Two tiers of recoverable. The system trash always applies, so the user
-    # can retrieve this by hand either way; staging the bytes as well is what
-    # makes the `undo` action able to do it for them. A directory or an oversized
-    # file cannot be staged - still recoverable from the trash, just not
-    # programmatically, which is worth saying rather than implying.
+    # Two tiers: the system trash always, plus a staged copy so `undo` can restore it. A
+    # directory or an oversized file is trash-only, and the reply says so.
     token = journal.stage(target)
     send2trash.send2trash(str(target))
     if token is None:
@@ -372,8 +305,7 @@ def _destination_for(src: Path, destination: str) -> Path:
         dst = _resolve(str(dst), src.name)
     if src == dst:
         raise _Denied(f"{dst} (source and destination are the same)")
-    # Copying or moving a directory into itself walks the growing target
-    # forever. Cheap to check, unpleasant to hit.
+    # Copying or moving a directory into itself never ends.
     if src.is_dir() and dst.is_relative_to(src):
         raise _Denied(f"{dst} (inside the source directory)")
     return dst
@@ -435,11 +367,8 @@ def rename_file(path: str, name: str = "", new_name: str = "") -> str:
         return Failed("No new name provided.",
                       guidance=('Ask the user what to call it.'))
 
-    # THE fix. The old version joined new_name onto the parent and renamed
-    # with no containment check at all, so "../../.ssh/authorized_keys"
-    # relocated the file outside the home directory entirely. Two gates now:
-    # the leaf must be a bare filename, and the result is resolved and checked
-    # like any other path.
+    # The new name must be a bare filename, and the result is resolved and checked like
+    # any path.
     leaf = _bare_name(new_name)
     new_path = _resolve(str(target.parent), leaf)
     if new_path.exists():
@@ -462,10 +391,7 @@ def read_file(path: str, name: str = "", max_chars: int = _MAX_READ_CHARS) -> st
                       guidance=('That is a folder. Ask which file inside it they mean.'))
 
     limit = max(1, int(max_chars))
-    # Read one character past the limit rather than slurping the file and
-    # slicing. The old version called read_text() first, so pointing this at a
-    # multi-gigabyte file took the whole process down with it - and the model
-    # only ever sees the first few thousand characters anyway.
+    # Read one character past the limit, never the whole file.
     with open(target, "r", encoding="utf-8", errors="replace") as handle:
         chunk = handle.read(limit + 1)
 
@@ -483,7 +409,7 @@ def write_file(path: str, name: str = "", content: str = "",
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if append:
-        # Appending destroys nothing; the inverse is a truncate back to here.
+        # Appending destroys nothing; undo truncates back to here.
         prev_size = target.stat().st_size if target.exists() else 0
         with open(target, "a", encoding="utf-8") as handle:
             handle.write(content)
@@ -496,10 +422,7 @@ def write_file(path: str, name: str = "", content: str = "",
     with open(target, "w", encoding="utf-8") as handle:
         handle.write(content)
     journal.record("overwrite" if token else "create", path=target, blob=token)
-    # The full path, not the basename. "Written to: manual_testing.txt" is true
-    # of a file in the wrong folder, and that is precisely the case it needs to
-    # make visible -- to the user reading it aloud, and to the small model that
-    # has to decide whether the request actually succeeded.
+    # Report the full path, so a file written to the wrong folder is visible.
     return f"Written to: {target}"
 
 
@@ -543,10 +466,7 @@ def get_largest_files(path: str = "downloads", count: int = 10) -> str:
 
     limit = max(1, min(int(count), 50))
 
-    # Only the top N are ever shown, so only the top N are kept. The old
-    # version accumulated every file in the tree and sorted the lot - on a
-    # home directory that is a list of hundreds of thousands of tuples held in
-    # memory to print ten lines.
+    # Keep only the top N.
     import heapq
     largest: list[tuple[int, str, str]] = []
     for item in _walk(root):
@@ -570,8 +490,7 @@ def get_largest_files(path: str = "downloads", count: int = 10) -> str:
 
 @_guard
 def get_disk_usage(path: str = "home") -> str:
-    # This used to skip the containment check entirely, which let it probe any
-    # mount point on the machine.
+    # Containment applies here too.
     target = _resolve(path)
     usage = shutil.disk_usage(target)
     percent = (usage.used / usage.total * 100) if usage.total else 0.0
@@ -595,8 +514,7 @@ _TYPE_FOLDERS: dict[str, frozenset[str]] = {
                             ".xml", ".cpp", ".java", ".cs", ".go", ".rs", ".sh"}),
 }
 
-# Reversed once at import: one dict lookup per file instead of scanning six
-# sets for every item on the desktop.
+# Reversed once at import.
 _EXT_TO_FOLDER: dict[str, str] = {
     ext: folder for folder, exts in _TYPE_FOLDERS.items() for ext in exts
 }
@@ -659,14 +577,9 @@ def get_file_info(path: str, name: str = "") -> str:
     return "\n".join(f"  {k}: {v}" for k, v in fields.items())
 
 
-# ── tool entry point ────────────────────────────────────────────────────────
-
 def undo_last_change() -> str:
-    """Reverse the last change this tool made, unless something touched it since.
-
-    The journal has staged a copy of every file this tool overwrote or deleted
-    since the tool was written, and nothing ever spent them. This is what they
-    were for: "undo that" after a write that replaced the wrong file.
+    """Reverse the last change this tool made, unless something touched the file
+    since.
     """
     said = journal.undo_last(1)
     if said.startswith("Nothing"):
@@ -679,12 +592,8 @@ def undo_last_change() -> str:
 
 def file_controller(parameters: dict | None = None, response=None,
                     player=None, session_memory=None) -> ToolResult:
-    """Dispatch one file action. Called from main.py's tool executor.
-
-    Returns a `ToolResult`. The helpers still return prose — the containment
-    tests assert on those strings and there is no reason to churn them — but a
-    refusal now arrives here marked as `Failed`, so the verdict is read off
-    the type rather than guessed from the wording.
+    """Dispatch one file action. Returns a ToolResult; helpers return prose, with
+    refusals marked Failed.
     """
     params = parameters or {}
     action = str(params.get("action", "")).lower().strip()
@@ -728,13 +637,11 @@ def file_controller(parameters: dict | None = None, response=None,
     try:
         outcome = handler()
     except (TypeError, ValueError) as e:
-        # A malformed argument from the model is a bad request, not a crash.
+        # A malformed argument is a bad request, not a crash.
         return ToolResult.failure(
             f"Invalid parameters for '{action}': {e}",
             guidance="Re-read the parameters for this action and call it again "
                      "with the right types. Do not tell the user it worked.")
 
-    # `normalize` reads the marker: Failed → ok=False with its guidance,
-    # anything else → the success it plainly is, since every refusal in this
-    # module is marked at the point it is decided.
+    # Failed -> ok=False with guidance; anything else is a success.
     return settled(outcome)

@@ -1,14 +1,5 @@
-"""The rungs, bound to real tools.
-
-Each runner is `(step) -> (ok, detail)`. `ok` must mean the world changed, not
-that a call returned — that is the whole basis for having no approval prompts
-between steps.
-
-Every one of these goes through a tool that already returns a `ToolResult`, so
-"did it work" is read off `ok` rather than guessed from prose. Where a tool
-still returns a bare string, `normalize` withholds `ok` and the runner treats
-that as a failure: an unmigrated tool cannot be trusted to have done anything,
-and a mission is exactly the place where that matters most.
+"""The rungs, bound to real tools. Each runner is (step) -> (ok, detail), and ok
+means the world changed. A tool result with no `ok` counts as a failure.
 """
 from __future__ import annotations
 
@@ -27,12 +18,8 @@ from actions.grounding.web.user_actions import (
 
 
 def _verdict(raw) -> tuple[bool, str]:
-    """A tool's return, as (ok, detail).
-
-    A result with NO `ok` on the wire is treated as a failure, not a success.
-    That is stricter than the rest of the codebase on purpose: elsewhere the
-    model reads the prose and decides; here a wrong reading advances a mission
-    past a step that never happened.
+    """A tool's return as (ok, detail). No `ok` on the wire is a failure: a wrong
+    reading would advance a mission past a step that never happened.
     """
     tr: ToolResult = normalize(raw)
     resp = tr.to_response()
@@ -42,10 +29,9 @@ def _verdict(raw) -> tuple[bool, str]:
 
 
 def _verdict_data(raw) -> tuple[bool, str, dict]:
-    """Same as `_verdict`, plus the tool's `.data` — where a download's saved
-    path and an upload's confirmation live. `to_response()` never surfaces
-    `.data` to the model (see `web_agency`'s module docstring); it is only for
-    this codebase's own callers, which a mission runner is."""
+    """_verdict plus the tool's .data (a download's path, an upload's confirmation),
+    which never reaches the model.
+    """
     tr: ToolResult = normalize(raw)
     resp = tr.to_response()
     if "ok" not in resp:
@@ -68,13 +54,9 @@ def _web(action: str, **extra) -> Callable[[Step], tuple[bool, str]]:
         if step.text:
             params["text"] = step.text
         if step.authorized:
-            # NOT a param the model's own tool declaration advertises — see
-            # `main.py`'s web_agency entry. If it were, the model could pass
-            # `confirmed=True` on any ordinary click and the whole consent
-            # guard would be theatre. This path only exists because a HUMAN
-            # already said yes to this exact mission, once, up front — see
-            # `Mission.authorized` — and reaches web_agency only through
-            # this runner, never through anything the model writes itself.
+            # Not in the model's tool declaration, or any click could pass
+            # confirmed=True. Only this runner sets it, for a mission the user already
+            # approved (Mission.authorized).
             params["confirmed"] = True
         params.update(extra)
         return _verdict(web_agency(parameters=params))
@@ -93,25 +75,10 @@ def _computer(action: str) -> Callable[[Step], tuple[bool, str]]:
     return run
 
 
-
 def _focused_text_field() -> str | None:
-    """The name of the text field that currently has keyboard focus, or None.
-
-    None means "I do not know where typing would land" — and that is the only
-    honest answer available when the accessibility layer cannot see a focused
-    editable control. It is NOT the same as "there is no field", and it must
-    never be read as permission.
-
-    This exists because a mission typed "motherboard" into the user's terminal
-    while Claude Code was running in it, and reported success. The same defect
-    is documented at the top of actions/whatsapp_web.py from months earlier:
-    blind-typing put "Go to sleep" into a terminal instead of a chat.
-
-    A thin, module-local alias kept around (rather than inlining the import
-    at every call site) purely so this name stays monkeypatchable exactly as
-    it was — the real check now lives in actions/grounding/focus.py so
-    computer_control's own direct actions share it too, instead of carrying
-    a second, drifted copy of the same logic.
+    """The name of the focused text field, or None. None means unknown, never
+    permission. A module-local name so tests can patch it; the check lives in
+    actions/grounding/focus.py.
     """
     from actions.grounding.focus import focused_editable_name
     return focused_editable_name()
@@ -125,7 +92,7 @@ def _refuse_blind(step: Step) -> tuple[bool, str]:
 
 
 def _runners_screen_type(step: Step) -> tuple[bool, str]:
-    """Type through the OS keyboard, but only once focus is known."""
+    """Type through the OS keyboard, only once focus is known."""
     if not step.text:
         return False, "nothing to type"
     try:
@@ -141,12 +108,7 @@ def _runners_screen_type(step: Step) -> tuple[bool, str]:
 
 
 def _press_keys(step: Step) -> tuple[bool, str]:
-    """The last resort, and the one the user had to drive by voice.
-
-    He pressed l, a, p, t, o, p, space, s, t, a, n, d — twelve tool calls and
-    twelve model round trips — because `type` was refused and nothing
-    escalated. It belongs in the ladder so nobody has to do that again.
-    """
+    """The last resort: press the keys one by one."""
     from actions.computer_control import computer_control
     text = step.text or ""
     if not text:
@@ -167,30 +129,22 @@ def _press_keys(step: Step) -> tuple[bool, str]:
 
 
 def _needs_url(step: Step) -> str:
-    """Why an open step cannot run, or "".
-
-    "No URL to open" from the browser is a true statement about a false
-    situation: the browser is fine, the STEP is malformed. Naming it here
-    means the mission reports a planning defect instead of blaming the tool.
+    """Why an open step cannot run, or "": a step with no URL is a planning defect,
+    not a browser failure.
     """
     return "" if step.url else (
         f"the step {step.intent!r} names no address to open — it needs a url")
 
 
 def _browser_open(step: Step) -> tuple[bool, str]:
-    """Opens the USER's browser — which `web_agency` cannot see into.
-
-    Last rung on purpose. The MakerWorld run hit a bot wall in the eagle's own
-    browser, fell back to this, and thereby lost every structural tool it had:
-    it could see the page on screen and had no way to act on it. Reaching this
-    rung means the next steps will be screen-and-vision only.
+    """Open the user's browser, which web_agency cannot see into. Last rung: after
+    it, the next steps are screen-and-vision only.
     """
     from actions.browser_control import browser_control
     why = _needs_url(step)
     if why:
         return False, why
-    # Same guard as _user_open: if a window is already showing this page,
-    # opening it natively again is another tab and another page load.
+    # A window already showing this page is not reopened.
     port, _ = _user_window()
     if port is not None and _same_page(port.url(), step.url):
         return True, f"already on {step.url}"
@@ -198,21 +152,12 @@ def _browser_open(step: Step) -> tuple[bool, str]:
         parameters={"action": "go_to", "url": step.url}))
 
 
-
-
 def _user_window(create: bool = False):
-    """The browser the eagle opened FOR the user, wrapped in the same grounding
-    it uses on its own.
-
-    Replaces an earlier attempt that launched that Chrome with
-    --remote-debugging-port and connected over CDP from outside. That does not
-    work — Playwright's launch_persistent_context runs its own CDP channel and
-    no listener appears — and it was unnecessary: browser_control is already
-    holding a Playwright Page for the window.
+    """The browser the eagle opened for the user, wrapped in the same grounding:
+    browser_control already holds its Playwright Page.
     """
     from core.session_port import user_window
     return user_window(create=create)
-
 
 
 def _user_click(step: Step) -> tuple[bool, str]:
@@ -221,8 +166,9 @@ def _user_click(step: Step) -> tuple[bool, str]:
 
 
 def _web_type(step: Step) -> tuple[bool, str]:
-    """Type in the eagle's OWN browser, into the focused field when the step
-    names no control. Same reasoning as `_user_type`, other browser."""
+    """Type in the eagle's own browser, into the focused field when the step names no
+    control.
+    """
     if not step.text:
         return False, "nothing to type"
     if not step.target:
@@ -239,21 +185,8 @@ def _web_type(step: Step) -> tuple[bool, str]:
 
 
 def _user_type(step: Step) -> tuple[bool, str]:
-    # A step's target names the control ("the search box"). When target is
-    # present, search for it directly — no focus attempt, exactly like the
-    # pre-refactor `if not step.target:` gate below.
-    #
-    # When target is EMPTY, user_type(None, ...) is called first so its own
-    # `if not description:` gate fires and tries the focused-field fast path
-    # ("type laptop stand" names no control because a person just clicked
-    # the field — see actions/grounding/web/user_actions.py's module
-    # docstring for why that path exists at all). Collapsing target and
-    # intent into one description BEFORE calling user_type (as an earlier
-    # version of this fix did) made description truthy on nearly every step
-    # with a blank target, since step.intent is required and non-empty —
-    # which skipped that fast path almost always. Only if the focus attempt
-    # fails do we fall back to searching for the intent text, the same as
-    # the original's `what = step.target or step.intent`.
+    # A target is searched for directly. With no target, user_type(None, ...) first
+    # tries the focused field; only if that fails is the intent text searched for.
     if step.target:
         r = _ua_type(step.target, step.text)
         return r.ok, r.message
@@ -277,26 +210,14 @@ def _user_look(step: Step) -> tuple[bool, str]:
     return r.ok, r.message
 
 
-# ── the disk: getting a file, reading it, filling one, sending it back ──────
-#
-# These four runners are what makes "download a form, fill it in with details
-# from a file on my Desktop, upload and submit it" a workflow the eagle can
-# actually run rather than four steps that each report success while doing
-# nothing. `step.data` — the SAME dict as `Mission.facts`, wired in by
-# `mission_ladder.attempt` right before any rung runs — is how a later runner
-# finds what an earlier one produced: the downloaded file's path, the values
-# read off the disk, the filled copy's path. None of it is re-derived by
-# guessing at filenames from the step's own wording where a fact already
-# answers the question.
+# The disk: getting a file, reading it, filling one, sending it back. step.data is
+# Mission.facts, so a later runner finds what an earlier one produced (the downloaded
+# path, the values read, the filled copy) instead of guessing filenames.
 
 
 def _web_download(step: Step) -> tuple[bool, str]:
-    """Click a download control and keep the path it produced.
-
-    Distinct from `web_click` for the reason `web_agency._download` documents:
-    a click succeeds when the page reacts, a download succeeds only when a
-    file is on disk. The path goes onto the blackboard as `downloaded_file` —
-    the only way "fill the downloaded form" can find it without guessing.
+    """Click a download control and keep the path as `downloaded_file`. Success means
+    a file on disk.
     """
     from actions.web_agency import web_agency
     ok, detail, data = _verdict_data(web_agency(parameters={
@@ -307,30 +228,17 @@ def _web_download(step: Step) -> tuple[bool, str]:
     return ok, detail
 
 
-#: A location word in the step's own phrasing, and the folder it means.
-#: Checked in this order so the first one named wins rather than the last.
+# A location word in the step's phrasing and the folder it means; first named wins.
 _FOLDER_WORDS = (("desktop", "Desktop"), ("downloads", "Downloads"),
                  ("download", "Downloads"), ("documents", "Documents"))
 
-#: A bare filename with a document-shaped extension, as a person would type
-#: it in a sentence — never a full path, which nobody speaks aloud. `\S+`
-#: rather than a wider class: an earlier version allowed spaces inside the
-#: match, so it greedily swallowed "read the file my-details.txt" as ONE
-#: filename (there is only one '.txt' in the sentence, and every character
-#: before it — including "read the file " — is a legal char in that class).
-#: A filename has no un-escaped spaces, so stopping at whitespace is correct,
-#: not merely convenient.
+# A bare filename with a document extension, as spoken: no spaces, never a full path.
 _FILENAME = re.compile(
     r"\S+\.(?:txt|pdf|csv|json|md|docx?|rtf)\b", re.I)
 
 
 def _named_file(intent: str) -> Path | None:
-    """A file the step's OWN wording points to, in whichever folder it names.
-
-    None when the step names no filename at all — the honest answer for
-    something like "fill it in", which means whatever was already found, not
-    a fresh guess.
-    """
+    """A file the step's own wording names, in the folder it names, or None."""
     m = _FILENAME.search(intent)
     if not m:
         return None
@@ -342,18 +250,13 @@ def _named_file(intent: str) -> Path | None:
     return folder / m.group(0)
 
 
-#: "Label: value" — the shape both a person's own notes and a form template
-#: use. Loose on the label on purpose: the vocabulary belongs to whatever file
-#: or site produced it, never predicted in advance.
+# "Label: value", the shape of both a person's notes and a form template.
 _FIELD_LINE = re.compile(r"^[ \t]*([A-Za-z][A-Za-z /]{0,40}?):[ \t]*(.*)$")
 
 
 def _parse_fields(text: str) -> dict[str, str]:
-    """Every "Label: value" line in `text`, keyed by the label lowercased.
-
-    A blank value is skipped — that is the TEMPLATE's own empty line
-    ("FULL NAME:"), not data, and letting it in would erase a real value
-    read earlier with nothing.
+    """Every "Label: value" line in `text`, keyed by the lowercased label. Blank
+    values (a template's empty line) are skipped.
     """
     out: dict[str, str] = {}
     for line in text.splitlines():
@@ -367,17 +270,12 @@ def _parse_fields(text: str) -> dict[str, str]:
 
 
 def _file_read(step: Step) -> tuple[bool, str]:
-    """Read a file off the disk and harvest any "Label: value" lines from it.
-
-    Never touches the browser. Before this ladder existed, "Read the file on
-    my Desktop" fell to `web_look`, which read the current PAGE instead and
-    reported success having never touched the disk — see this module's and
-    `mission_ladder`'s docstrings for the failure this replaces.
+    """Read a file off the disk and harvest its "Label: value" lines. Never touches
+    the browser.
     """
     path = _named_file(step.intent.lower()) if step.intent else None
     if path is None:
-        # No filename in this step's own words — "read it" after a download
-        # means THAT file, not a fresh guess.
+        # No filename in the step: use the file already found.
         prior = step.data.get("downloaded_file")
         path = Path(prior) if prior else None
     if path is None:
@@ -396,10 +294,8 @@ def _file_read(step: Step) -> tuple[bool, str]:
 
 
 def _fill_template(text: str, fields: dict[str, str]) -> tuple[str, list[str]]:
-    """Every blank "LABEL:" line in `text`, filled from `fields`.
-
-    Returns the filled text and any labels with no matching value — a mission
-    must report a gap, never submit a form with one silently left blank.
+    """Fill every blank "LABEL:" line from `fields`. Returns the text and any labels
+    left unfilled, which a mission must report.
     """
     out, missing = [], []
     for line in text.splitlines():
@@ -416,14 +312,8 @@ def _fill_template(text: str, fields: dict[str, str]) -> tuple[str, list[str]]:
 
 
 def _file_write(step: Step) -> tuple[bool, str]:
-    """Fill the downloaded template with details read earlier, and save it.
-
-    The template is whichever file a prior `download` step produced —
-    `downloaded_file` on the blackboard — never re-guessed from THIS step's
-    wording, because "fill the downloaded form" names no filename of its own.
-    The values are whatever `file_read` harvested; without any, there is
-    nothing to fill with, and that is reported rather than writing an empty
-    copy that would later fail the upload silently.
+    """Fill the downloaded template (`downloaded_file`) with the values read earlier,
+    and save it. No values: report it rather than write an empty copy.
     """
     fields = step.data.get("fields") or {}
     if not fields:
@@ -450,11 +340,8 @@ def _file_write(step: Step) -> tuple[bool, str]:
 
 
 def _web_upload(step: Step) -> tuple[bool, str]:
-    """Hand whatever file this mission produced to an upload control.
-
-    Prefers the FILLED file over the raw download: uploading the blank
-    template would pass a form with nothing in it, and this runner has no way
-    to catch that once the upload itself succeeds.
+    """Upload what this mission produced, preferring the filled file over the raw
+    download.
     """
     path = step.data.get("filled_file") or step.data.get("downloaded_file")
     if not path:
