@@ -1,18 +1,12 @@
-"""Reviewer Agent: offloaded verification and automated merges.
+"""Reviewer: verification and merging of swarm branches, off the voice loop.
 
-Eagle's live executive brain never reads multi-thousand-line diffs.
-When a swarm branch is ready, the reviewer worker:
+  1. Checkpoint uncommitted worktree changes.
+  2. Summarise the diff against main.
+  3. Compile changed Python files; run pytest if the project has tests.
+  4. Optionally, a deep review by a one-shot agent CLI (off by default).
+  5. Merge --no-ff; on conflict resolve by ownership or abort and report.
 
-  1. Checkpoints any uncommitted worktree changes.
-  2. Builds a diff summary (files/insertions/deletions) vs main.
-  3. Verifies changed Python files compile; runs pytest if the project
-     has tests (bounded, quiet).
-  4. Optionally delegates a deep review to a one-shot agent CLI
-     (`claude -p`) — Tier 2, off by default.
-  5. Merges the branch into main (--no-ff); on conflict it aborts
-     cleanly and reports the conflicting files instead.
-
-Returns a concise voice-ready summary either way.
+Returns a voice-ready summary.
 """
 
 import fnmatch
@@ -28,12 +22,8 @@ from core.agent_stream import (
 
 
 def _owner_of(path: str, owners: dict) -> str | None:
-    """Which workstream owns this file, per the plan's `owns` globs.
-
-    Matches a bare directory ("server/") as a prefix as well as a real glob
-    ("server/**"), because architects write both and a plan should not fail to
-    merge over glob punctuation. Returns None when nobody owns it, or when two
-    workstreams both claim it — an ambiguous claim is not a decision.
+    """Which workstream owns this file, per the plan's `owns` globs (a bare directory
+    counts as a prefix). None when nobody does, or when two claim it.
     """
     hits = []
     for ws_id, globs in (owners or {}).items():
@@ -53,8 +43,8 @@ TEST_TIMEOUT_S = 180
 LLM_REVIEW_TIMEOUT_S = 120
 LLM_REVIEWER = ("claude", "-p")  # one-shot, non-interactive
 
-#: What the reviewer is asked to end its answer with. The format is the
-#: contract: `deep_review_verdict` approves on nothing else.
+# What the reviewer must end its answer with: deep_review_verdict approves on nothing
+# else.
 VERDICT_RE = re.compile(r"VERDICT:\s*(APPROVE|REJECT)", re.I)
 
 
@@ -64,30 +54,9 @@ def _run(args, cwd, timeout=60):
 
 
 def deep_review_verdict(events) -> dict:
-    """Turn an agent event stream into {ok, llm, note}. Fails closed.
-
-    This used to be three lines inline, and they had a hole big enough to merge
-    through:
-
-        report["llm"] = r.stdout.strip()[:600]
-        if "VERDICT: REJECT" in r.stdout:
-            report["ok"] = False
-
-    `returncode` was never read. A reviewer CLI that was logged out, out of
-    quota, pointed at a missing model or simply not on the network wrote
-    nothing to stdout; "VERDICT: REJECT" was therefore absent; `ok` stayed
-    True; and `review_and_merge` merged the branch. The check could only ever
-    turn approval OFF, so every way of failing to review was an approval.
-
-    Reading `returncode` alone would not have been enough either. The captured
-    404 in `tests/fixtures/agent_stream/claude_api_error.jsonl` carries
-    `is_error: true` *and* `subtype: "success"` in the same object, so the
-    verdict has to come from `is_error` — which is what `AgentEvent.ok` is.
-
-    Every outcome that is not an explicit APPROVE is a rejection: an error, a
-    timeout, a crash, silence, and prose that never states a verdict. A human
-    looking at a rejected branch loses a few minutes. A branch merged because
-    the reviewer was unreachable loses whatever it broke.
+    """Turn an agent event stream into {ok, llm, note}. Fails closed: anything other
+    than an explicit APPROVE in a successful run (is_error false) is a rejection,
+    including errors, timeouts, silence and prose without a verdict.
     """
     events = list(events)
     result = next((e for e in reversed(events) if e.kind == RESULT), None)
@@ -111,8 +80,7 @@ def deep_review_verdict(events) -> dict:
         return {"ok": False, "llm": text[:600],
                 "note": "deep review returned no verdict; treating as reject"}
 
-    # Every verdict found, not just the first: a review that states both has
-    # not approved, and picking whichever came first is a coin toss.
+    # Every verdict found: a review stating both has not approved.
     if "REJECT" in verdicts:
         return {"ok": False, "llm": text[:600],
                 "note": "deep review rejected the diff"}
@@ -139,7 +107,6 @@ class ReviewerAgent:
                 return cand
         return self._git("branch", "--show-current").stdout.strip() or "main"
 
-    # ------------------------------------------------------------- review
 
     def review(self, agent_key: str, branch: str, worktree: Path,
                deep: bool = False) -> dict:
@@ -147,7 +114,6 @@ class ReviewerAgent:
                   "notes": [], "diffstat": "", "llm": ""}
         worktree = Path(worktree)
 
-        # 1. Checkpoint uncommitted work so nothing is lost or half-merged.
         if self._git("status", "--porcelain", cwd=worktree).stdout.strip():
             self._git("add", "-A", cwd=worktree)
             self._git("commit", "-m", f"swarm({agent_key}): checkpoint",
@@ -158,7 +124,6 @@ class ReviewerAgent:
         stat = self._git("diff", "--stat", f"{base}...{branch}").stdout.strip()
         report["diffstat"] = stat.splitlines()[-1] if stat else "no changes"
 
-        # 2. Changed Python files must at least compile.
         changed = [l for l in self._git(
             "diff", "--name-only", f"{base}...{branch}").stdout.splitlines() if l]
         bad = []
@@ -173,7 +138,6 @@ class ReviewerAgent:
             report["ok"] = False
             report["notes"].append(f"syntax errors: {'; '.join(bad[:3])}")
 
-        # 3. Run the project's tests when it visibly has some.
         if any((worktree / t).exists() for t in
                ("tests", "test", "pytest.ini", "conftest.py")):
             try:
@@ -188,17 +152,10 @@ class ReviewerAgent:
             except (subprocess.TimeoutExpired, OSError) as e:
                 report["notes"].append(f"tests skipped ({type(e).__name__})")
 
-        # 4. Optional deep LLM review, fully offloaded.
-        #
-        # Driven as a JSON event stream rather than by reading stdout as prose.
-        # `stream_events` always ends in a RESULT — including for a missing
-        # binary, a timeout or a crash — so `deep_review_verdict` gets a real
-        # verdict to fail closed on instead of an empty string that used to
-        # read as approval. See its docstring for the bug this replaced.
+        # Optional deep review, driven as an event stream that always ends in a RESULT.
         if deep:
             if not supports_headless("claude_code") or not shutil.which(LLM_REVIEWER[0]):
-                # Asked for and not delivered. Silently continuing here is how
-                # "deep review" became a label on a step that never ran.
+                # Asked for and not delivered: say so.
                 report["ok"] = False
                 report["notes"].append(
                     "deep review requested but no reviewer CLI is installed")
@@ -218,7 +175,6 @@ class ReviewerAgent:
                 report["notes"].append(verdict["note"])
         return report
 
-    # -------------------------------------------------------------- merge
 
     def merge(self, agent_key: str, branch: str) -> dict:
         base = self._main_branch()
@@ -253,20 +209,9 @@ class ReviewerAgent:
         return {"merged": False, "detail": detail, "conflicts": unresolved}
 
     def _resolve_by_ownership(self, agent_key: str, conflicts: list[str]):
-        """Settle conflicts the plan already decided, escalate the rest.
-
-        Every workstream declares `owns` globs, and they are disjoint by
-        construction — the validator rejects plans without ownership. So a
-        conflicting file is either:
-
-          * inside this workstream's lane → it is the author, take its version;
-          * inside somebody else's lane   → this agent wrote outside its
-            boundary, so keep the owner's version;
-          * owned by nobody               → genuinely ambiguous, escalate.
-
-        This is deterministic and costs no tokens: the ownership contract IS
-        the merge policy, and the previous code threw that information away and
-        aborted on every conflict, stranding finished work on its branch.
+        """Settle conflicts the plan already decided: a file in this workstream's
+        lane takes its version; in another's lane, the owner's; owned by nobody,
+        escalate. Lanes are disjoint by construction.
         """
         if not conflicts:
             return [], []
@@ -286,7 +231,7 @@ class ReviewerAgent:
         return resolved, unresolved
 
     def _ownership_map(self) -> dict:
-        """workstream id -> its owns globs, straight from the executing plan."""
+        """workstream id -> its owns globs, from the executing plan."""
         try:
             import json
             pf = self.root / ".space_eagle" / "plan.json"
@@ -294,14 +239,11 @@ class ReviewerAgent:
             return {w["id"]: (w.get("owns") or [])
                     for w in plan.get("workstreams", [])}
         except (OSError, ValueError, KeyError, TypeError) as e:
-            # Narrow on purpose: a bare `except Exception` here hid an
-            # AttributeError for months-worth of debugging value — every
-            # conflict silently fell through to "abort" with no clue why.
+            # Narrow on purpose, so a real bug is not hidden as an abort.
             print(f"[swarm_reviewer] no ownership map ({e}); "
                   f"conflicts will escalate instead of resolving")
             return {}
 
-    # ---------------------------------------------------------- top level
 
     def review_and_merge(self, agent_key: str, branch: str, worktree,
                          deep: bool = False) -> str:
@@ -311,9 +253,7 @@ class ReviewerAgent:
         if rep["notes"]:
             summary += f" [{'; '.join(rep['notes'])}]"
         if not rep["ok"]:
-            # A caught error → shared lesson so no agent repeats it. Only the
-            # failure notes (syntax/tests/deep-review) become lessons, not the
-            # benign ones (e.g. "tests passed").
+            # Only failures become shared lessons.
             try:
                 from actions.swarm_orchestrator import SwarmOrchestrator
                 orch = SwarmOrchestrator(self.project_dir, player=self.player)

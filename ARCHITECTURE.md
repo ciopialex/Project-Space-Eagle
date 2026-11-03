@@ -306,7 +306,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/grounding/web/consent.py` | The line the eagle does not cross by itself: controls that commit something are |
 | `actions/grounding/web/grounder.py` | Locate a control on a web page by the words a person would use for it. Matching is |
 | `actions/grounding/web/handoff.py` | Hand the keyboard back when the site is asking for a person: stop, say what is |
-| `actions/grounding/web/outcome.py` | Did the click actually DO something? |
+| `actions/grounding/web/outcome.py` | Did the click do something anywhere on the page? (act_and_verify checks only the |
 | `actions/grounding/web/page.py` | The seam between a live page and the grounding types. No Playwright import, so |
 | `actions/grounding/web/sense.py` | How much of a page to look at. |
 | `actions/grounding/web/sessions.py` | Which sites the eagle's browser is signed into. |
@@ -326,7 +326,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/screen_processor.py` |  |
 | `actions/send_message.py` |  |
 | `actions/swarm_orchestrator.py` | Swarm orchestrator: one git worktree per agent |
-| `actions/swarm_reviewer.py` | Reviewer Agent: offloaded verification and automated merges. |
+| `actions/swarm_reviewer.py` | Reviewer: verification and merging of swarm branches, off the voice loop. |
 | `actions/swarm_sentinel.py` | Self-healing sentinel: stall detection, nudges, and fallback re-delegation. |
 | `actions/system_monitor.py` | System metrics behind a cache with a TTL: a process that never asks pays nothing, |
 | `actions/visual_verifier.py` | Autonomous visual web verification (Playwright coupling). |
@@ -344,7 +344,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/activities.py` | Live Activities: ongoing tasks a module reports, owned and drawn by the host. |
 | `core/aesthetics.py` | The taste layer. |
 | `core/agent_catalog.py` | Coding-agent CLIs the eagle can launch and drive. |
-| `core/agent_session.py` | A live coding-agent session that is a protocol, not a terminal. |
+| `core/agent_session.py` | A live coding-agent session spoken to in JSON instead of a terminal. |
 | `core/agent_stream.py` | Drive a coding-agent CLI as a typed event stream instead of scraping a terminal |
 | `core/ambient.py` | What a module says when nobody asked it anything: a first layer that adhered, a |
 | `core/barge_in.py` | The user talking over the eagle: hearing it without hearing the eagle itself. |
@@ -368,7 +368,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/llm_client.py` | Where a local model would be reached, for an audit that starts nothing. |
 | `core/logsetup.py` | Make sure a log line written is a log line kept. |
 | `core/mic_vad.py` | A client-side voice-activity estimate for two things the server does not tell us. |
-| `core/mission.py` | What the eagle is trying to do, and how far it has got. |
+| `core/mission.py` | What the eagle is trying to do and how far it has got. Pure state: no tools, no |
 | `core/mission_handoff.py` | Tell an outside agent what the eagle IS, before asking it for a plan. |
 | `core/mission_ladder.py` | Ways of doing one step, most exact first: the DOM (exact, in the eagle's browser), |
 | `core/mission_planner.py` | Break a spoken goal into steps small enough to grind through. |
@@ -385,7 +385,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/prefs.py` | What the eagle does without being asked, decided in one place. |
 | `core/preview.py` | Show the user the thing they asked for. |
 | `core/proc_registry.py` | Who is running, on whose behalf, and how to stop all of it. |
-| `core/prompt_reflex.py` | Reflex layer — deterministic classification of agent terminal prompts. |
+| `core/prompt_reflex.py` | Deterministic classification of coding-agent prompts and requested commands. Regex |
 | `core/quota.py` | Tell a rate limit apart from a broken tool. |
 | `core/run_cmd.py` | External commands with a deadline that actually reclaims what it kills. |
 | `core/safe_exec.py` | Run model-generated Python (desktop_control's `task`) without handing it the |
