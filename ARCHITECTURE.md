@@ -259,7 +259,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 
 | file | says it is |
 |---|---|
-| `actions/agent_delegation.py` | Agent delegation with persistent single-session memory. |
+| `actions/agent_delegation.py` | Agent delegation with one persistent session per (agent, project). The first |
 | `actions/agent_screen.py` | Virtual VT100 screen watcher for agent PTY sessions. |
 | `actions/app_settings.py` | Central read/write for everything the Settings panel exposes. |
 | `actions/autostart.py` | Cross-platform auto-start on boot — parity+ with Mark-XLIX. |
@@ -310,7 +310,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/grounding/web/page.py` | The seam between a live page and the grounding types. No Playwright import, so |
 | `actions/grounding/web/sense.py` | How much of a page to look at. |
 | `actions/grounding/web/sessions.py` | Which sites the eagle's browser is signed into. |
-| `actions/grounding/web/user_actions.py` | Act on the browser the eagle opened FOR THE USER — one implementation, |
+| `actions/grounding/web/user_actions.py` | Act on the browser the eagle opened for the user. One implementation, reached by |
 | `actions/grounding/web/vision_click.py` | VisionGrounder, pointed at a page instead of the desktop. |
 | `actions/grounding/windows.py` | Structural grounding on Windows, via UI Automation. |
 | `actions/machine_profile.py` | Machine detection + local-brain recommendation for onboarding. |
@@ -320,7 +320,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/mission.py` | Run a goal as a sequence of small, verified steps. `next` walks one step through |
 | `actions/open_app.py` |  |
 | `actions/proactive.py` | Deciding there is something worth saying, and saying how long it has been. |
-| `actions/pty_session.py` | Persistent PTY session pool for delegated agent CLIs. |
+| `actions/pty_session.py` | Persistent PTY sessions for agent CLIs without a headless protocol, keyed by |
 | `actions/reminder.py` | Reminders: said once, shown on this computer when they are due. |
 | `actions/repo_map.py` | Condensed repository maps for agent context packing (Challenge F). |
 | `actions/screen_processor.py` |  |
@@ -363,8 +363,8 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/echo_cancel.py` | Echo cancellation, so the microphone stops hearing the speakers. |
 | `core/escalations.py` | Where held prompts go. |
 | `core/gemini_key.py` | Is this Gemini key one Google will accept? Asked before it is saved. |
-| `core/intent.py` | A hypothesis about what the user wants, formed before the model answers. |
-| `core/journal.py` | The mutation journal: what makes an action undoable, and what proves it isn't. |
+| `core/intent.py` | A hypothesis about what the user wants, formed while they are still talking. It |
+| `core/journal.py` | The mutation journal: what makes an action undoable, and what proves it is not. |
 | `core/llm_client.py` | Where a local model would be reached, for an audit that starts nothing. |
 | `core/logsetup.py` | Make sure a log line written is a log line kept. |
 | `core/mic_vad.py` | A client-side voice-activity estimate for two things the server does not tell us. |
@@ -392,7 +392,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/session_port.py` | Act on the browser the eagle opened for the user, through the DOM. browser_control |
 | `core/setup_modules.py` | Adding the modules a user chose in setup, while they finish setting up. |
 | `core/tool_fallback.py` | When a narrow tool fails, name the general one that can still do the job. |
-| `core/tool_result.py` | ToolResult — the structured contract every tool result normalizes to. |
+| `core/tool_result.py` | ToolResult: the contract every tool result normalises to. |
 | `core/trace.py` | Terminal trace for the mission pipeline. |
 | `core/turn_trace.py` | Where a voice turn spends its time, as the user experiences it: |
 | `core/ui_contract.py` | The boundary between the eagle and the human. |

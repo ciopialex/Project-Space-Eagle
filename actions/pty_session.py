@@ -1,11 +1,6 @@
-"""Persistent PTY session pool for delegated agent CLIs.
-
-Replaces stateless one-shot terminal spawns with long-lived pseudo-terminal
-sessions keyed by (agent_key, project_dir). Follow-up prompts are injected
-into the running agent's stdin, so one project folder == one live agent
-conversation, never duplicate windows.
-
-Cross-platform: Unix (pty/termios) and Windows (pywinpty, optional).
+"""Persistent PTY sessions for agent CLIs without a headless protocol, keyed by
+(agent_key, project_dir); follow-ups are typed into the running agent. Unix
+(pty/termios) and Windows (pywinpty, optional).
 """
 
 import atexit
@@ -29,11 +24,11 @@ if not IS_WINDOWS:
     import struct
     import termios
 
-# PTY dimensions presented to the agent CLI (rich TUIs render to this size).
+# PTY size presented to the agent CLI.
 PTY_COLS = 120
 PTY_ROWS = 40
 
-# Cap on retained raw output per session (bytes).
+# Raw output kept per session (bytes).
 RAW_BUFFER_LIMIT = 1 * 1024 * 1024
 
 CTRL_C = b"\x03"
@@ -51,9 +46,8 @@ class PtySession:
         self.created_at = time.time()
         self.log_path = self._make_log_path()
 
-        # Callbacks
         self._on_line = on_line          # cleaned text lines -> HUD
-        self._feed_hooks = []            # raw bytes subscribers (pyte in Phase 2)
+        self._feed_hooks = []
 
         self._raw = bytearray()
         self._line_buf = b""
@@ -69,7 +63,6 @@ class PtySession:
             target=self._read_loop, name=f"pty-{agent_key}", daemon=True)
         self._reader.start()
 
-    # ---------------------------------------------------------------- spawn
 
     def _make_log_path(self) -> Path:
         safe_proj = self.project_dir.name.replace(os.sep, "_") or "root"
@@ -99,7 +92,7 @@ class PtySession:
             return
 
         master_fd, slave_fd = pty.openpty()
-        # Present a real terminal size so TUI agents render sanely.
+        # A real terminal size, so TUI agents render sanely.
         winsize = struct.pack("HHHH", PTY_ROWS, PTY_COLS, 0, 0)
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
 
@@ -114,7 +107,6 @@ class PtySession:
         os.close(slave_fd)
         self._master_fd = master_fd
 
-    # ---------------------------------------------------------------- io
 
     def _read_loop(self):
         try:
@@ -162,7 +154,7 @@ class PtySession:
         if not self._on_line:
             return
         self._line_buf += data
-        # Rich TUIs emit \r for in-place redraws; treat \r, \n, \r\n as breaks.
+        # \r, \n and \r\n are all line breaks (TUIs redraw with \r).
         parts = self._line_buf.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
         self._line_buf = parts.pop()
         if len(self._line_buf) > 8192:  # runaway unterminated line
@@ -175,7 +167,6 @@ class PtySession:
                 except Exception:
                     pass  # per-line callback hiccup — silent (fires per output line)
 
-    # ---------------------------------------------------------------- api
 
     def add_feed_hook(self, hook):
         """Subscribe a callable(bytes) to the raw PTY output stream."""
@@ -232,7 +223,7 @@ class PtySession:
                 if self._winpty and self._winpty.isalive():
                     self._winpty.terminate(force=True)
             elif self._proc and self._proc.poll() is None:
-                # Terminate the whole process group (agent + its children).
+                # Terminate the whole process group.
                 try:
                     os.killpg(self._proc.pid, signal.SIGHUP)
                 except ProcessLookupError:
@@ -292,14 +283,8 @@ class SessionPool:
         return sess
 
     def adopt(self, agent_key: str, project_dir: Path, session):
-        """Register a session this pool did not construct.
-
-        `create` hardcodes `PtySession`, but an agent with a real streaming
-        protocol (`core.agent_session.HeadlessSession`) needs no terminal and
-        must still be findable by `get_alive`, `find_session` and
-        `list_active_sessions` — those are how a follow-up turn reaches the
-        conversation already in flight, and how the interject flow finds
-        something to interrupt.
+        """Register a session this pool did not construct (a HeadlessSession), so
+        follow-ups and interjections find it.
         """
         key = self._key(agent_key, project_dir)
         with self._lock:
@@ -334,50 +319,26 @@ POOL = SessionPool()
 atexit.register(POOL.close_all)
 
 
-# ------------------------------------------------------------- viewer window
-
-# OSC "set window/icon title": ESC ] 0|1|2 ; <text> (BEL | ESC \)
-#
-# Claude Code repaints its title with a spinner — one sequence per frame, 231
-# of them in a single observed session — and each is terminated by BEL. A
-# viewer terminal tailing the log therefore rang the desktop bell every couple
-# of seconds AND kept renaming its own window to whatever the agent was doing,
-# so our own consoles looked like a swarm of unrelated applications.
-#
-# The whole sequence has to go, not just the BEL: stripping the terminator
-# alone leaves `ESC]0;title` unterminated, and a terminal will happily swallow
-# everything after it as more title text.
+# OSC set-title sequences: ESC ] 0|1|2 ; text (BEL | ESC \). Claude Code repaints its
+# title every frame, so a tailing viewer rang the bell and renamed itself constantly.
+# Strip the whole sequence, not just the BEL.
 _OSC_TITLE_RE = re.compile(rb"\x1b\][0-2];[^\x07\x1b]*(?:\x07|\x1b\\)?")
 
 
 def _clean_for_log(data: bytes) -> bytes:
-    """Strip title-setting escapes and stray bells from the human-facing log.
-
-    pyte still receives the RAW stream through the feed hooks, so prompt
-    detection and screen reconstruction are untouched — only the file a human
-    might tail is cleaned.
+    """Strip title escapes and bells from the human-facing log. pyte still gets the
+    raw stream.
     """
     return _OSC_TITLE_RE.sub(b"", data).replace(b"\x07", b"")
 
 
-# Log paths that already have a viewer window. Without this a re-spawn or a
-# sentinel re-delegation opens a SECOND window tailing the same file, and two
-# identical consoles look exactly like two agents doing duplicate work.
+# Log paths that already have a viewer window.
 _VIEWERS_OPEN: set[str] = set()
 
 
 def viewers_enabled() -> bool:
-    """Are per-agent console windows wanted?
-
-    Off by default. Each agent CLI already opens its own window, so a viewer on
-    top meant two windows per agent, every one of them stealing keyboard focus
-    the moment it appeared — you could not type in your own editor while a
-    mission ran. The swarm's real surface is the HARDCORE dashboard and the
-    terminal trace; these windows are debug tooling, so they are opt-in.
-
-    Enable with  "show_agent_terminals": true  in the eagle's config file
-    (core.user_paths.api_keys_path()). This read a name that was never
-    defined, so the NameError was swallowed and the switch could not turn on.
+    """Per-agent console windows: off by default, since they steal focus. Enable with
+    "show_agent_terminals": true in the config file.
     """
     try:
         import json as _json
@@ -389,10 +350,8 @@ def viewers_enabled() -> bool:
 
 
 def open_viewer_terminal(title: str, log_path: Path) -> bool:
-    """Open ONE read-only terminal that live-tails a session log (best effort).
-
-    The agent itself runs on our hidden PTY; this window is purely a viewer,
-    so closing it never kills the session.
+    """Open one read-only terminal tailing a session log. Closing it never kills the
+    session.
     """
     if not viewers_enabled():
         return False

@@ -1,9 +1,6 @@
-"""Agent delegation with persistent single-session memory.
-
-First delegation to (agent, project_dir) spawns the agent CLI on a hidden
-persistent PTY (plus one read-only viewer terminal). Follow-up prompts in
-the same directory are typed straight into the live session — no duplicate
-windows, no lost conversation history.
+"""Agent delegation with one persistent session per (agent, project). The first
+request starts the agent (headless JSON where supported, else a hidden PTY);
+follow-ups go into the same live session.
 """
 
 import asyncio
@@ -25,35 +22,16 @@ class AgentAdapter:
         self.registry_key = cli.key
 
     def _hud_pump(self, player):
-        """Per-session line callback that keeps TUI redraw noise out of the HUD.
-
-        Agent CLIs are full-screen TUIs: they repaint a status line constantly,
-        and the PTY emits every repaint as another "line". Exact-match deduping
-        cannot catch that, because each repaint is a genuinely different string:
-
-            Gen  /  Gene  /  Gener  /  Generating…
-            1thinking  /  2thinking  /  ✱thinking  /  ✻still thinking
-
-        which is why the log filled with hundreds of near-identical entries and
-        the UI showed a wall of `[ClaudeCode] 3thinking`. Three filters, in
-        order of how much they catch:
-
-          1. progressive redraw — a line that merely extends the previous one
-             character by character is the same line being typed out;
-          2. status/spinner lines — normalised (leading glyphs, counters and
-             elapsed times removed) before deduping, so "thinking" reports
-             collapse to one entry instead of one per frame;
-          3. exact repeats, as before.
+        """Per-session line filter that keeps terminal-UI redraw noise out of the
+        HUD: drops a line that only extends the previous one, collapses spinner
+        and status lines, and drops exact repeats.
         """
         printed: set[str] = set()
         last_raw = ""
         last_status = ""
 
-        # Spinner text arrives in many shapes — "1thinking", "✱still thinking",
-        # "10s · thinking)", "Deliberating… (42s · 880 tokens)" — so anchoring
-        # the pattern misses most of them. Match the keyword anywhere, but only
-        # treat it as status when the line is SHORT and carries no path: real
-        # work lines name a file, status lines never do.
+        # Spinner text comes in many shapes, so match the keyword anywhere, but only on
+        # a short line with no path: work lines name a file.
         status_re = re.compile(
             r"(thinking|deliberating|generating|pondering|working|"
             r"analy[sz]ing|reading|writing|searching|running)", re.I)
@@ -65,17 +43,13 @@ class AgentAdapter:
             if not cleaned:
                 return
 
-            # 1. the same line still being typed out
             if last_raw and cleaned.startswith(last_raw) and len(cleaned) > len(last_raw):
                 last_raw = cleaned
                 return
             last_raw = cleaned
 
-            # 2. spinner/status churn — keep the first, drop the repaints
             m = status_re.search(cleaned)
-            # 80 rather than something tighter: status lines carry suffixes
-            # like "(42s · 880 tokens · esc to interrupt)". Real work lines are
-            # already excluded by the path check, so length can be generous.
+            # Status lines carry suffixes like "(42s · 880 tokens · esc to interrupt)".
             if m and len(cleaned) < 80 and "/" not in cleaned:
                 key = m.group(1).lower()
                 if key == last_status:
@@ -84,7 +58,6 @@ class AgentAdapter:
             else:
                 last_status = ""
 
-            # 3. exact repeats
             if cleaned in printed:
                 return
             if len(cleaned) > 3:
@@ -107,7 +80,7 @@ class AgentAdapter:
         project_dir = Path(project_dir)
         agent_key = self.pool_key
 
-        # ---- Follow-up turn: route into the existing live session ----------
+        # Follow-up turn: into the existing live session.
         session = POOL.get_alive(agent_key, project_dir)
         if session:
             if player:
@@ -123,17 +96,12 @@ class AgentAdapter:
             return (f"Prompt routed into the active {self.name} session for "
                     f"'{project_name}'. It will respond in its console.")
 
-        # ---- First turn: spawn a fresh persistent session ------------------
-        # An agent with a real streaming protocol gets one. No pseudo-terminal,
-        # no VT100 reconstruction, no regex over spinner repaints — the agent
-        # says what it is doing in JSON and we read it.
+        # First turn: an agent with a streaming protocol gets a headless JSON session.
         if supports_session(agent_key):
             return await self._run_headless(prompt, project_dir, project_name,
                                             player=player)
 
-        # Fail HONESTLY if the agent CLI isn't installed, instead of spawning a
-        # shell that dies and reporting a confusing "exited immediately". This is
-        # the common cause of "it said it started but nothing ran".
+        # Not installed: say so rather than spawn a shell that dies.
         if not self.cli.installed():
             err = (f"{self.name} is not installed on this computer, so nothing "
                    f"was started. Installed: {spoken_list()}.")
@@ -158,16 +126,15 @@ class AgentAdapter:
                 player.write_log(f"ERR: {err_msg}")
             return err_msg
 
-        # Virtual VT100 watcher: thought extraction + prompt auto-approval.
+        # Terminal agents: a screen watcher extracts thoughts and answers recognised
+        # prompts.
         try:
             from actions.agent_screen import AgentScreenWatcher
             from core.escalations import raise_escalation
             session.watcher = AgentScreenWatcher(
                 session, self.name, player=player,
-                # A refusal to auto-answer is only half a system: without a
-                # destination the agent blocks forever. Route held prompts to
-                # the pending-escalation registry so a human can actually
-                # resolve them by voice.
+                # Held prompts go to the escalation registry so a human can resolve them
+                # by voice.
                 on_escalation=lambda agent, decision, region: raise_escalation(
                     agent, decision, region, player=player))
         except Exception as e:
@@ -218,12 +185,8 @@ class AgentAdapter:
 
     async def _run_headless(self, prompt: str, project_dir: Path,
                             project_name: str, player=None) -> str:
-        """Start a streaming session and hand it the first instruction.
-
-        The PTY path put the prompt INSIDE the command string
-        (`claude '{prompt}'`) and hand-escaped apostrophes into `\'\\'\'`.
-        Here the process is started with no prompt at all and the instruction
-        is sent as a JSON message, so quoting stops being a category of bug.
+        """Start a streaming session and send the first instruction as a JSON
+        message, so quoting is never a bug.
         """
         agent_key = self.pool_key
         if not self.cli.installed():
@@ -255,8 +218,7 @@ class AgentAdapter:
         POOL.adopt(agent_key, project_dir, session)
         session.player = player
 
-        # The read-only console still works: the transcript is a real file and
-        # now contains lines a person wrote rather than terminal repaints.
+        # The read-only console tails the session's transcript file.
         await asyncio.to_thread(
             open_viewer_terminal,
             f"Aethelark Developer Console - {self.name}", session.log_path)
@@ -268,7 +230,7 @@ class AgentAdapter:
                 player.write_log(f"ERR: {err_msg}")
             return err_msg
 
-        # Same startup confirmation the PTY path makes, for the same reason.
+        # Confirm the process is still alive after startup.
         await asyncio.sleep(1.0)
         if not session.is_alive():
             tail = session.snapshot_tail(500).decode("utf-8", "replace").strip()
@@ -298,14 +260,7 @@ class AgentAdapter:
 
     @staticmethod
     def _headless_pump(player):
-        """What replaces `_hud_pump`.
-
-        `_hud_pump` needed sixty lines and three heuristics because a PTY hands
-        you a repainting screen and you have to guess which lines are work.
-        `HeadlessSession` already dropped reasoning, already suppressed the
-        duplicated result line, and already knows a tool call from prose. There
-        is nothing left to filter.
-        """
+        """The headless line callback: HeadlessSession already filtered everything."""
         def on_line(text: str):
             if player:
                 player.write_log(text)
@@ -347,21 +302,17 @@ def supports_session(agent_key: str) -> bool:
 
 
 def spawn_succeeded(run_result: str) -> bool:
-    """True iff AgentAdapter.run reported a LIVE session — a fresh spawn
-    ('Started persistent …') or a routed follow-up ('Prompt routed …').
-
-    Guards against failure messages that merely contain the word 'session'
-    (e.g. 'Failed to start X session: …', 'Session write failed: …'), which a
-    naive `'session' in result` test would misread as success — the classic
-    'the tool said it worked but nothing ran' bug.
+    """True only if AgentAdapter.run reported a live session (a fresh spawn or a
+    routed follow-up), not merely a message containing "session".
     """
     r = (run_result or "").strip().lower()
     return r.startswith("started persistent") or r.startswith("prompt routed")
 
 
 def find_session(agent_key: str, directory: str):
-    """Locate a live session for agent_key in directory — direct hit first,
-    then any session running under it (e.g. a swarm worktree)."""
+    """A live session for agent_key in directory: exact first, then one running under
+    it (a swarm worktree).
+    """
     root = Path(directory).expanduser().resolve()
     session = POOL.get_alive(agent_key, root)
     if session:
