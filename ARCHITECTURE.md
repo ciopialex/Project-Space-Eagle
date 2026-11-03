@@ -325,7 +325,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/repo_map.py` | Condensed repository maps for agent context packing (Challenge F). |
 | `actions/screen_processor.py` |  |
 | `actions/send_message.py` |  |
-| `actions/swarm_orchestrator.py` | Swarm orchestrator: git worktree isolation + real-time blackboard sync. |
+| `actions/swarm_orchestrator.py` | Swarm orchestrator: one git worktree per agent |
 | `actions/swarm_reviewer.py` | Reviewer Agent: offloaded verification and automated merges. |
 | `actions/swarm_sentinel.py` | Self-healing sentinel: stall detection, nudges, and fallback re-delegation. |
 | `actions/system_monitor.py` | A cache with a TTL, not a thread that never stops. |
@@ -377,7 +377,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/models.py` | Which Gemini model each job runs on — in one place, not fourteen. |
 | `core/module_bus/accounts.py` | A module borrows a sign-in the user made in the eagle's own browser. |
 | `core/module_bus/bundle.py` | Reading, writing and installing a `.aem` — the file a buyer downloads. |
-| `core/module_bus/bus.py` | Discovery and invocation. Nothing here may raise into the turn loop. |
+| `core/module_bus/bus.py` | Discovery and invocation of module tools. invoke() never raises: every failure (no |
 | `core/module_bus/installer.py` | `eagle install <module>`: one command from nothing to a module the eagle uses. |
 | `core/module_bus/manifest.py` | What a module says it can do, and how that becomes an argv. |
 | `core/module_bus/signing.py` | Ed25519 signatures over `.aem` bundles. |

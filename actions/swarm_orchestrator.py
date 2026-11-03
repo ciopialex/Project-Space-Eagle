@@ -1,11 +1,8 @@
-"""Swarm orchestrator: git worktree isolation + real-time blackboard sync.
-
-Partitions concurrent coding agents into isolated git worktrees
-(<project>/.space_eagle/worktrees/<agent>, branch swarm/<agent>) so they
-share history without file collisions, and keeps a shared blackboard at
-<project>/.space_eagle/swarm_state.json for status, thoughts, decisions
-and file claims. Decisions are also injected live into every teammate's
-PTY session, so the swarm adapts in real time.
+"""Swarm orchestrator: one git worktree per agent
+(<project>/.space_eagle/worktrees/<mission>/<agent>, branch swarm/...) and a
+shared blackboard (<project>/.space_eagle/swarm_state.json) for status, thoughts,
+decisions and file claims. Decisions are also sent live into every teammate's
+session.
 """
 
 import asyncio
@@ -80,7 +77,6 @@ class Blackboard:
         finally:
             self._release()
 
-    # ------------------------------------------------------------- helpers
 
     def register_agent(self, agent: str, task: str, worktree: str, branch: str):
         def m(s):
@@ -103,11 +99,8 @@ class Blackboard:
             del s["decisions"][:-100]
         self.update(m)
 
-    # -------------------------------------------------------- lessons (wisdom)
-    # A caught error becomes a SHARED, DURABLE lesson so no agent repeats it —
-    # "one agent's scar vaccinates the swarm." Kept in a SEPARATE lessons.json so
-    # it survives even when swarm_state.json is reset between missions; deduped by
-    # a fingerprint of the error so the same mistake is recorded once.
+    # Lessons: a caught error becomes a shared, durable lesson in lessons.json (survives
+    # a board reset), deduped by a fingerprint.
     @property
     def _lessons_path(self) -> Path:
         return self.dir / "lessons.json"
@@ -115,7 +108,7 @@ class Blackboard:
     @staticmethod
     def _fingerprint(error: str) -> str:
         norm = re.sub(r"\s+", " ", (error or "").lower()).strip()
-        # Drop line numbers / hex / paths so "same class of error" collapses to one.
+        # Drop line numbers, hex and paths so one class of error is one fingerprint.
         norm = re.sub(r"(line \d+|0x[0-9a-f]+|/[\w./-]+)", "", norm)
         return hashlib.sha1(norm.encode()).hexdigest()[:12]
 
@@ -126,8 +119,7 @@ class Blackboard:
             return []
 
     def add_lesson(self, agent: str, error: str, fix: str = "", tag: str = "") -> bool:
-        """Record a caught error as a lesson. Returns True if NEW (worth
-        broadcasting), False if we'd already learned it."""
+        """Record a caught error as a lesson. True if new."""
         error = (error or "").strip()
         if not error:
             return False
@@ -186,8 +178,7 @@ class Blackboard:
         return "\n".join(lines) or "No swarm activity recorded."
 
 
-# Role vocabulary so the eagle can target "the frontend one" / "backend" / "the
-# UI agent" and have it resolve to the right workstream, however it was named.
+# Role words so "the frontend one" resolves to the right workstream.
 _ROLE_SYNONYMS = {
     "frontend": {"frontend", "front-end", "front", "ui", "web", "client",
                  "interface", "view", "design", "css", "styling"},
@@ -198,19 +189,15 @@ _ROLE_SYNONYMS = {
     "api":      {"api", "backend", "back-end", "server", "service", "endpoint"},
     "database": {"database", "db", "data", "backend", "storage", "persistence"},
 }
-# Every word that carries role meaning — used to keep short but meaningful tokens
-# ('ui', 'db', 'api') while filler words ('the', 'one', 'agent') are dropped.
+# Short words that carry role meaning (ui, db, api); filler is dropped.
 _ROLE_VOCAB = set(_ROLE_SYNONYMS).union(*_ROLE_SYNONYMS.values())
 
 
 def _matches_workstream(target: str, key: str, assignee: str = "",
                         task: str = "") -> bool:
-    """Does a fuzzy target ('frontend', 'the ui agent', 'claude', 'api') point at
-    this workstream? Matches on id, assignee, or role words in the task text.
-
-    Only role-vocabulary words or substantive (>=4 char) words become match
-    tokens, so filler like 'the'/'one'/'agent' can't accidentally match another
-    workstream's task text.
+    """Does a fuzzy target ('frontend', 'the ui agent', 'claude') name this
+    workstream? Matches id, assignee, or role words in the task. Only role words
+    or words of 4+ characters count.
     """
     t = (target or "").strip().lower()
     if not t or t in ("all", "*", "everyone", "both", "team"):
@@ -230,11 +217,8 @@ def _swarm_preamble(agent: str, task: str, branch: str, project_dir: Path,
                     repo_map: str = "", *, coupled: bool = True,
                     contract: dict | None = None, owns=None,
                     acceptance=None, extra_note: str = "") -> str:
-    """Build the marching orders handed to a swarm member.
-
-    Coupling flips how the agent is told to coordinate:
-      • coupled   → build to the frozen shared contract, watch the blackboard.
-      • independent → ignore other agents entirely, build straight to acceptance.
+    """The orders handed to a swarm member: coupled agents build to the frozen shared
+    contract and watch the board; independent ones ignore the others.
     """
     board = Path(project_dir) / STATE_DIR / "swarm_state.json"
     head = (
@@ -272,13 +256,11 @@ def _swarm_preamble(agent: str, task: str, branch: str, project_dir: Path,
     if acceptance:
         text += ("\n\nACCEPTANCE CRITERIA — your branch is not done until ALL pass:\n"
                  + "\n".join(f"  - {a}" for a in acceptance))
-    # A late requirement the user voiced at the approval gate — folded into the
-    # spawn so the agent honors it from its very first action.
+    # A requirement the user voiced at the approval gate.
     if extra_note:
         text += ("\n\nUSER-ADDED REQUIREMENT (voiced by the operator — honor this "
                  f"throughout): {extra_note}")
-    # Inject accumulated lessons up front so a fresh agent starts already knowing
-    # the mistakes the swarm has hit — it never has to re-learn them the hard way.
+    # Lessons the swarm already learned.
     try:
         lessons = Blackboard(project_dir).lessons_text()
         if lessons:
@@ -306,8 +288,7 @@ class SwarmOrchestrator:
         self.project_dir = Path(project_dir).resolve()
         self.player = player
         self.board = Blackboard(self.project_dir)
-        # Every orchestrator is visible to telemetry regardless of how it
-        # was constructed (voice tool, sentinel, tests).
+        # Every orchestrator is visible to telemetry.
         _ORCHESTRATORS[str(self.project_dir)] = self
 
     def _log(self, msg: str):
@@ -320,7 +301,6 @@ class SwarmOrchestrator:
             ["git", *args], cwd=str(cwd or self.project_dir),
             capture_output=True, text=True, timeout=60)
 
-    # ---------------------------------------------------------------- git
 
     def ensure_repo(self):
         if not (self.project_dir / ".git").exists():
@@ -348,22 +328,14 @@ class SwarmOrchestrator:
             self._git("commit", "-m", "swarm: initial baseline",
                       "--allow-empty")
 
-    # ------------------------------------------------------------ missions
 
     def start_mission(self) -> str:
-        """Open a new mission and retire the previous one's worktrees.
-
-        Worktrees and branches used to be keyed by workstream id alone
-        ("swarm/api"), and workstream ids are generic — nearly every plan has
-        an `api` or a `web`. Since `ensure_worktree` reuses an existing tree,
-        a SECOND mission on the same project silently inherited the FIRST
-        mission's branch and code: the dental clinic got built on top of the
-        second project. Mission one looked perfect, mission two was quietly
-        poisoned. Namespacing by mission makes that structurally impossible.
+        """Open a new mission and retire the previous one's worktrees. Worktrees and
+        branches are namespaced by mission, so a second mission cannot inherit the
+        first one's branch.
         """
-        # Timestamp for human legibility in `git branch`, plus a short random
-        # suffix: second resolution alone would collide for two missions
-        # started in the same second, silently merging them back together.
+        # Timestamp plus a random suffix: two missions in the same second must not
+        # collide.
         self.mission_id = time.strftime("m%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
         self.board.update(lambda s: s.__setitem__("mission_id", self.mission_id))
         self.cleanup_worktrees(keep=self.mission_id)
@@ -381,12 +353,8 @@ class SwarmOrchestrator:
         self._mission_id = value
 
     def cleanup_worktrees(self, keep: str = "") -> list[str]:
-        """Detach and delete worktrees from every mission except `keep`.
-
-        Nothing in the codebase used to remove a worktree, so they accumulated
-        forever — a full checkout each, unbounded. Branches are deliberately
-        left behind: they are the only record of what an agent actually did,
-        and deleting merged history to save disk is a bad trade.
+        """Remove worktrees from every mission except `keep`. Branches stay: they are
+        the record of what each agent did.
         """
         root = self.project_dir / STATE_DIR / "worktrees"
         removed = []
@@ -416,7 +384,7 @@ class SwarmOrchestrator:
         wt.parent.mkdir(parents=True, exist_ok=True)
         r = self._git("worktree", "add", str(wt), "-b", branch)
         if r.returncode != 0:
-            # Branch may exist from an interrupted run of THIS mission.
+            # The branch may exist from an interrupted run of this mission.
             r = self._git("worktree", "add", str(wt), branch)
         if r.returncode != 0:
             raise RuntimeError(f"git worktree add failed: {r.stderr.strip()}")
@@ -425,7 +393,6 @@ class SwarmOrchestrator:
     def branch_for(self, name: str) -> str:
         return f"swarm/{self.mission_id}/{name}"
 
-    # ------------------------------------------------------------- swarm
 
     async def launch(self, assignments: dict) -> str:
         """assignments: {registry_agent_key: task_description}"""
@@ -469,24 +436,18 @@ class SwarmOrchestrator:
         return report
 
     async def execute_plan(self, plan: dict, notes=None) -> str:
-        """Turn a validated Chief-Architect plan into a live swarm.
+        """Turn a validated Chief-Architect plan into a live swarm: one worktree per
+        workstream, each with a contract-bound preamble. Approval already
+        happened.
 
-        One isolated worktree per WORKSTREAM (keyed by workstream id, not agent
-        key — so two same-brand agents never share a branch), each spawned with a
-        coupling-aware, contract-bound preamble. Assumes human approval already
-        happened at the front door; this only executes.
-
-        `notes` carries requirements the operator voiced AT the approval gate
-        ("yes, but make the UI beautiful"): a plain string applies to every
-        agent; a dict {target: text} routes each note to the matching workstream
-        (target may be an id, an assignee, or a role word like 'frontend').
+        `notes`: a string applies to every agent; a dict {target: text} routes by
+        id, assignee or role word.
         """
         from actions.agent_delegation import (AGENT_REGISTRY, agent_available,
                                               spawn_succeeded)
         from actions.chief_architect import validate_plan
 
-        # Defensive gate — never execute a malformed plan even if a caller skipped
-        # validation. Size the check to the plan's own agent_count.
+        # Never execute a malformed plan, even if a caller skipped validation.
         available = [k for k in AGENT_REGISTRY if agent_available(k)]
         ok, why = validate_plan(plan, plan.get("agent_count", len(available) or 1),
                                 available)
@@ -494,8 +455,7 @@ class SwarmOrchestrator:
             return f"Plan rejected: {why}."
 
         self.ensure_repo()
-        # Open a fresh mission BEFORE any worktree is touched, so this plan can
-        # never inherit a previous mission's branch or working tree.
+        # Open a fresh mission before any worktree is touched.
         mission_id = self.start_mission()
         trace("execute", f"mission {mission_id} approved — starting",
               timer="mission", start=True)
@@ -507,14 +467,12 @@ class SwarmOrchestrator:
         except Exception:
             repo_map = ""
 
-        # Persist the dependency-first merge order so the Reviewer merges branches
-        # in the right sequence later, even across a restart.
+        # Persist the dependency-first merge order for the reviewer.
         ids = [w["id"] for w in plan.get("workstreams", [])]
         merge_order = [i for i in (plan.get("merge_order") or ids) if i in ids]
         self.board.update(lambda s: s.__setitem__("merge_order", merge_order))
 
-        # Freeze the contract onto the blackboard up front so every coupled agent
-        # reads the same interface from a single source of truth.
+        # Freeze the contract on the board as the single source of truth.
         if coupled and contract:
             public = {k: v for k, v in contract.items() if k != "ownership"}
             self.board.add_decision(
@@ -551,8 +509,7 @@ class SwarmOrchestrator:
                 errors.append(f"{ws_id} ({agent_key}): {result}")
                 continue
             trace("spawn", f"{ws_id}: {agent_key} live", timer=f"sp:{ws_id}", ok=True)
-            # Track the body behind this role so it can be enumerated and, if
-            # it goes wrong, stopped by verified identity rather than pkill.
+            # Track the process so it can be stopped by verified identity, not pkill.
             try:
                 from core import proc_registry
                 _sess = POOL.all_sessions().get((agent_key, str(wt).rstrip("/")))
@@ -597,13 +554,9 @@ class SwarmOrchestrator:
 
     def inject(self, message: str, target: str = "all",
                interrupt: bool = False, source: str = "user") -> str:
-        """Chime in on running agents mid-development with a fresh user request.
-
-        `target` selects who hears it — a workstream id, an assignee, a role word
-        ('frontend', 'the backend one'), or 'all'. `interrupt=True` does a hard
-        Ctrl+C redirect (drop what you're doing); default just types the note into
-        the live session so the agent folds it in and keeps working. The request
-        is also recorded on the blackboard so a later-spawned agent still sees it.
+        """Relay a new user request to running agents. `target`: a workstream id,
+        assignee, role word, or 'all'. interrupt=True stops them first; otherwise
+        the note is typed in and they carry on. Also recorded on the board.
         """
         message = (message or "").strip()
         if not message:
@@ -633,7 +586,6 @@ class SwarmOrchestrator:
                 delivered.append(key)
             except OSError:
                 pass
-        # Durable trail: the request lives on the board too.
         self.board.add_decision(source, f"USER REQUEST → {', '.join(matched)}: {message}")
         verb = "redirected" if interrupt else "notified"
         self._log(f"SYS: 🗣 Operator {verb} {', '.join(delivered)}: {message[:80]}")
@@ -652,19 +604,11 @@ class SwarmOrchestrator:
         if watcher:
             watcher.on_thought = _thought
         elif hasattr(sess, "on_thought"):
-            # A headless session has no screen to watch, but it publishes the
-            # same signal as typed events. Without this branch the board's row
-            # for a headless agent stays blank for the whole mission.
+            # A headless session publishes thoughts as typed events.
             sess.on_thought = _thought
 
     def _live_sessions(self) -> dict:
-        """board key (workstream id or agent key) -> live PtySession.
-
-        Joins on the resolved WORKTREE PATH, not the agent key — POOL keys
-        sessions by (pool_key, resolved_dir) while the board keys by workstream
-        id, so the directory is the only reliable join. Both sides are resolved
-        so a symlinked project path can't silently break the match.
-        """
+        """Board key -> live session, joined on the resolved worktree path."""
         state = self.board.read()
         sessions = {}
         for (_, sdir), sess in POOL.all_sessions().items():
@@ -702,9 +646,9 @@ class SwarmOrchestrator:
                 f"{', '.join(delivered) or 'no other live agents'}.")
 
     def record_lesson(self, agent: str, error: str, fix: str = "", tag: str = "") -> str:
-        """A caught error → durable shared lesson, streamed LIVE to every running
-        agent so they stop repeating it immediately, and baked into the preamble
-        so future agents never learn it the hard way."""
+        """A caught error becomes a lesson, sent live to every running agent and
+        added to future preambles.
+        """
         is_new = self.board.add_lesson(agent, error, fix, tag)
         if not is_new:
             return "lesson already known (count incremented)"
@@ -726,11 +670,8 @@ class SwarmOrchestrator:
         return f"{base}\nLive sessions: {', '.join(sorted(live)) or 'none'}"
 
     def narrate(self) -> str:
-        """What's happening, phrased so the eagle can just say it out loud.
-
-        `status()` returns a blackboard dump — accurate, unspeakable. When the
-        user asks "what are you doing right now?" they want the answer a project
-        lead would give: who is on what, how far in, and what needs them.
+        """What's happening, phrased to be said out loud: who is on what, how far in,
+        what needs the user.
         """
         from core import escalations
         state = self.board.read()
@@ -784,8 +725,7 @@ class SwarmOrchestrator:
         if agent:
             targets = [agent]
         else:
-            # Merge in the plan's dependency-first order; anything not listed
-            # (e.g. a sentinel re-delegation) goes last.
+            # Dependency-first order; anything unlisted goes last.
             keys = list(state["agents"].keys())
             order = [k for k in (state.get("merge_order") or []) if k in keys]
             targets = order + [k for k in keys if k not in order]
@@ -811,8 +751,7 @@ class SwarmOrchestrator:
                 merged_ids.append(key)
             results.append(outcome)
 
-        # The last mile: a merged mission is worthless if the user is never
-        # told where the thing actually is or how to look at it.
+        # Tell the user where the result is and how to look at it.
         if merged_ids and len(merged_ids) == len(targets):
             trace("mission", "all workstreams merged", timer="mission", ok=True)
             banner("MISSION COMPLETE", [
@@ -826,12 +765,7 @@ class SwarmOrchestrator:
         return " || ".join(results)
 
     def stop_all(self) -> str:
-        """Stop this project's agents — then sweep anything the board missed.
-
-        Closing only board-registered sessions used to leave re-delegation
-        artefacts and half-registered spawns alive with no way to reach them.
-        Stop must mean stop.
-        """
+        """Stop this project's agents, then sweep anything the board missed."""
         stopped = []
         for agent_key, sess in self._live_sessions().items():
             sess.close()
@@ -853,12 +787,9 @@ class SwarmOrchestrator:
 
 
 def halt_all() -> str:
-    """Stop every agent this process started. Synchronous, so the dashboard's
-    HALT button can call it as well as the voice tool.
-
-    The blunt instrument, made safe. `pkill claude` would kill Aethelark
-    itself; this only touches processes we registered, each verified by
-    (pid, start_time) so a recycled PID can never be signalled.
+    """Stop every agent this process started. Only registered processes, each
+    verified by (pid, start time) so a recycled PID is never signalled.
+    Synchronous, for the HALT button.
     """
     from core import proc_registry
     for orch in list(_ORCHESTRATORS.values()):
@@ -876,12 +807,9 @@ def halt_all() -> str:
 
 
 def swarm_narrate() -> str:
-    """Speakable answer to "what are you doing right now?" across all projects.
-
-    Deliberately NOT routed through swarm_orchestrate: that tool is exclusive
-    (a plan can hold the lock for a minute or more), and a question about
-    progress must never queue behind the work it is asking about. The eagle
-    delegates — so it stays free to talk while its agents build.
+    """Speakable answer to "what are you doing?" across all projects. Not routed
+    through swarm_orchestrate, which is exclusive: a progress question never
+    queues behind the work.
     """
     parts = [o.narrate() for o in list(_ORCHESTRATORS.values())]
     parts += _solo_sessions(set(_ORCHESTRATORS))
@@ -928,8 +856,9 @@ def _solo_sessions(swarm_roots: set[str]) -> list[str]:
 
 
 def swarm_snapshot() -> dict:
-    """Full swarm telemetry for dashboard streaming: every tracked project's
-    blackboard plus live session tails."""
+    """Swarm telemetry for the dashboard: every project's board plus live session
+    tails.
+    """
     import re as _re
     ansi = _re.compile(r"(?:\x1b[@-_][0-?]*[ -/]*[@-~])")
     projects = {}
@@ -951,8 +880,6 @@ def swarm_snapshot() -> dict:
     return {"ts": time.time(), "projects": projects, "sessions": sessions}
 
 
-# ------------------------------------------------------------- tool entry
-
 _ORCHESTRATORS = {}
 
 
@@ -966,12 +893,8 @@ def get_orchestrator(project_dir, player=None) -> SwarmOrchestrator:
 
 
 async def execute_plan(plan: dict, project_dir, player=None, notes=None) -> str:
-    """Module-level entry: execute a validated Chief-Architect plan on a project.
-
-    The front door (voice dispatch) calls this AFTER the human approves the spoken
-    plan summary. `notes` carries any requirement the operator voiced with their
-    approval. Enforces the Space-Eagle self-edit safeguard, then delegates to the
-    project's orchestrator.
+    """Execute a validated plan on a project after the user approved it. Enforces the
+    self-edit safeguard.
     """
     project_dir = Path(project_dir).expanduser().resolve()
     if project_dir == SPACE_EAGLE_HOME or SPACE_EAGLE_HOME in project_dir.parents:
@@ -982,14 +905,11 @@ async def execute_plan(plan: dict, project_dir, player=None, notes=None) -> str:
     return await orch.execute_plan(plan, notes=notes)
 
 
-# Remembers where the current mission lives, so the follow-up calls in a voice
-# exchange (plan -> approve -> execute -> status -> review) all land on the same
-# project without the user ever naming a path. Only `plan` can open a new one.
+# Where the current mission lives, so follow-up calls land on the same project. Only
+# `plan` opens a new one.
 _ACTIVE_PROJECT: Path | None = None
 
-# Words that carry no identity — dropping them turns "Build a professional
-# booking website for a dental clinic" into "dental-clinic" rather than
-# "build-a-professional-booking-website".
+# Words that carry no identity, so a goal slugs to "dental-clinic".
 _SLUG_STOPWORDS = {
     "a", "an", "the", "for", "my", "our", "me", "us", "with", "and", "or", "to",
     "of", "in", "on", "at", "please", "can", "you", "build", "make", "create",
@@ -1008,9 +928,7 @@ def slugify_goal(goal: str, max_words: int = 3) -> str:
     return "-".join(keep[:max_words])
 
 
-# Where the UI picker parks its choices before a mission exists. The picker and
-# the voice command are separate events — the user may tap through the chips a
-# minute before they say "build it" — so the choice has to survive the gap.
+# The picker's choices, kept until the user says "build it".
 _AESTHETIC_INBOX: dict = {}
 
 
@@ -1026,8 +944,7 @@ def set_aesthetic(choices: dict | None = None, text: str = "") -> str:
 
 
 def _pending_aesthetic_brief(project_dir: Path) -> str:
-    """Consume whatever the picker left. One mission, one brief — clearing it
-    stops a look chosen for one project silently styling the next."""
+    """Consume what the picker left: one mission, one brief."""
     return _AESTHETIC_INBOX.pop("brief", "") or ""
 
 
@@ -1037,12 +954,8 @@ def _is_visual(goal: str) -> bool:
 
 
 def _derive_project_dir(goal: str) -> Path | None:
-    """Where a mission should live when the user never said.
-
-    `plan` (which carries a goal) opens a new project under ~/Projects, reusing
-    the convention already used by developer_mode. Every other action reuses the
-    mission already in flight — re-deriving from a later utterance would scatter
-    one mission across several folders.
+    """Where a mission lives when the user never said: `plan` opens a new folder
+    under ~/Projects; every other action reuses the mission in flight.
     """
     if goal:
         return Path.home() / "Projects" / slugify_goal(goal)
@@ -1052,9 +965,7 @@ def _derive_project_dir(goal: str) -> Path | None:
 def _answer_without_project(action: str, parameters: dict) -> str:
     """Actions about agents that are already running, wherever they run."""
     if action in ("authorize", "deny"):
-        # Closes the escalation loop: the reflex tier refused to answer a
-        # dangerous prompt, the human heard the question, and this delivers
-        # their decision back to the blocked agent.
+        # Delivers the user's answer to a held request.
         from core import confirm, escalations
         verdict = "allow" if action == "authorize" else "deny"
         esc = escalations.find((parameters.get("escalation_id") or "").strip())
@@ -1078,7 +989,7 @@ def _answer_without_project(action: str, parameters: dict) -> str:
         if verdict == "deny":
             return (f"Denied. {esc.agent} stays blocked on that prompt — "
                     f"tell it what to do instead, or stop the swarm.")
-        # Find the live watcher for that agent and let IT do the typing.
+        # A terminal agent: its watcher does the typing.
         for (_key, _sdir), sess in POOL.all_sessions().items():
             w = getattr(sess, "watcher", None)
             if w is not None and getattr(w, "agent_name", "") == esc.agent:
@@ -1105,8 +1016,7 @@ def _answer_without_project(action: str, parameters: dict) -> str:
 
 
 async def swarm_orchestrate(parameters: dict, player=None) -> str:
-    """Voice-tool entry point. Actions: plan | execute | launch | status |
-    broadcast | review | stop."""
+    """Voice-tool entry point."""
     global _ACTIVE_PROJECT
     action = (parameters.get("action") or "status").strip().lower()
     if action in ("authorize", "deny", "kill_all", "panic", "processes", "escalations"):
@@ -1114,9 +1024,7 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
     directory = (parameters.get("directory") or "").strip()
     goal = (parameters.get("goal") or parameters.get("mission") or "").strip()
     if not directory:
-        # Asking "which directory?" is exactly the tedious question this
-        # product exists to delete — the user described a dental clinic site,
-        # not a filesystem layout. Derive one and say where it went.
+        # Never ask for a directory: derive one.
         derived = _derive_project_dir(goal)
         if derived is None:
             return "Ask: Which project directory should the swarm operate on?"
@@ -1130,16 +1038,14 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
 
     orch = get_orchestrator(project_dir, player)
     if action == "plan":
-        # Spawn the chief architect; return the spoken plan summary for the
-        # approval gate. The validated plan is left at .space_eagle/plan.json.
+        # Run the chief architect; return the spoken plan summary for approval. The plan
+        # is left at .space_eagle/plan.json.
         from actions.chief_architect import run_chief, render_plan_summary
         if not goal:
             return "Ask: What should the swarm build?"
         max_agents = int(parameters.get("max_agents") or 2)
 
-        # Taste, from whichever source the user actually used. Without this the
-        # brief never reaches the architect and the plan comes back with eight
-        # functional criteria and nothing about how it should look.
+        # The look the user asked for, from the picker or their words.
         from core import aesthetics
         design_brief = ""
         picked = parameters.get("aesthetic_choices")
@@ -1177,8 +1083,7 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
             f"{w['id']:<10} {w['assignee']:<16} {w.get('task','')[:44]}"
             for w in plan.get("workstreams", [])
         ] + [f"merge order: {' → '.join(plan.get('merge_order') or [])}"])
-        # Only a successful plan claims the project — a failed one must not
-        # redirect the next command at a folder with nothing in it.
+        # Only a successful plan claims the project.
         _ACTIVE_PROJECT = project_dir
         return ("Plan ready. Say this to the user, then wait for a yes before "
                 "calling swarm_mode with action execute: " + render_plan_summary(plan))
@@ -1190,7 +1095,7 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
             except ValueError:
                 return "Invalid plan: expected a JSON object."
         if not plan:
-            # Fall back to the last plan the chief wrote for this project.
+            # Fall back to the last plan the chief wrote.
             pf = project_dir / STATE_DIR / "plan.json"
             if pf.exists():
                 try:
@@ -1208,7 +1113,6 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
                 pass  # keep it as a blanket string note
         return await orch.execute_plan(plan, notes=notes)
     if action == "inject":
-        # Mid-development: relay a fresh user request to running agent(s).
         return await asyncio.to_thread(
             orch.inject,
             parameters.get("message", ""),
@@ -1236,8 +1140,7 @@ async def swarm_orchestrate(parameters: dict, player=None) -> str:
             (parameters.get("agent") or "").strip(),
             bool(parameters.get("deep")))
     if action in ("open", "preview"):
-        # "show me it" / "open the site" — also the manual path when a mission
-        # merged before this existed, or the user closed the tab.
+        # "Show me it" / "open the site".
         from core import preview
         pv = preview.current(project_dir) or preview.start(project_dir)
         if pv is None:

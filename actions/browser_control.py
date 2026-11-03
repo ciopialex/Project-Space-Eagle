@@ -24,7 +24,6 @@ from playwright.async_api import (
 from core import user_paths
 _OS = platform.system()   # "Windows" | "Darwin" | "Linux"
 
-# Path to shared api_keys.json config
 _CONFIG_FILE = user_paths.api_keys_path()
 
 
@@ -49,17 +48,15 @@ def _write_config(data: dict) -> None:
         print(f"[Browser] Config write failed: {e}")
 
 def _normalize_url(url: str) -> str:
-    """
-    Bare words like "instagram" → "https://instagram.com"
-    Domains like "instagram.com" → "https://instagram.com"
-    Full URLs pass through unchanged.
+    """"instagram" -> https://instagram.com; "instagram.com" ->
+    https://instagram.com; full URLs unchanged.
     """
     url = url.strip()
     if not url:
         return "about:blank"
     if "://" in url:
         return url
-    # No dot at all → assume .com  (e.g. "instagram" → "instagram.com")
+    # No dot: assume .com.
     if "." not in url:
         url = url + ".com"
     return "https://" + url
@@ -70,10 +67,9 @@ _LEGACY_AUTOMATION_BASE = Path.home() / ".jarvis_profiles"
 
 
 def _automation_base() -> Path:
-    """Root for Aethelark's persistent automation profiles (where a one-time
-    login like the WhatsApp QR is remembered). Renamed from the old
-    ~/.jarvis_profiles — we migrate the existing dir in place on first run so
-    accounts already signed in there keep working."""
+    """Root of the eagle's persistent automation profiles (where a one-time login
+    like the WhatsApp QR is kept). Migrates the old ~/.jarvis_profiles in place.
+    """
     try:
         if _LEGACY_AUTOMATION_BASE.exists() and not _AUTOMATION_BASE.exists():
             _LEGACY_AUTOMATION_BASE.rename(_AUTOMATION_BASE)
@@ -123,8 +119,7 @@ def _real_profile_dir(browser: str) -> str:
         snap = home / "snap"
         m = {
             "chrome":   [cfg / "google-chrome"],
-            # Snap Chromium keeps its profile inside its confined dir, NOT
-            # ~/.config/chromium — probe both so snap installs are found.
+            # Snap Chromium keeps its profile inside its confined directory.
             "chromium": [cfg / "chromium", cfg / "chromium-browser",
                          snap / "chromium" / "common" / "chromium"],
             "edge":     [cfg / "microsoft-edge"],
@@ -161,11 +156,10 @@ def _is_snap_browser(browser: str) -> bool:
 
 
 def _automation_profile_dir(browser: str) -> str:
-    """The persistent Aethelark automation profile for a browser — where a
-    one-time login (e.g. the WhatsApp QR) is remembered. For snap browsers it
-    MUST live inside ~/snap/<browser>/common (the only place snap confinement
-    lets the browser write); hidden dirs under $HOME are blocked and fail with
-    'SingletonLock: Permission denied'."""
+    """The persistent automation profile for a browser. For snap browsers it must
+    live in ~/snap/<browser>/common; hidden dirs under $HOME fail with
+    SingletonLock: Permission denied.
+    """
     home = Path.home()
     if _is_snap_browser(browser):
         base = home / "snap" / browser / "common" / "aethelark-profile"
@@ -378,10 +372,9 @@ def _resolve_browser(name: str) -> dict | None:
 
 
 def _configured_default_browser() -> str | None:
-    """The user's chosen default browser from api_keys.json (set via the
-    'set_default' action or the classic UI). Normalized through _ALIASES.
-    Returns None when unset ('' / 'system default') so callers fall through to
-    the OS default."""
+    """The user's chosen default browser from config, or None to fall through to the
+    OS default.
+    """
     v = _read_config().get("default_browser", "").lower().strip()
     v = _ALIASES.get(v, v)
     return v or None
@@ -429,7 +422,7 @@ _DISPLAY_NAMES: dict[str, str] = {
     "firefox": "Firefox", "opera": "Opera", "operagx": "Opera GX",
     "brave": "Brave", "vivaldi": "Vivaldi", "safari": "Safari",
 }
-# Single-glyph marks for the Settings browser picker (avoids shipping icon assets).
+# Single-glyph marks for the Settings browser picker.
 _BROWSER_GLYPHS: dict[str, str] = {
     "chrome": "C", "chromium": "◎", "edge": "e", "firefox": "◐",
     "opera": "O", "operagx": "Ø", "brave": "◆", "vivaldi": "V", "safari": "S",
@@ -440,14 +433,9 @@ _BROWSERS_CACHE: list[dict] | None = None
 
 
 def list_browsers(refresh: bool = False) -> list[dict]:
-    """Every browser actually installed on this machine, for the Settings picker.
-    Each entry: id, name, glyph, is_default, is_snap, works (snap browsers still
-    work now that profiles are snap-safe, but we flag them so the UI can nudge
-    toward a real install when both exist).
-
-    Cached after the first call: the installed set and OS default don't change
-    within a session, and the probe shells out to `xdg-settings` — we don't want
-    to pay that (or block a caller) on every Settings open."""
+    """Every browser installed here, for the Settings picker: id, name, glyph,
+    is_default, is_snap, works. Cached: the probe shells out to xdg-settings.
+    """
     global _BROWSERS_CACHE
     if _BROWSERS_CACHE is not None and not refresh:
         return _BROWSERS_CACHE
@@ -457,8 +445,8 @@ def list_browsers(refresh: bool = False) -> list[dict]:
         spec = _resolve_browser(bid)
         if not spec:
             continue
-        # Installed = we found a real executable, or Playwright can drive it via a
-        # managed channel (chrome/msedge on Win/Mac).
+        # A real executable, or a Playwright-managed channel (chrome/msedge on Windows
+        # and macOS).
         if not (spec.get("exe") or spec.get("channel")):
             continue
         out.append({
@@ -468,7 +456,7 @@ def list_browsers(refresh: bool = False) -> list[dict]:
             "is_default": bid == default,
             "is_snap": _is_snap_browser(bid),
         })
-    # Default first, then alphabetical — the recommended pick leads.
+    # Default first, then alphabetical.
     out.sort(key=lambda b: (not b["is_default"], b["name"]))
     _BROWSERS_CACHE = out
     return out
@@ -498,13 +486,8 @@ _WIN_EXE_HINTS: dict[str, str] = {"chrome": "chrome", "chromium": "chromium", "e
 
 
 def _open_native(url: str, browser_name: Optional[str]) -> str:
-    """
-    Opens the user's REAL browser the normal way -- their own profile,
-    signed-in accounts and extensions. No automation is attached, so an
-    about:blank tab or an empty profile NEVER appears.
-    With no url the browser starts without one (its own start page or
-    restored session) -- exactly as if the user had opened it.
-    Works on Windows, macOS and Linux.
+    """Open the user's real browser the normal way: their profile, accounts and
+    extensions, no automation attached.
     """
     url = _normalize_url(url) if url and url.strip() else ""
     if url == "about:blank":
@@ -514,10 +497,9 @@ def _open_native(url: str, browser_name: Optional[str]) -> str:
     if browser_name:
         name = _ALIASES.get(browser_name.lower().strip(), browser_name.lower().strip())
     elif not url:
-        # No URL -> only a window opens, so the default browser's executable is needed
+        # No URL: only a window opens, so the executable is needed.
         name = _detect_default_browser()
 
-    # Specific browser → launch its own executable, exactly like the user would.
     if name:
         if _OS == "Darwin":
             app = _MAC_APP_NAMES.get(name)
@@ -550,7 +532,6 @@ def _open_native(url: str, browser_name: Optional[str]) -> str:
     if not url:
         return "Could not find a browser to open."
 
-    # Default browser via the OS — exactly like the user clicking a link.
     try:
         if _OS == "Windows":
             os.startfile(url)                       # ShellExecute → default browser
@@ -634,20 +615,13 @@ class _BrowserSession:
         self._context = self._page = None
 
     async def _adopt_page(self) -> Page:
-        """
-        launch_persistent_context already opens a first tab. Adopt it instead
-        of opening a new blank (about:blank) one, so the user never sees an
-        extra empty tab.
-        """
+        """Adopt the tab the persistent context opens, so no extra blank tab appears."""
         await asyncio.sleep(0.3)
         pages = self._context.pages
         return pages[0] if pages else await self._context.new_page()
 
     async def _launch(self):
-        """
-        Starts the browser on the user's real profile.
-        Does nothing if the context is already open.
-        """
+        """Start the browser on the user's profile. Does nothing if already open."""
         if self._context is not None:
             return
 
@@ -700,12 +674,9 @@ class _BrowserSession:
             print(f"[Browser] ✅ Safari launched")
             return
 
-        # Chrome/Chromium REFUSE automation on their live default profile (Chrome:
-        # "DevTools remote debugging requires a non-default data directory"), so a
-        # real-profile launch ALWAYS fails and wastes up to 25s before we fall back.
-        # Since it never actually drives the real profile anyway, go STRAIGHT to the
-        # persistent automation profile — that's where one-time logins (the WhatsApp
-        # QR) already live. Firefox/Edge keep the real-profile-first behaviour.
+        # Chrome refuses automation on its default profile ("DevTools remote debugging
+        # requires a non-default data directory"), so go straight to the automation
+        # profile. Firefox and Edge try the real profile first.
         skip_real = self.browser_name in ("chrome", "chromium")
         profile = (_automation_profile_dir(self.browser_name) if skip_real
                    else _real_profile_dir(self.browser_name))
@@ -718,49 +689,27 @@ class _BrowserSession:
             "timeout":     25_000,
             "args": [
                 "--start-maximized",
-                # Chrome publishes NOTHING of a page to the accessibility bus
-                # unless this is on. Measured on the user's own machine: the
-                # Chrome he was driving exposed ONE named node (the window
-                # frame) and zero page content, so `screen_find "search bar"`
-                # correctly returned NOT_FOUND — the search bar genuinely was
-                # not in the tree it was searching. With this flag the same
-                # page exposed 889 named nodes including
-                # ('entry', 'Address and search bar').
-                #
-                # That is the difference between a ~19ms exact structural
-                # lookup and a 5.8s vision guess that landed 650px away.
+                # Chrome publishes page content to the accessibility bus only with this
+                # flag: without it screen_find sees the window frame and nothing else.
                 "--force-renderer-accessibility",
-                # A debug port makes this window reachable over CDP, so the
-                # eagle can act on it through the DOM instead of squinting at
-                # it. Without this, opening a page here THREW AWAY every
-                # structural tool: the MakerWorld run rendered the page
-                # perfectly and then had to guess at pixels, because
-                # web_agency cannot see into a browser it did not launch.
-                #
-                # Bound to localhost explicitly. A debug port is unrestricted
-                # control of this browser, including its cookies and every
-                # signed-in session in the profile — it must never be
-                # reachable off the machine.
+                # A localhost-only debug port, so the eagle can act through the DOM
+                # instead of pixels. It is full control of this browser, so it must
+                # never be reachable off the machine.
                 f"--remote-debugging-port={_DEBUG_PORT}",
                 "--remote-debugging-address=127.0.0.1",
                 "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
                 "--disable-default-apps",
                 "--no-default-browser-check",
-                # Suppress the yellow "unsupported command-line flag: --no-sandbox"
-                # infobar Playwright triggers (it launches Chromium with --no-sandbox
-                # by default). --test-type hides it without changing sandbox state,
-                # so the browser still launches reliably.
+                # --test-type hides Playwright's --no-sandbox infobar without changing
+                # the sandbox.
                 "--test-type",
                 "--disable-infobars",
-                # If a previous instance died uncleanly (GL crash / kill), Chrome
-                # otherwise shows a "Restore pages?" bubble that COVERS the UI and
-                # makes clicks hang until timeout. Suppress it.
+                # Suppress the "Restore pages?" bubble after an unclean exit: it covers
+                # the UI.
                 "--hide-crash-restore-bubble",
                 "--disable-session-crashed-bubble",
-                # The automation browser doesn't need the GPU, and swiftshader GL was
-                # core-dumping on cleanup ("Failed to restore OpenGL context"). Disable
-                # GPU so it stays alive → the session is reusable → subsequent sends fast.
+                # No GPU: swiftshader GL core-dumped on cleanup.
                 "--disable-gpu",
             ],
         }
@@ -784,12 +733,10 @@ class _BrowserSession:
             return
         except Exception as e:
             if skip_real:
-                # Already on the automation profile — nothing else to try.
                 raise RuntimeError(f"Could not launch {self.browser_name}: {e}") from e
             print(f"[Browser] ⚠️  Real profile failed for {label}: {e}")
 
-        # Real profile locked/undriveable → the persistent Aethelark automation
-        # profile, where a one-time login stays signed in across sessions.
+        # Real profile locked: use the automation profile.
         auto_profile = _automation_profile_dir(self.browser_name)
         print(f"[Browser] Retrying with Aethelark profile: {auto_profile}")
 
@@ -805,15 +752,12 @@ class _BrowserSession:
     async def _get_page(self) -> Page:
         await self._launch()
         try:
-            # If somehow page got closed, open a fresh one
             if self._page is None or self._page.is_closed():
                 self._page = await self._context.new_page()
                 await asyncio.sleep(0.2)
         except Exception as e:
-            # The persistent context/browser was closed (e.g. the user shut the
-            # window after the previous action). Drop the dead handles and relaunch
-            # a fresh browser so the tool RECOVERS instead of failing every
-            # subsequent call with "Target page, context or browser has been closed".
+            # The context was closed (the user shut the window): drop the dead handles
+            # and relaunch.
             if "closed" in str(e).lower() or "target page" in str(e).lower():
                 print(f"[Browser] Context was closed — relaunching {self.browser_name}.")
                 try:
@@ -1121,39 +1065,26 @@ class _SessionRegistry:
 _registry = _SessionRegistry()
 
 
-#: Prose these branches produce that is a REFUSAL rather than a result. Each
-#: one is a decision the function already made; the string just never said so.
+# Prose these branches produce that is a refusal rather than a result.
 _FAILED_PREFIXES = (
     "unknown browser action", "unknown action", "please specify",
     "browser error", "no url", "could not", "failed", "not found",
     "no browser",
-    # `click`/`type`'s own session-level refusals (`BrowserSession.click`,
-    # `.type_text`) — resurrected as reachable by the `selector` fallback fix
-    # but never exercised against this list, so all four read as ok=True.
+    # click/type's own session-level refusals.
     "no selector", "element not found", "type error", "click error",
 )
 
-#: Phrases that mark a refusal from the MIDDLE of a sentence. "Browser action
-#: 'go_to' timed out (60s)" starts with a perfectly ordinary word.
-#:
-#: A bare "timeout" marker used to live here too, added to catch "Type
-#: error: Timeout 30000ms exceeded." and "Element not found (timeout).".
-#: Both are already caught by the "type error"/"element not found" PREFIXES
-#: above, and an ANYWHERE-substring "timeout" also matches a perfectly
-#: ordinary search query ("playwright timeout error"), URL
-#: (".../docs/timeout"), or link text ("Timeout settings") that never
-#: touched a refusal path — those came back ok=False live. Removed rather
-#: than narrowed, since nothing legitimate depended on it.
+# Phrases that mark a refusal mid-sentence. No bare "timeout": it matches ordinary
+# queries and link text.
 _FAILED_ANYWHERE = (
     "timed out", "could not", "did not", "is not installed",
 )
 
 
 def _is_refusal(result) -> bool:
-    """True when `result` is prose a session produced to describe a refusal
-    rather than a result — the shared predicate behind `_verdict` and the
-    `click`/`type` dispatch below, so both read the SAME markers instead of
-    the dispatch quietly trusting a string `_verdict` would have rejected."""
+    """True when `result` is prose describing a refusal: shared by _verdict and the
+    click/type dispatch.
+    """
     text = str(result or "").strip()
     low = text.lower()
     return (not text
@@ -1162,11 +1093,8 @@ def _is_refusal(result) -> bool:
 
 
 def _verdict(result: str):
-    """One place where browser_control's prose becomes a verdict.
-
-    There are eight return points, not one, so the boundary is a function
-    rather than a spot at the bottom - the first attempt at this migration
-    only converted the last return and left seven reporting nothing.
+    """One place where browser_control's prose becomes a verdict, for all of its
+    return points.
     """
     text = str(result or "").strip()
     if _is_refusal(text):
@@ -1179,11 +1107,9 @@ def _verdict(result: str):
     return settled(text)
 
 
-#: Every action past this point in `browser_control` needs a real, physically
-#: controllable browser window — this is the set checked BEFORE one is opened,
-#: so an unrecognised action (a typo, a stale name) is refused instead of
-#: silently earning itself a browser window first. Kept in sync with the
-#: elif chain below by `test_browser_control_contract.py`.
+# Actions that need a real browser window, checked before one is opened so a typo does
+# not open a window. Kept in sync with the elif chain by
+# test_browser_control_contract.py.
 _INTERACTIVE_ACTIONS = frozenset({
     "click", "type", "scroll", "fill_form", "smart_click", "smart_type",
     "get_text", "get_url", "press", "close_tab", "screenshot", "back",
@@ -1197,15 +1123,7 @@ def browser_control(
     player=None,
     session_memory=None,
 ) -> ToolResult:
-    """Drive the user's own browser. Returns a ToolResult.
-
-    Migrated because a bare string blocked a real mission: it opened
-    youtube.com correctly and reported `? no status`, so the mission runner -
-    which treats "no verdict" as failure on purpose, since a wrong reading
-    advances past a step that never happened - marked the step failed and
-    stopped the goal. A working tool that cannot say so is worse than a slow
-    one.
-    """
+    """Drive the user's own browser. Returns a ToolResult."""
     params  = parameters or {}
     action  = params.get("action", "").lower().strip()
     browser = params.get("browser", "").lower().strip() or None
@@ -1218,8 +1136,7 @@ def browser_control(
         _log(player, result)
         return _verdict(result)
 
-    # Persist the user's preferred browser so every later action (navigation,
-    # interactive control, WhatsApp Web, etc.) uses it by default.
+    # Persist the preferred browser for every later action.
     if action in ("set_default", "set_default_browser"):
         target = (browser or params.get("target", "")).lower().strip()
         target = _ALIASES.get(target, target)
@@ -1252,14 +1169,9 @@ def browser_control(
         _log(player, result)
         return _verdict(result)
 
-    # ── Navigation: go_to / search / new_tab ────────────────────────────────
-    # Resolution order for target browser:
-    #   1. Explicitly requested browser (from model parameters)
-    #   2. Last active browser session in the registry
-    #   3. User-configured default_browser in api_keys.json
-    #   4. OS default (xdg-open / open / startfile)
+    # Navigation: go_to / search / new_tab. Target browser: the one requested, the last
+    # active session, the configured default, then the OS default.
     if action in ("go_to", "search", "new_tab"):
-        # Resolve target browser using the 3-tier fallback
         target_browser = browser
         if not target_browser:
             target_browser = _registry._active_browser
@@ -1297,17 +1209,8 @@ def browser_control(
         _log(player, result)
         return _verdict(result)
 
-    # ── Interactive actions (click / type / read…) ───────────────────────────
-    # These need a browser that can actually be driven, so only here does an
-    # automation window open -- and it goes straight to the page the user last
-    # visited rather than waiting on a blank one.
-    #
-    # Checked BEFORE the browser is ever touched. `_registry.get()` LAUNCHES a
-    # real, visible Chrome window if none is open yet — so an unrecognised
-    # action fell all the way through to here first, opened one anyway, and
-    # only discovered a page down that nothing matched `action`. A person
-    # watching their screen saw a browser flash open and close for a typo
-    # in an action name, which this function was always going to refuse.
+    # Interactive actions need a drivable browser, so only here does an automation
+    # window open, on the page last visited. Unknown actions are refused before this.
     if action not in _INTERACTIVE_ACTIONS:
         result = f"Unknown browser action: '{action}'"
         _log(player, result)
@@ -1318,16 +1221,8 @@ def browser_control(
                       "get_url, press, close_tab, screenshot, back, forward, "
                       "reload."))
 
-    # `look` is read-only and must stay that way: it is answered entirely by
-    # `user_look()`, which already asks for the user's window with
-    # `create=False` and returns cleanly if none is open. Handled here,
-    # BEFORE `_registry.get(browser)` below — which unconditionally LAUNCHES
-    # a visible Chrome window if none exists — because that call runs before
-    # the action-specific branch further down ever gets a look at `action`.
-    # Left in the elif chain, a plain "what's on this page" question with no
-    # browser open opened an empty visible window and then reported "0
-    # controls" as a failure: a live-reachable bug once Task 5's prompt
-    # guidance started routing read-only questions to `look`.
+    # `look` is read-only and answered by user_look() without opening a window; handled
+    # before _registry.get(), which launches one.
     if action == "look":
         from actions.grounding.web.user_actions import user_look
         r = user_look()
@@ -1350,16 +1245,8 @@ def browser_control(
                 print(f"[Browser] Could not resume last page ({last}): {e}")
 
         if action == "click":
-            # `description` is the DOM-exact path (`user_click`), and is
-            # what browser_control's own tool declaration has documented
-            # `click` as taking since Task 1. But `selector` is STILL
-            # documented (main.py) as the way to target an element for
-            # click/type, and predates `description` entirely — a caller
-            # following the tool's own documented interface may pass only
-            # `selector`. Gate on `description` being actually present:
-            # a caller who used `selector` as documented must get the
-            # selector-based path, not an empty-description DOM lookup that
-            # can only ever fail (`find_node("")` matches nothing).
+            # `description` is the DOM-exact path; `selector` is still documented, so a
+            # call with only a selector takes the selector path.
             desc = (params.get("description") or "").strip()
             if desc:
                 from actions.grounding.web.user_actions import user_click
@@ -1367,24 +1254,12 @@ def browser_control(
                 _log(player, r.message)
                 return r
             result = sess.run(sess.click(params.get("selector"), params.get("text")))
-            # The selector path was DEAD CODE until the fallback above was
-            # fixed, so it was never checked against a verdict: `click()`'s
-            # own refusals ("No selector or text provided.", "Element not
-            # found (timeout).") are ordinary prose, not exceptions, so
-            # `failed` was never set for them and they fell through to
-            # `settled()` below as ok=True.
+            # click()'s refusals are prose, not exceptions: check them.
             if _is_refusal(result):
                 failed = True
         elif action == "type":
-            # Same gating as click, and higher-stakes: `user_type` with no
-            # `description` falls through to `focus_and_type`'s
-            # best-guess-at-a-text-field heuristic, which can silently type
-            # into a COMPLETELY DIFFERENT field than the one `selector`
-            # named while still reporting ok=True. A caller who passed only
-            # `selector` must reach the selector-based path, never the
-            # DOM-guess path — that is exactly the "reported success, text
-            # landed nowhere/wrong place" failure this whole plan exists to
-            # eliminate.
+            # Same gating as click: a call with only a selector must not fall through to
+            # guessing a text field.
             desc = (params.get("description") or "").strip()
             selector = (params.get("selector") or "").strip()
             if desc:
@@ -1393,12 +1268,8 @@ def browser_control(
                 _log(player, r.message)
                 return r
             if not selector:
-                # Neither `description` nor `selector`: refuse outright.
-                # `BrowserSession.type_text` falls through to
-                # `page.locator(":focus")` — a guess at whatever element
-                # currently has focus, which can silently type into the
-                # wrong field while still reporting success. A request that
-                # names no target gets no guess.
+                # No description and no selector: refuse rather than type into whatever
+                # has focus.
                 result = "Type error: no description or selector given — refusing to guess a focused field."
                 failed = True
             else:
@@ -1442,11 +1313,7 @@ def browser_control(
         failed = True
 
     _log(player, result)
-    # `failed` is authoritative here: the timeout and exception handlers KNOW.
-    # Prose matching below is only for the seven early returns, which have no
-    # flag to hand over - "Browser action 'go_to' timed out (60s)" gives itself
-    # away in the middle of the sentence, not at the start, which is exactly
-    # why guessing from prose is the thing this contract exists to replace.
+    # `failed` is authoritative; prose matching only covers the early returns.
     if failed:
         return ToolResult.failure(
             result,
