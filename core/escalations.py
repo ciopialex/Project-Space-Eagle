@@ -155,6 +155,14 @@ def resolve(esc_id: str, verdict: str, by: str = "human") -> "Escalation | None"
             esc.on_resolve(verdict)
         except Exception as e:
             print(f"[Escalation] {esc.id}: answering the agent failed: {e}")
+    note = type("Note", (), {"agent": esc.agent, "reason": verdict, "excerpt": esc.excerpt,
+                             "informational": True, "kind": "resolved", "id": esc.id,
+                             "by": by})()
+    for fn in list(_LISTENERS):
+        try:
+            fn(note)
+        except Exception:
+            pass
     return esc
 
 

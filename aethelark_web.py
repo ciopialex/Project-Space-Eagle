@@ -464,6 +464,11 @@ class PillBridge(QObject):
     @pyqtSlot()
     def expand(self): self._ui.open_dashboard()
 
+    @pyqtSlot(str, str)
+    def answer_request(self, esc_id, verdict):
+        """Allow / Don't allow, tapped on the island."""
+        self._ui.answer_request(esc_id, verdict)
+
     @pyqtSlot()
     def interrupt(self):
         """A tap on the island while the eagle is talking: stop."""
@@ -750,6 +755,7 @@ class WebShellUI(QObject):
     _modules_sig      = pyqtSignal()
     _ambient_refresh_sig = pyqtSignal()
     _notice_sig       = pyqtSignal(str, str)   # (text, action) -> island notice
+    _ask_sig          = pyqtSignal()           # a held request appeared or was answered
     _chrome_setup_sig = pyqtSignal()
     _shop_sig         = pyqtSignal()           # an install moved on -> repaint the shop
     _module_ready_sig = pyqtSignal(str)        # (title) an install finished
@@ -779,6 +785,10 @@ class WebShellUI(QObject):
         self._ambient_live_jobs: set[str] = set()
         from core.activities import ActivityBoard
         self._activity_board = ActivityBoard()
+        self._asking = ""
+        self._ask_sig.connect(self._sync_ask)
+        from core import escalations
+        escalations.add_listener(self._on_escalation_ui)
         self._activity_sig: tuple = ()
         self._agent_busy: dict[str, tuple[bool, float]] = {}
         self._level_at = 0.0
@@ -2046,6 +2056,46 @@ class WebShellUI(QObject):
     def request_chrome_setup(self) -> None:
         """chrome_setup from any thread: it touches the clipboard."""
         self._chrome_setup_sig.emit()
+
+    def _on_escalation_ui(self, esc) -> None:
+        if getattr(esc, "kind", "") == "resolved" or not getattr(esc, "informational", False):
+            self._ask_sig.emit()
+
+    def _sync_ask(self) -> None:
+        """GUI thread. The island shows the oldest held request, or lets go of
+        the one it showed once that is answered."""
+        from core import escalations
+        esc = escalations.oldest()
+        if esc is not None:
+            if esc.id == self._asking:
+                return
+            self._asking = esc.id
+            lines = [ln.strip() for ln in esc.excerpt.split(" / ") if ln.strip()]
+            self.pill_win.set_pill("ask", {
+                "id": esc.id, "agent": esc.agent,
+                "what": lines[0] if lines else esc.reason,
+                "command": lines[-1] if len(lines) > 1 else "",
+                "why": esc.reason})
+            return
+        if self._asking:
+            done, self._asking = self._asking, ""
+            self.pill_win.set_pill("ask_done", {"id": done})
+
+    def answer_request(self, esc_id: str, verdict: str) -> None:
+        """A tap on Allow or Don't allow: the user's own answer, delivered the
+        same way a spoken one is."""
+        if verdict not in ("allow", "deny"):
+            return
+        from core import escalations
+        esc = escalations.find(esc_id)
+        if esc is None:
+            self._ask_sig.emit()
+            return
+
+        def _work():
+            from actions.swarm_orchestrator import deliver_verdict
+            print(f"[island] {deliver_verdict(esc, verdict, by='tap')}")
+        threading.Thread(target=_work, daemon=True, name="island-answer").start()
 
     def show_notice(self, text: str, action: str = "") -> None:
         """One line on the island until the next state change replaces it.

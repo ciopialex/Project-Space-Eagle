@@ -3459,8 +3459,15 @@ class AethelarkLive:
         loop, session = self._loop, self.session
         if loop is None or session is None:
             return
+        if getattr(esc, "kind", "") == "resolved":
+            if getattr(esc, "by", "") == "tap":
+                said = "allowed it" if esc.reason == "allow" else "refused it"
+                asyncio.run_coroutine_threadsafe(session.send_client_content(
+                    turns={"parts": [{"text": f"[ISLAND] The user {said} on the island for "
+                                              f"{esc.agent}. Do not ask about it again."}]},
+                    turn_complete=False), loop)
+            return
         self._unprompted_turn = True
-        notice = getattr(self.ui, "show_notice", None)
         if getattr(esc, "kind", "") == "done":
             text = (f"[DONE] {esc.agent} {esc.reason} Tell the user in one or "
                     f"two short sentences what it did.")
@@ -3471,9 +3478,8 @@ class AethelarkLive:
             text = (f"[HELD] {esc.agent} is waiting for the user's OK. Why: "
                     f"{esc.reason}. It asks: {esc.excerpt}. Tell the user in one "
                     f"short sentence and ask whether to allow it. If they say yes, "
-                    f"call swarm_mode with action authorize; if no, action deny.")
-            if notice:
-                notice(f"{esc.agent} needs your OK")
+                    f"call swarm_mode with action authorize; if no, action deny. "
+                    f"The island also shows Allow and Don't allow buttons.")
         asyncio.run_coroutine_threadsafe(
             session.send_client_content(turns={"parts": [{"text": text}]},
                                         turn_complete=True), loop)

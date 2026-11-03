@@ -112,3 +112,22 @@ def test_a_closed_conversation_is_resumed_only_while_claude_still_has_it(tmp_pat
     (tmp_path / "claude" / "projects" / "-x" / f"{sid}.jsonl").write_text("{}")
     assert A.saved_conversation("claude_code", tmp_path) == sid
     assert A.session_argv("claude_code", cwd=tmp_path, resume=sid)[-2:] == ["--resume", sid]
+
+
+def test_a_tap_on_the_island_answers_the_agent(tmp_path):
+    from types import SimpleNamespace
+    import aethelark_web
+    s, results = _session(tmp_path, "rm -rf build")
+    resolved = []
+    listen = lambda e: getattr(e, "kind", "") == "resolved" and resolved.append(e)  # noqa: E731
+    escalations.add_listener(listen)
+    try:
+        assert _wait(lambda: escalations.pending())
+        esc = escalations.oldest()
+        aethelark_web.WebShellUI.answer_request(SimpleNamespace(), esc.id, "allow")
+        assert _wait(lambda: results)
+        assert results[0].text == "allow"
+        assert resolved and resolved[-1].by == "tap", "the voice model is told it was answered"
+    finally:
+        escalations._LISTENERS.remove(listen)
+        s.close()

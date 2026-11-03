@@ -98,7 +98,7 @@ From `GEOM` in `web/pill.html`. Rules for the state machine are in `CLAUDE.md`.
 
 | state | size | `set_pill` from Python | `_go` inside the page |
 |---|---|---|---|
-| `idle` | 168×46 | 0 | 8 |
+| `idle` | 168×46 | 0 | 9 |
 | `activity` | 320×62 | 0 | 0 |
 | `listening` | 320×62 | 0 | 1 |
 | `thinking` | 320×62 | 0 | 1 |
@@ -107,8 +107,11 @@ From `GEOM` in `web/pill.html`. Rules for the state machine are in `CLAUDE.md`.
 | `ready` | 320×62 | 3 | 0 |
 | `capsule` | 320×62 | 0 | 0 |
 | `notice` | 320×52 | 2 | 0 |
+| `ask` | 420×132 | 1 | 1 |
 | `glance` | 440×236 | 0 | 2 |
 | `expanded` | 440×364 | 0 | 2 |
+
+Set from Python but not in `GEOM`: `ask_done`
 
 The voice-loop states reach the island through `WebShellUI._pill_state`; module cards through `set_pill_context`.
 
@@ -210,6 +213,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | slot | called by the page |
 |---|---|
 | `expand` | yes |
+| `answer_request` | yes |
 | `interrupt` | yes |
 | `open_key_settings` | yes |
 | `request_depth` | yes |

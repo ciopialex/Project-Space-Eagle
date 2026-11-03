@@ -962,6 +962,30 @@ def _derive_project_dir(goal: str) -> Path | None:
     return _ACTIVE_PROJECT
 
 
+def deliver_verdict(esc, verdict: str, by: str = "human") -> str:
+    """Resolve a held request and get the answer to the agent. The caller has
+    already established that the verdict is the user's."""
+    from core import escalations
+    escalations.resolve(esc.id, verdict, by=by)
+    if esc.on_resolve is not None:
+        if verdict == "deny":
+            return (f"Refused. {esc.agent} was told no and carries on "
+                    f"without it. Tell the user in one short sentence.")
+        return (f"Allowed. {esc.agent} goes ahead. Tell the user in one "
+                f"short sentence.")
+    if verdict == "deny":
+        return (f"Denied. {esc.agent} stays blocked on that prompt — "
+                f"tell it what to do instead, or stop the swarm.")
+    # A terminal agent: its watcher does the typing.
+    for (_key, _sdir), sess in POOL.all_sessions().items():
+        w = getattr(sess, "watcher", None)
+        if w is not None and getattr(w, "agent_name", "") == esc.agent:
+            if w.authorize_pending():
+                return f"Authorized — told {esc.agent} to go ahead."
+            return f"{esc.agent} is no longer running; nothing to authorize."
+    return f"Couldn't find a live session for {esc.agent}."
+
+
 def _answer_without_project(action: str, parameters: dict) -> str:
     """Actions about agents that are already running, wherever they run."""
     if action in ("authorize", "deny"):
@@ -979,24 +1003,7 @@ def _answer_without_project(action: str, parameters: dict) -> str:
                 return (f"Not allowed yet: the user has not said yes since "
                         f"{esc.agent} asked. Ask them out loud and wait for "
                         f"their answer.")
-        escalations.resolve(esc.id, verdict)
-        if esc.on_resolve is not None:
-            if verdict == "deny":
-                return (f"Refused. {esc.agent} was told no and carries on "
-                        f"without it. Tell the user in one short sentence.")
-            return (f"Allowed. {esc.agent} goes ahead. Tell the user in one "
-                    f"short sentence.")
-        if verdict == "deny":
-            return (f"Denied. {esc.agent} stays blocked on that prompt — "
-                    f"tell it what to do instead, or stop the swarm.")
-        # A terminal agent: its watcher does the typing.
-        for (_key, _sdir), sess in POOL.all_sessions().items():
-            w = getattr(sess, "watcher", None)
-            if w is not None and getattr(w, "agent_name", "") == esc.agent:
-                if w.authorize_pending():
-                    return f"Authorized — told {esc.agent} to go ahead."
-                return f"{esc.agent} is no longer running; nothing to authorize."
-        return f"Couldn't find a live session for {esc.agent}."
+        return deliver_verdict(esc, verdict)
 
     if action in ("kill_all", "panic"):
         return halt_all()

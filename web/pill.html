@@ -128,6 +128,20 @@ html,body{background:transparent !important;width:100%;height:100%;overflow:hidd
 @keyframes rdraw{to{stroke-dashoffset:0}}
 @keyframes rrise{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @keyframes rglow{0%{box-shadow:0 0 0 0 rgba(52,211,153,.0)}35%{box-shadow:0 0 0 6px rgba(52,211,153,.18)}100%{box-shadow:0 0 0 14px rgba(52,211,153,0)}}
+.pill[data-stage="ask"]{flex-direction:column;align-items:stretch;padding:14px;border-radius:32px;gap:0;cursor:default;corner-shape:squircle}
+.pill[data-stage="ask"] #pbody{width:100%;height:100%}
+.pill[data-stage="ask"] .pmark{display:none}
+.pask{flex:1;display:flex;flex-direction:column;min-width:0;gap:3px}
+.pask .hd{display:flex;align-items:center;gap:8px;font-size:11.5px;font-weight:600;letter-spacing:.01em;color:var(--muted)}
+.pask .hd i{width:7px;height:7px;border-radius:50%;flex:none;background:var(--amber);box-shadow:0 0 8px var(--amber);animation:pulse 1.6s ease-in-out infinite}
+.pask .what{font-size:13.5px;font-weight:600;color:var(--silver-hi);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pask .cmd{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:14px}
+.pask .btns{margin-top:auto;display:flex;gap:10px}
+.pask button{flex:1;height:36px;border-radius:18px;corner-shape:squircle;border:0;font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:transform .18s var(--spring),opacity .2s ease}
+.pask button.no{background:rgba(255,255,255,.08);color:var(--silver-hi);box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}
+.pask button.yes{background:linear-gradient(180deg,#F4F4F8,#C9C9D1);color:#0B0B0E;box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}
+.pask button:active{transform:scale(.97)}
+.pask button:disabled{opacity:.45;cursor:default;transform:none}
 .pnote{flex:1;font-size:12.5px;font-weight:600;letter-spacing:.01em;color:var(--amber);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pact{flex:1;display:flex;align-items:center;gap:10px;min-width:0}
 .pact .lead{flex:1;min-width:0;font-size:13px;font-weight:700;letter-spacing:.02em;color:var(--silver-hi);
@@ -1438,6 +1452,17 @@ window.pill = {
         "<span class=\"rt\">" + escapeHtml((data && data.label) || "Ready") + "</span></span>";
       body.style.cssText = "flex:1;display:flex;align-items:center";
       pill.setAttribute("data-ready", "1");
+    } else if (state === "ask") {
+      if (icon) icon.style.display = "none";
+      body.innerHTML = "<div class=\"pask\"><div class=\"hd\"><i></i><span class=\"who\"></span></div>" +
+        "<div class=\"what\"></div><div class=\"cmd\"></div>" +
+        "<div class=\"btns\"><button class=\"no\" data-answer=\"deny\">Don\u2019t allow</button>" +
+        "<button class=\"yes\" data-answer=\"allow\">Allow</button></div></div>";
+      body.querySelector(".who").textContent = ((data && data.agent) || "An agent") + " wants to";
+      body.querySelector(".what").textContent = (data && (data.what || data.command)) || "";
+      body.querySelector(".cmd").textContent =
+        (data && data.command && data.command !== data.what) ? data.command : ((data && data.why) || "");
+      body.style.cssText = "flex:1;display:flex;width:100%";
     } else if (state === "notice") {
       body.innerHTML = "<span class=\"pnote\">" + escapeHtml((data && data.text) || "") + "</span>";
       body.style.cssText = "flex:1;display:flex;align-items:center";
@@ -1911,7 +1936,7 @@ window.island = (function(){
   var REST = [168, 46];
   var GEOM = {
     idle: REST, activity: CAPSULE, listening: CAPSULE, thinking: CAPSULE, speaking: CAPSULE,
-    swarm: CAPSULE, ready: CAPSULE, capsule: CAPSULE, notice: [320, 52],
+    swarm: CAPSULE, ready: CAPSULE, capsule: CAPSULE, notice: [320, 52], ask: [420, 132],
     glance: [440, 236], expanded: [440, 364]
   };
   var CAPSULE_STATES = {idle:1, activity:1, listening:1, thinking:1, speaking:1, swarm:1, ready:1, capsule:1, notice:1};
@@ -2278,6 +2303,40 @@ window.island = (function(){
 
     apply: function(state, data){
       if (state === "idle") this._restData = data || {};
+      /* An agent is blocked until the user answers, so a request outranks
+         everything. Voice keeps moving the live dot; anything else that
+         arrives meanwhile is replayed once the request is answered. */
+      if (state === "ask") {
+        if (this.state !== "ask") {
+          this._beforeAsk = hasAnswer(this)
+            ? {state: this.state, data: this._data, module: this.module} : null;
+          this._afterAsk = null;
+        }
+        this._ask = data || {};
+        this.module = null;
+        this._clearTtl();
+        return this._go("ask", this._ask);
+      }
+      if (state === "ask_done") {
+        if (!this._ask || (data && data.id && data.id !== this._ask.id)) return;
+        this._ask = null;
+        var later = this._afterAsk, before = this._beforeAsk;
+        this._afterAsk = this._beforeAsk = null;
+        this.state = "idle";
+        if (later) return this.apply(later[0], later[1]);
+        if (before) {
+          this.module = before.module;
+          this._data = before.data;
+          this._go(before.state, before.data, before.module);
+          return this._armTtl();
+        }
+        return this._go("idle", this._restData);
+      }
+      if (this.state === "ask") {
+        if (VOICE_STATES[state]) return this.setVoice(state);
+        this._afterAsk = [state, data];
+        return;
+      }
       if (state === "ready") {
         /* Said once. The swarm re-sends its "ready" every couple of seconds
            while a finished mission sits on the board; replaying the moment on
@@ -2466,6 +2525,7 @@ window.island = (function(){
             }
             return;
           }
+          if (this.state === "ask") return;
           if (this.state === "notice") {
             if (this._noticeAction === "key" && window.pybridge && window.pybridge.open_key_settings) {
               window.pybridge.open_key_settings();
@@ -2707,7 +2767,8 @@ window.island = (function(){
 
       var pill = document.getElementById("pill");
       var icon = document.getElementById("picon");
-      var stageAttr = state === "glance" ? "glance" : (state === "expanded" ? "expanded" : "capsule");
+      var stageAttr = state === "glance" ? "glance" : (state === "expanded" ? "expanded"
+                    : (state === "ask" ? "ask" : "capsule"));
       pill.setAttribute("data-stage", stageAttr);
 
       /* `_awaitingDepth` was set, extended and cleared correctly and never
@@ -3134,6 +3195,18 @@ window.island = (function(){
     // assignment instead.
     // Clamped at both ends, and the arrow says so rather than looking alive
     // and doing nothing. Stops here: paging is not a request to pick.
+    var answer = e.target.closest(".pask [data-answer]");
+    if (answer) {
+      e.stopPropagation();
+      if (window.__pillDragged || answer.disabled) return;
+      var ask = window.island._ask || {};
+      answer.parentNode.querySelectorAll("button").forEach(function(b){ b.disabled = true; });
+      answer.textContent = answer.getAttribute("data-answer") === "allow" ? "Allowing\u2026" : "Refusing\u2026";
+      if (ask.id && window.pybridge && window.pybridge.answer_request) {
+        window.pybridge.answer_request(ask.id, answer.getAttribute("data-answer"));
+      }
+      return;
+    }
     var act = e.target.closest("[data-action]");
     if (act && window.island.module) {
       window.island.cardAction(act);
