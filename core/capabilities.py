@@ -1,28 +1,16 @@
-"""What Aethelark can do, as data rather than prose.
+"""What Aethelark can do, as data: what exists and what each thing costs. Not a
+router; the model chooses.
 
-This is the thing an intent decoder decodes against (see
-`docs/Aethelark_Intent_Layer.md`). It is deliberately NOT a router: it says what
-exists and what each thing costs, and leaves the choosing to the model.
-
-Split of responsibilities, on purpose:
-
-  * hand-written, because no machine can infer it — what a person might SAY,
-    and whether an action can be taken back.
-  * checked against the code, because hand-written lists drift — that the tool
-    exists, that the action is really dispatched.
+Hand-written: what a person might say, and whether an action can be undone.
+Checked against the code: that the tool exists and the action is dispatched.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 
-#: Can this be undone?
-#:
-#: The distinction the whole safety story hangs on. READ_ONLY work may be
-#: started on a guess: a wrong prediction costs a page load nobody sees.
-#: IRREVERSIBLE work may never be, however confident the guess — that is the
-#: line `actions/grounding/web/consent.py` already enforces for clicks, stated
-#: here for everything.
+# Can this be undone? READ_ONLY work may start on a guess; IRREVERSIBLE work never may
+# (consent.py enforces the same line for clicks).
 READ_ONLY = "read_only"        # looking. Costs time, changes nothing.
 REVERSIBLE = "reversible"      # changes something the user can undo.
 IRREVERSIBLE = "irreversible"  # spends money, deletes data, sends to a person.
@@ -36,19 +24,16 @@ class Capability:
     id: str
     tool: str
     action: str
-    #: Fragments a person might actually say. Matched as substrings against a
-    #: normalised utterance — deliberately dumb, because a fast wrong-ish
-    #: hypothesis that only ever pre-warms is cheaper than an inference call.
+    # Fragments a person might say, matched as substrings against a normalised
+    # utterance.
     says: tuple[str, ...]
     effect: str
-    #: Parameters the tool cannot work without. The decoder uses these to know
-    #: whether it has enough to act, or only enough to prepare.
+    # Parameters the tool cannot work without.
     slots: tuple[str, ...] = ()
-    #: Preconditions in plain words — "the browser", "a signed-in session".
-    #: Not enforced here; this is what a diagnostic reads to explain a refusal.
+    # Preconditions in plain words, for diagnostics. Not enforced here.
     needs: tuple[str, ...] = ()
-    #: May the intent layer begin this before the model has committed?
-    #: Only ever true for READ_ONLY, asserted by the test suite.
+    # May the intent layer begin this before the model commits? Only READ_ONLY (asserted
+    # by tests).
     speculative: bool = False
 
 
@@ -251,15 +236,13 @@ CATALOGUE: tuple[Capability, ...] = (
 
 
 def speculatable() -> tuple[Capability, ...]:
-    """Capabilities the intent layer may begin before the model commits.
-
-    Never anything that changes the world. A wrong guess here costs a page
-    load nobody sees; a wrong guess on the other side spends money.
+    """Capabilities the intent layer may begin before the model commits. Never
+    anything that changes the world.
     """
     return tuple(c for c in CATALOGUE if c.speculative)
 
 
-#: A real domain, on the UNNORMALISED text.
+# A real domain, on the unnormalised text.
 _DOMAIN = re.compile(
     r"\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*"
     r"\.(?:com|ro|net|org|io|dev|app|co|uk|de|fr|es|it|eu|shop|store)\b",
@@ -267,8 +250,7 @@ _DOMAIN = re.compile(
 
 
 def mentions_a_site(text: str) -> bool:
-    """Does this actually name a website, as opposed to containing a TLD's
-    letters somewhere inside an ordinary word?"""
+    """Does this name a website, rather than contain a TLD's letters inside a word?"""
     return bool(_DOMAIN.search(text or ""))
 
 
@@ -277,13 +259,8 @@ def _normalise(text: str) -> str:
 
 
 def find_by_phrase(utterance: str) -> Capability | None:
-    """The most specific capability an utterance mentions, or None.
-
-    None is a real answer and the common one: it means "let the model decide",
-    which is today's behaviour. A decoder that always answers is a decoder that
-    is often wrong, and this one only ever gets to pre-warm on its guess.
-
-    Longest phrase wins, so "liked videos" beats a bare "video".
+    """The most specific capability an utterance mentions, or None (the model
+    decides). Longest phrase wins.
     """
     text = _normalise(utterance)
     if not text.strip():
@@ -303,20 +280,9 @@ def find_by_phrase(utterance: str) -> Capability | None:
 
 
 def prewarm_for(utterance: str) -> tuple[Capability, ...]:
-    """Every safe piece of work an utterance implies, not just the best match.
-
-    `find_by_phrase` answers "what is this person asking for" and returns one
-    thing. Speculation needs a different question: "what read-only work is
-    already implied here", because the commonest request shape is navigate
-    THEN act — "go to emag.ro and search for headphones" resolves to a type,
-    which is reversible and may not be started on a guess, while the opening
-    of the site is read-only and obviously wanted.
-
-    Asking only the first question meant the commonest shape never pre-warmed
-    at all. Found by running it on real sentences rather than reading it.
-
-    Returns only READ_ONLY, speculative capabilities. The filter is here rather
-    than at the call site so a future caller cannot forget it.
+    """Every read-only piece of work an utterance implies, not just the best match:
+    "go to emag.ro and search for headphones" is a type (not speculative) after an
+    open (speculative). Filtered to READ_ONLY here so no caller can forget.
     """
     text = _normalise(utterance)
     if not text.strip():
@@ -338,12 +304,7 @@ def prewarm_for(utterance: str) -> tuple[Capability, ...]:
 
 
 def coverage() -> float:
-    """Share of declared tools that have at least one catalogued capability.
-
-    Stated so nobody mistakes this for finished. It should rise deliberately,
-    entry by entry, rather than be discovered as a gap later — which is exactly
-    how 59 actions went missing.
-    """
+    """Share of declared tools with at least one catalogued capability."""
     try:
         import main
         declared = {d["name"] for d in main.TOOL_DECLARATIONS if isinstance(d, dict)}

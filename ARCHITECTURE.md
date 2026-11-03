@@ -327,7 +327,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `actions/send_message.py` |  |
 | `actions/swarm_orchestrator.py` | Swarm orchestrator: one git worktree per agent |
 | `actions/swarm_reviewer.py` | Reviewer: verification and merging of swarm branches, off the voice loop. |
-| `actions/swarm_sentinel.py` | Self-healing sentinel: stall detection, nudges, and fallback re-delegation. |
+| `actions/swarm_sentinel.py` | Self-healing for swarm agents: a session whose activity stops is nudged once; if |
 | `actions/system_monitor.py` | System metrics behind a cache with a TTL: a process that never asks pays nothing, |
 | `actions/visual_verifier.py` | Autonomous visual web verification (Playwright coupling). |
 | `actions/weather_report.py` | The weather, said out loud. |
@@ -347,8 +347,8 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/agent_session.py` | A live coding-agent session spoken to in JSON instead of a terminal. |
 | `core/agent_stream.py` | Drive a coding-agent CLI as a typed event stream instead of scraping a terminal |
 | `core/ambient.py` | What a module says when nobody asked it anything: a first layer that adhered, a |
-| `core/barge_in.py` | The user talking over the eagle: hearing it without hearing the eagle itself. |
-| `core/capabilities.py` | What Aethelark can do, as data rather than prose. |
+| `core/barge_in.py` | Hearing the user talk over the eagle without hearing the eagle itself. |
+| `core/capabilities.py` | What Aethelark can do, as data: what exists and what each thing costs. Not a |
 | `core/capability/agents.py` | What can already do work on this machine? |
 | `core/capability/identity.py` | What to call an agent, given how it is actually running. |
 | `core/capability/keys.py` | Which model providers can this machine actually reach? |
@@ -359,7 +359,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/contact_aliases.py` |  |
 | `core/contact_match.py` |  |
 | `core/diag.py` | Terminal output that says what failed and why. |
-| `core/doctor.py` | What is missing, on THIS machine, and the exact command that fixes it. |
+| `core/doctor.py` | What is missing on this machine, and the exact command that fixes it. |
 | `core/echo_cancel.py` | Echo cancellation, so the microphone stops hearing the speakers. |
 | `core/escalations.py` | Where held prompts go. |
 | `core/gemini_key.py` | Is this Gemini key one Google will accept? Asked before it is saved. |

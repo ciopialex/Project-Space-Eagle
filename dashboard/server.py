@@ -1,9 +1,6 @@
-"""Clean, authenticated FastAPI and WebSocket server for Space-Eagle Dashboard.
-
-Decoupled architecture:
-  - OS firewall manipulation handled by dashboard.netaccess.
-  - Authenticated Encrypt-then-MAC session encryption handled by dashboard.crypto.
-  - Rate-limited pairing credentials, bounded token lifecycles, and path-contained uploads.
+"""Authenticated FastAPI and WebSocket server for the phone dashboard. Firewall
+changes in dashboard.netaccess; session encryption in dashboard.crypto; rate-
+limited pairing, bounded tokens, contained uploads.
 """
 from __future__ import annotations
 
@@ -31,8 +28,7 @@ from dashboard import netaccess
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-#: The user's data, never the app checkout: an update resets the checkout, and
-#: what a phone sends is the user's, like everything else in this directory.
+# The user's data dir, never the app checkout.
 UPLOADS_DIR = user_paths.user_data_dir() / "uploads"
 CERT_DIR = user_paths.user_data_dir() / "certs"
 CERT_KEY = CERT_DIR / "dashboard.key"
@@ -40,13 +36,8 @@ CERT_FILE = CERT_DIR / "dashboard.crt"
 
 
 def ensure_certificate() -> bool:
-    """A private certificate for this machine, made once. True when it exists.
-
-    The dashboard served plain HTTP on every network interface. Its commands
-    are encrypted with a per-pairing secret -- and that secret reached the
-    phone in the login response, in the clear, so anyone on the same network
-    who saw the pairing could read everything after it. Self-signed, so the
-    phone warns once; after that the pairing itself is protected.
+    """A private self-signed certificate for this machine, made once, so the pairing
+    secret never crosses the network in the clear. True when it exists.
     """
     if CERT_KEY.is_file() and CERT_FILE.is_file():
         return True
@@ -129,7 +120,7 @@ class _Sessions:
 
     def cap(self) -> None:
         if len(self._tokens) > self.max_tokens:
-            # Sort by expiry and keep only the latest max_tokens
+            # Keep only the latest max_tokens by expiry.
             sorted_tokens = sorted(self._tokens.items(), key=lambda item: item[1], reverse=True)[:self.max_tokens]
             self._tokens = dict(sorted_tokens)
             self._token_secrets = {t: s for t, s in self._token_secrets.items() if t in self._tokens}
@@ -195,17 +186,8 @@ class _RateLimiter:
         self._last_sweep = 0.0
 
     def _sweep(self, now: float) -> None:
-        """Forget IPs whose attempts have all aged out.
-
-        Every distinct peer used to leave a permanent entry: the lookup was on
-        a defaultdict, so merely READING an unknown IP created one. This server
-        binds 0.0.0.0 and opens the firewall for itself, so on any network with
-        scanners on it the table grew for the life of the process and nothing
-        ever removed a key.
-
-        Gating the WebSocket handshakes made that worse rather than better —
-        the limiter is now reached by unauthenticated peers, which is the point
-        of it, so it has to be bounded.
+        """Forget IPs whose attempts have all aged out, so the table stays bounded
+        against scanners.
         """
         self._last_sweep = now
         fresh = {}
@@ -318,7 +300,6 @@ class DashboardServer:
         return None
 
     def _require_auth(self, request: Request, auth_header: Optional[str] = None, query_token: Optional[str] = None) -> str:
-        # Check instance-level monkeypatched TTL
         self._sessions.token_ttl = self.TOKEN_TTL
         self._sessions.max_tokens = self.MAX_TOKENS
 
@@ -330,16 +311,9 @@ class DashboardServer:
         return tok
 
     def _authorise_ws(self, ws: WebSocket) -> bool:
-        """The same gate every HTTP route has, for the two that had none.
-
-        A browser cannot set headers on a WebSocket handshake, so the token
-        travels in the query string. That is not a weakening: `/uploads/`
-        already accepts `?token=` for the same reason, and the handshake is a
-        real HTTP GET carrying a real session token either way.
-
-        Rate limited on the same limiter as /login and keyed on the TCP peer,
-        because an unauthenticated socket is otherwise a free oracle for
-        guessing tokens as fast as the machine will answer.
+        """The HTTP routes' gate, for the WebSocket handshakes. Browsers cannot set
+        headers there, so the token is in the query string (as /uploads/ does).
+        Rate limited per TCP peer.
         """
         self._sessions.token_ttl = self.TOKEN_TTL
         self._sessions.max_tokens = self.MAX_TOKENS
@@ -406,17 +380,8 @@ class DashboardServer:
 
         @app.get("/auto-login", response_class=HTMLResponse)
         async def auto_login(req: Request, key: str = Query("")):
-            # Same limiter as /login, because this is the same secret.
-            # /login guarded `redeem_key` and this did not, so one of the two
-            # doors to a 31^6 pairing key answered as fast as the machine
-            # could — and this is the door that pays better, since it issues a
-            # device token and `redeem_device` has no expiry at all.
-            #
-            # Measured before fixing: 2031 guesses/s against a key that lives
-            # 300 s, so ~609k of 887,503,681 per pairing window — about 0.07%,
-            # not a practical break on its own. Closed because it costs one
-            # line and because the module docstring claims "rate-limited
-            # pairing credentials", which was true of only one route.
+            # Same limiter as /login: same secret, and this route issues a non-expiring
+            # device token.
             client_ip = req.client.host if req.client else "127.0.0.1"
             if not self._limiter.allow(client_ip):
                 raise HTTPException(status_code=429, detail="Too many attempts. Please wait.")
@@ -562,13 +527,12 @@ window.location.href = '/';
             uploads_root = self._uploads_dir.resolve()
             target = (self._uploads_dir / filename).resolve()
 
-            # Enforce path containment and reject symlink escapes
+            # Path containment, and no symlink escapes.
             try:
                 target.relative_to(uploads_root)
             except ValueError:
                 raise HTTPException(status_code=404, detail="File not found")
 
-            # Check if target is a symlink pointing outside uploads_root
             if target.is_symlink() or (self._uploads_dir / filename).is_symlink():
                 real_target = (self._uploads_dir / filename).resolve()
                 try:
@@ -611,13 +575,8 @@ window.location.href = '/';
 
         @app.get("/static/fonts/{fontname}")
         async def get_static_font(fontname: str):
-            # Contained the same way /uploads/ is. Today the router alone
-            # stops a traversal here — a path parameter does not match "/",
-            # and encoded slashes are decoded before matching, so `../` never
-            # survives to reach the join. Measured: every payload 404s.
-            #
-            # That is a property of the router, not of this route, and this
-            # route is unauthenticated. It sits two directories above
+            # Contained like /uploads/. The router already rejects traversal here, but
+            # the route is unauthenticated and sits two directories above
             # config/api_keys.json.
             fonts_root = (STATIC_DIR / "fonts").resolve()
             font_file = (STATIC_DIR / "fonts" / fontname).resolve()
@@ -648,15 +607,14 @@ window.location.href = '/';
 
         @app.websocket("/ws")
         async def websocket_endpoint(ws: WebSocket):
-            # Refused before accept(), so an unauthorised peer is never sent
-            # the buffered history and never gets to speak into the queue.
+            # Refused before accept(), so an unauthorised peer gets no history and
+            # cannot speak.
             if not self._authorise_ws(ws):
                 await ws.close(code=1008)
                 return
             await ws.accept()
             self._clients.add(ws)
             try:
-                # Send buffered history
                 for msg in list(self._history):
                     await ws.send_json(msg)
 
