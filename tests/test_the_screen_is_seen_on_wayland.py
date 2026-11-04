@@ -75,3 +75,30 @@ def test_on_wayland_the_windows_go_through_xwayland_so_the_pill_stays_on_top(mon
     assert not _windows_through_x11(no_xwayland) and "QT_QPA_PLATFORM" not in no_xwayland
     x11 = {"DISPLAY": ":0"}
     assert not _windows_through_x11(x11) and "QT_QPA_PLATFORM" not in x11
+
+
+def test_take_a_screenshot_saves_the_real_picture_in_pictures(monkeypatch, tmp_path):
+    """It used to start scrot, which on Wayland saves a black frame, and said only
+    "Done"."""
+    from actions import computer_settings as cs
+    monkeypatch.setattr(cs, "_OS", "Linux")
+    monkeypatch.setattr(cs, "_pictures_dir", lambda: tmp_path)
+    monkeypatch.setattr(screen_grab, "grab", lambda: Image.new("RGB", (32, 20), (10, 200, 30)))
+    result = cs.take_screenshot()
+    saved = list(tmp_path.glob("Screenshot *.png"))
+    assert result.ok and len(saved) == 1
+    assert Image.open(saved[0]).getpixel((3, 3)) == (10, 200, 30)
+    assert saved[0].name in str(result)
+
+
+def test_take_a_screenshot_says_why_when_it_cannot(monkeypatch, tmp_path):
+    from actions import computer_settings as cs
+    monkeypatch.setattr(cs, "_OS", "Linux")
+    monkeypatch.setattr(cs, "_pictures_dir", lambda: tmp_path)
+
+    def refused():
+        raise screen_grab.ScreenshotUnavailable(screen_grab.REFUSED)
+    monkeypatch.setattr(screen_grab, "grab", refused)
+    result = cs.take_screenshot()
+    assert not result.ok and "Settings" in str(result)
+    assert not list(tmp_path.iterdir())
