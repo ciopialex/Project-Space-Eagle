@@ -97,7 +97,8 @@ class Page:
         x, y, enabled = self.wait(js, timeout, what=f"{selector!r} to be visible")
         # Windows open and cards morph with a spring: a click aimed while it moves
         # lands where the element was. Wait until it holds still.
-        end, last = time.monotonic() + timeout, None
+        # Capped: some things never hold still (a speaking pill pulses with the voice).
+        end, last = time.monotonic() + min(timeout, 1.5), None
         while (x, y) != last and time.monotonic() < end:
             last = (x, y)
             time.sleep(0.12)
