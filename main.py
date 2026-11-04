@@ -801,9 +801,10 @@ TOOL_DECLARATIONS = [
             "properties": {
                 "city": {"type": "STRING", "description": (
                     "City name. If the user did not say one, use the city "
-                    "you remember they live in.")}
+                    "you remember they live in. If you do not know it, leave "
+                    "this out: the computer's own city is used.")}
             },
-            "required": ["city"]
+            "required": []
         }
     },
     {

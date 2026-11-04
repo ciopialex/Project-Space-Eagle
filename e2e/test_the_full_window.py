@@ -140,3 +140,16 @@ def test_quit_in_settings_closes_the_eagle(launch):
     except Exception:
         pass                              # the page may close under the click
     wait_for(lambda: sb.proc.poll() is not None, 15, "the eagle to exit")
+
+
+def test_the_weather_suggestion_gets_the_weather(launch):
+    """Onboarding's first suggestion. A new user's city is not known yet; the
+    answer used to be "What city would you like the weather for?"."""
+    sb, eagle = launch()
+    wait_for(lambda: connections(sb) >= 1, 40, "the voice loop to connect\n" + log_tail(sb))
+    dash = open_full_window(eagle)
+    n = len(log_lines(eagle, "ae"))
+    dash.click("text=What's the weather like today?")
+    answer = wait_for(lambda: log_lines(eagle, "ae")[n:], 45, "an answer\n" + log_tail(sb))
+    assert "weather_report" in sb.log_path.read_text(errors="replace"), "the weather tool ran"
+    assert any(w in " ".join(answer).lower() for w in ("degree", "°")), answer

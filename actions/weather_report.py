@@ -57,8 +57,28 @@ def _first(daily: dict, key: str):
     return values[0] if values else None
 
 
+def zone_city(localtime: str = "/etc/localtime") -> str:
+    """The city in the computer's time zone ("Europe/Bucharest" -> "Bucharest").
+    Read from the disk, so where the user is never leaves the machine. Linux and
+    macOS link /etc/localtime into the zoneinfo tree; anything else gives ""."""
+    import os
+    try:
+        target = os.path.realpath(localtime)
+    except OSError:
+        return ""
+    _, sep, zone = target.partition("zoneinfo/")
+    if not sep or "/" not in zone or zone.startswith(("Etc/", "posix/", "right/")):
+        return ""
+    return zone.rsplit("/", 1)[1].replace("_", " ")
+
+
 def weather_action(parameters: dict, player=None, session_memory=None) -> ToolResult:
     city = str((parameters or {}).get("city") or "").strip()
+    # "What's the weather like today?" is the first thing onboarding suggests, and
+    # a new user's city is not known yet: the answer was a question back.
+    from_zone = not city
+    if from_zone:
+        city = zone_city()
     if not city:
         return ToolResult.failure(
             "No city was given.",
@@ -111,6 +131,9 @@ def weather_action(parameters: dict, player=None, session_memory=None) -> ToolRe
                              f"{', ' + condition if condition else ''}")
         except Exception:
             pass
+    if from_zone:
+        sentence += (f" That is {name}, from this computer's time zone; tell me "
+                     f"your city if you are somewhere else.")
     return ToolResult.success(
         sentence, city=name, country=place.get("country", ""), unit=unit,
         temperature=temp, feels_like=feels, condition=condition,
