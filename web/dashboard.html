@@ -1090,9 +1090,14 @@ draw();
 
     + '<div class="set-sec"><div class="lbl">Modules</div><div id="set-shop"></div></div>'
 
-    // Accounts only exist for Labs tools. Hidden otherwise: a button that
-    // cannot work for this person is worse than no button.
-    + '<div class="set-sec" id="set-accounts" style="display:none"><div class="lbl">Accounts · Labs</div>'
+    + '<div class="set-sec" id="set-chrome" style="display:none"><div class="lbl">Accounts</div>'
+    +   '<div class="set-row"><div class="ic">◎</div><div class="tt">'
+    +     '<div class="t">Your Chrome sign-ins <span class="set-badge off" id="set-ch-badge">OFF</span></div>'
+    +     '<div class="d" id="set-ch-d">Never sign in to a site twice.</div></div>'
+    +     '<button class="set-mini solid" id="set-ch-btn">Set up</button></div>'
+    + '</div>'
+
+    + '<div class="set-sec" id="set-accounts" style="display:none"><div class="lbl">More accounts · Labs</div>'
     +   '<div class="set-row"><div class="ic">G</div><div class="tt">'
     +     '<div class="t">Google <span class="set-badge off" id="set-g-badge">NOT LINKED</span></div>'
     +     '<div class="d" id="set-g-d">Email briefings need your account.</div></div>'
@@ -1107,7 +1112,7 @@ draw();
     +     '<button class="set-mini" id="set-yt-btn">Connect</button></div>'
     +   '<div class="set-row"><div class="ic">◉</div><div class="tt">'
     +     '<div class="t">Signed-in sites <span class="set-badge off" id="set-br-badge">NONE</span></div>'
-    +     '<div class="d" id="set-br-d">The eagle browses in its own window, so your usual browser logins do not carry over.</div></div>'
+    +     '<div class="d" id="set-br-d">Sites the eagle signed in to in its own window.</div></div>'
     +     '<button class="set-mini" id="set-br-btn">Sign in…</button></div>'
     + '</div>'
 
@@ -1235,10 +1240,31 @@ draw();
     shopMods = s.modules || [];
     renderShop();
 
+    var ch = (s.accounts || {}).chrome || {};
+    var chs = document.getElementById('set-chrome'),
+        chb = document.getElementById('set-ch-badge'),
+        chd = document.getElementById('set-ch-d'),
+        chn = document.getElementById('set-ch-btn'),
+        name = ch.browser || 'Chrome';
+    chs.style.display = (ch.state && ch.state !== 'none') ? '' : 'none';
+    var on = ch.state === 'ready' || ch.state === 'connected' || ch.state === 'closed';
+    chb.textContent = ch.state === 'connected' ? 'IN USE' : on ? 'ON' : 'OFF';
+    chb.className = on ? 'set-badge' : 'set-badge off';
+    chd.textContent = ch.state === 'connected' ? 'Working in your ' + name + ' now.'
+      : ch.state === 'ready' ? name + ' asks you to Allow once per session.'
+      : ch.state === 'closed' ? 'Open ' + name + ' to use your sign-ins.'
+      : 'Never sign in to a site twice.';
+    chn.textContent = on ? 'Turn off' : 'Set up';
+    chn.className = on ? 'set-mini' : 'set-mini solid';
+    chn.dataset.act = on ? 'off' : 'setup';
+
     document.getElementById('set-accounts').style.display = prefs.labs_tools_enabled ? '' : 'none';
     if (!prefs.labs_tools_enabled) return;
 
     var g = (s.accounts || {}).google || {};
+    var noClient = g.configured === false && !g.connected;
+    document.getElementById('set-g-btn').parentNode.style.display = noClient ? 'none' : '';
+    document.getElementById('set-yt-btn').parentNode.style.display = noClient ? 'none' : '';
     var gb = document.getElementById('set-g-badge'),
         gd = document.getElementById('set-g-d'),
         gbtn = document.getElementById('set-g-btn');
@@ -1323,6 +1349,11 @@ draw();
     document.getElementById('set-asst').addEventListener('keydown', function (e) { if (e.key === 'Enter') saveIdentity(); });
     document.getElementById('set-addr').addEventListener('keydown', function (e) { if (e.key === 'Enter') saveIdentity(); });
 
+    document.getElementById('set-ch-btn').onclick = function () {
+      if (!pb()) return;
+      if (this.dataset.act === 'off') pb().chrome_off();
+      else { this.textContent = 'Opening…'; pb().chrome_setup(); }
+    };
     document.getElementById('set-yt-btn').onclick = function () {
       this.textContent = 'Working…';
       if (pb() && pb().connect_youtube) pb().connect_youtube();

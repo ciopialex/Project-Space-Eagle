@@ -1,4 +1,3 @@
-#computer_control.py
 import io
 import json
 import platform
@@ -24,7 +23,9 @@ try:
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
-except ImportError:
+# Any failure, not only ImportError: on Linux the import opens the X display,
+# and on GNOME Wayland that raised and took the whole voice loop down with it.
+except Exception:
     _PYAUTOGUI = False
 
 try:
@@ -85,20 +86,15 @@ def _require_pyautogui():
 
 
 def _grab_screen():
-    """Cross-platform full-screen capture → PIL.Image.
-
-    Prefers mss — it grabs directly (X11 / Windows / macOS) with NO external
-    helper, unlike pyautogui.screenshot() which needs scrot or gnome-screenshot
-    on Linux (often missing, which silently broke screenshot/screen_find here).
-    Falls back to pyautogui only if mss is unavailable."""
+    """Full-screen capture as a PIL image (core.screen_grab: mss, or the screenshot
+    portal on Wayland); pyautogui, which needs scrot or gnome-screenshot on Linux,
+    if that fails some other way.
+    """
+    from core import screen_grab
     try:
-        import mss
-        from PIL import Image
-        with mss.mss() as sct:
-            mons   = sct.monitors
-            target = mons[1] if len(mons) > 1 else mons[0]
-            shot   = sct.grab(target)
-            return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+        return screen_grab.grab()
+    except screen_grab.ScreenshotUnavailable:
+        raise
     except Exception as e:
         print(f"[ComputerControl] mss capture failed ({e}); falling back to pyautogui")
         _require_pyautogui()
@@ -180,28 +176,17 @@ def _user_profile() -> dict:
     return {}
 
 
-# ── Waiting for an effect, not for a duration ──────────────────────────────
-# These replace `time.sleep(0.3)` after an action that either worked or did
-# not. A fixed pause is wrong in both directions: too short on a loaded
-# machine and the next keystroke lands in the wrong window, too long on an
-# idle one and it is pure delay. Worse, a sleep proves nothing - the code
-# below used to report "Focused window: X" whether or not focus ever moved.
+# Wait for an effect, not a duration: a fixed pause proves nothing.
 
-#: How long to keep checking before giving up on a window manager.
+# How long to keep checking a window manager.
 _FOCUS_TIMEOUT_S = 1.5
-#: Grace period when the desktop cannot be read at all (no xdotool, Wayland).
-#: Short, because it is a blind wait - the thing this module is moving away
-#: from - but not zero, because typing instantly into an unfocused window is
-#: the failure it is standing in for.
+# A blind grace period when the desktop cannot be read (no xdotool, Wayland).
 _BLIND_GRACE_S = 0.3
 
 
 def _active_window_title() -> str | None:
-    """The focused window's title, or None if this desktop will not say.
-
-    Wayland deliberately refuses; X11 answers via xdotool. None is a real
-    answer here and must not be confused with "no window focused" - one means
-    we cannot verify, the other means we failed.
+    """The focused window's title, or None if this desktop will not say (Wayland).
+    None means unverifiable, not unfocused.
     """
     try:
         out = subprocess.run(["xdotool", "getactivewindow", "getwindowname"],
@@ -215,11 +200,8 @@ def _active_window_title() -> str | None:
 
 def _await_focus(title: str, timeout: float = _FOCUS_TIMEOUT_S,
                  poll: float = 0.05):
-    """True once `title` holds focus, False on timeout, None if unverifiable.
-
-    Matched as a substring, case-insensitively: real titles carry suffixes
-    nobody asked for ("report.txt — gedit"), and an exact match would fail on
-    every window a person actually has open.
+    """True once `title` holds focus, False on timeout, None if unverifiable. Case-
+    insensitive substring: real titles carry suffixes.
     """
     wanted = (title or "").strip().lower()
     if not wanted:
@@ -244,10 +226,8 @@ def _clipboard_text() -> str | None:
 
 
 def _await_clipboard(text: str, timeout: float = 1.0, poll: float = 0.02) -> bool:
-    """True once the clipboard actually holds `text`.
-
-    Pasting before the copy lands puts the PREVIOUS clipboard contents into
-    somebody's document - silently, and usually into something that matters.
+    """True once the clipboard holds `text`: pasting earlier pastes the previous
+    contents.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -258,21 +238,15 @@ def _await_clipboard(text: str, timeout: float = 1.0, poll: float = 0.02) -> boo
 
 
 def _focus_result(title: str) -> ToolResult:
-    """What to report after asking a window manager to focus something.
-
-    Every platform branch used to `time.sleep(0.3)` and then return
-    "Focused window: X" unconditionally. If focus never moved - a wrong title,
-    a minimised window, a window manager that ignored the request - the eagle
-    said it had worked and every keystroke after it went somewhere else, with
-    nothing in the transcript to explain the damage.
+    """What to report after asking a window manager to focus something, based on
+    whether focus actually moved.
     """
     focused = _await_focus(title)
     if focused is True:
         return ToolResult.success(f"Focused window: {title}", window=title)
     if focused is None:
-        # A real third answer: Wayland refuses to say which window is focused.
-        # Flattening it either way would be a lie, so it is a failure with the
-        # uncertainty stated - the caller must not type into it blind.
+        # Wayland will not say: report the uncertainty as a failure, so the caller does
+        # not type blind.
         return ToolResult.failure(
             f"Asked the desktop to focus '{title}', but this system will not "
             "report which window is focused, so it is unverified.",
@@ -319,8 +293,7 @@ def _smart_type(text: str, clear_first: bool = True):
     if len(text) > 20 and _PYPERCLIP:
         pyperclip.copy(text)
         if not _await_clipboard(text):
-            # Fall back to typing rather than pasting whatever was there
-            # before. A wrong paste is silent and lands in the user's document.
+            # Type rather than paste stale clipboard contents.
             pyautogui.typewrite(text, interval=0.01)
             return f"Typed (clipboard did not take): {text[:60]}{'…' if len(text) > 60 else ''}"
         paste_key = "command" if _get_os() == "mac" else "ctrl"
@@ -340,9 +313,8 @@ def _click(x=None, y=None, button: str = "left", clicks: int = 1) -> str:
     return f"Clicked at current position [{button}]"
 
 
-#: Chords that destroy a window or an application. Everything else — copy,
-#: paste, select-all, undo — is harmless and must not be gated, or the tool
-#: becomes useless for the ordinary work it exists to do.
+# Chords that destroy a window or application. Copy, paste, select-all and undo are not
+# gated.
 _DESTRUCTIVE_CHORDS = frozenset({
     ("alt", "f4"), ("ctrl", "w"), ("ctrl", "q"), ("ctrl", "shift", "w"),
     ("command", "w"), ("command", "q"), ("cmd", "w"), ("cmd", "q"),
@@ -363,9 +335,7 @@ def _hotkey(*keys) -> str:
     _require_pyautogui()
     chord = tuple(str(k).lower() for k in keys)
     if frozenset({chord}) & _DESTRUCTIVE_CHORDS or chord in _DESTRUCTIVE_CHORDS:
-        # Same rule as close_window: an action that destroys something must
-        # name its target. Live, a blind close went for the user's terminal —
-        # the one running the session driving the eagle.
+        # A destructive chord must name its target (close_window's rule).
         try:
             where = _focused_window_name()
         except Exception:
@@ -423,8 +393,7 @@ def _drag(x1: int, y1: int, x2: int, y2: int, duration: float = 0.5) -> str:
 def _clipboard_get() -> str:
     if _PYPERCLIP:
         return pyperclip.paste()
-    # No reader available, so the copy cannot be confirmed. The pause is a
-    # blind one and labelled as such rather than dressed up as a result.
+    # No clipboard reader: the pause is blind and reported as such.
     _hotkey("ctrl", "c")
     time.sleep(_BLIND_GRACE_S)
     return "(copied — pyperclip unavailable for read)"
@@ -434,9 +403,7 @@ def _clipboard_paste(text: str) -> str:
     if not _PYPERCLIP:
         return "pyperclip not available"
     pyperclip.copy(text)
-    # Ctrl+V before the copy lands pastes whatever was in the clipboard
-    # BEFORE - silently, into whatever the user had open. Wait for the text
-    # to actually be there, and refuse rather than paste something else.
+    # Wait for the copy to land; refuse rather than paste something else.
     if not _await_clipboard(text):
         return ToolResult.failure(
             "Could not put that on the clipboard, so nothing was pasted.",
@@ -516,12 +483,8 @@ def _focus_window(title: str) -> str:
     return f"focus_window: unknown OS '{os_name}'"
 
 def _screen_find(description: str) -> tuple[int, int] | None:
-    """Locate a UI element on screen.
-
-    Delegates to the tiered resolver: remembered position, then the app's own
-    accessibility tree (local, exact, ~19ms), then a vision model as the last
-    resort. Signature is unchanged — callers do not need to know that grounding
-    got faster.
+    """Locate a UI element on screen: remembered position, then the app's
+    accessibility tree (~19 ms), then a vision model.
     """
     try:
         element = find_element(description)
@@ -543,13 +506,8 @@ def _grounding_deps():
 
 def _screen_click(description: str, intent: str = "click",
                   timeout: float = 5.0, force: bool = False) -> str:
-    """Click something on screen — waiting for it, then checking it worked.
-
-    Replaces a hardcoded 200ms sleep followed by an unconditional "Clicked"
-    claim. A person waits for the button to settle, notices if it's greyed
-    out or covered, clicks, and then glances at the screen. The result string
-    says what actually happened, because reporting success without looking is
-    the most common way an agent misleads its operator.
+    """Click something on screen, waiting for it first and checking afterwards; the
+    result says what actually happened.
     """
     if not description:
         return Failed("screen_click needs a 'description' of what to click.",
@@ -603,8 +561,7 @@ def _wait_for_element(description: str, intent: str = "click",
             f"{timeout:.0f}s — blocked on: {result.failed_check}.")
 
 
-#: Every action this tool implements, named once so the error
-#: messages cannot drift from what is actually dispatched below.
+# Every action this tool implements, named once so error messages match the dispatch.
 _ACTIONS = (
     "type", "smart_type", "click", "left_click", "double_click",
     "right_click", "move", "drag", "hotkey", "press", "scroll", "copy",
@@ -679,11 +636,8 @@ def computer_control(
 
     try:
         result = _dispatch_action(action, params, player)
-        # `settled`, not `normalize`: normalize withholds `ok` entirely, and
-        # that is what blocked a real mission — computer_control TYPED
-        # "laptop stand" and reported "tool gave no verdict", so the step was
-        # marked failed and the goal stopped. Every refusal in this module is
-        # marked `Failed` above, so an unmarked string here is a result.
+        # `settled`, not `normalize`: every refusal here is marked Failed, so an
+        # unmarked string is a result.
         return result if isinstance(result, ToolResult) else settled(result)
     except Exception as e:
         print(f"[ComputerControl] ❌ {action}: {e}")
@@ -694,12 +648,8 @@ def computer_control(
                       "same way."))
 
 
-
-#: Names the model reaches for that this tool does not use. `type_text` is
-#: what several other computer-use APIs call `type`, so the prior is strong —
-#: live, the model called it twice, was told the correct list both times, and
-#: called it again. Arguing with that prior is a decision that depends on how
-#: clever the model is; §0 of the roadmap says to move those into code.
+# Names the model reaches for that this tool does not use (`type_text` from other
+# computer-use APIs).
 _ACTION_ALIASES = {
     "type_text": "type", "write": "type", "write_text": "type",
     "enter_text": "type", "input_text": "type", "keyboard_type": "type",
@@ -710,9 +660,7 @@ _ACTION_ALIASES = {
     "screengrab": "screenshot", "capture": "screenshot",
 }
 
-#: Keys the model puts the text under. `type` reads `text`; the live call sent
-#: `{"action": "type_text", "value": "laptop stand"}` — so even with the action
-#: name corrected it would have typed an EMPTY STRING and reported success.
+# Keys the model puts the text under.
 _TEXT_KEYS = ("text", "value", "content", "string", "input")
 
 
@@ -731,8 +679,7 @@ def _dispatch_action(action: str, params: dict, player=None):
         if action in ("type", "smart_type"):
             text = _text_of(params)
             if not text:
-                # Typing nothing is not a successful type. This used to call
-                # _type("") and report "Typed: " as a success.
+                # Typing nothing is not a successful type.
                 return ToolResult.failure(
                     f"'{action}' was given no text to type.",
                     guidance="Call it again with the text under 'text'.")
@@ -850,8 +797,7 @@ def _dispatch_action(action: str, params: dict, player=None):
 
     except Exception as e:
         print(f"[ComputerControl] ❌ {action}: {e}")
-        # This used to return a string, which normalize turned into ok=True -
-        # a crash reported as success, by the tool that drives the keyboard.
+        # A crash is a failure.
         return ToolResult.failure(
             f"'{action}' failed: {e}",
             guidance=("Tell the user it did not work. Do NOT assume the "

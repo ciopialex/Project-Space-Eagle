@@ -70,8 +70,8 @@
   var CMD = {
     mac:   { c: 'curl -fsSL https://get.aethelark.com | bash', t: 'Terminal',
              h: 'Press <b>Cmd + Space</b>, type <b>Terminal</b> and hit Enter. Paste with <b>Cmd + V</b>. It takes about 10 minutes and opens by itself when it is done.' },
-    linux: { c: 'curl -fsSL https://get.aethelark.com | bash', t: 'a terminal',
-             h: 'Press <b>Ctrl + Alt + T</b>, paste with <b>Ctrl + Shift + V</b> and press Enter. It takes about 10 minutes. If your system is missing a library, Linux asks for your password once.' },
+    linux: { c: '(curl -fsSL https://get.aethelark.com 2>/dev/null || wget -qO- https://get.aethelark.com) | bash', t: 'a terminal',
+             h: 'Press <b>Ctrl + Alt + T</b>, paste with <b>Ctrl + Shift + V</b> and press Enter. It takes a few minutes. If your system is missing a library, Linux asks for your password once.' },
     win:   { c: 'irm https://get.aethelark.com/install.ps1 | iex', t: 'PowerShell',
              h: 'Right-click <b>Start</b> &rarr; <b>Terminal</b> (or open <b>PowerShell</b>), paste with <b>Ctrl + V</b> and press Enter. <b>Windows is in beta</b> &mdash; it installs and starts in automated tests but has had little real-world use, so please tell us what breaks.' }
   };

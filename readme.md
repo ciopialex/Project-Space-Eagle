@@ -10,7 +10,7 @@ camera when you ask. It thinks with Google's Gemini, using your own free API key
 **macOS and Linux** (in a terminal):
 
 ```bash
-curl -fsSL https://get.aethelark.com | bash
+(curl -fsSL https://get.aethelark.com 2>/dev/null || wget -qO- https://get.aethelark.com) | bash
 ```
 
 **Windows** (in PowerShell):
@@ -21,15 +21,18 @@ irm https://get.aethelark.com/install.ps1 | iex
 
 It takes 5–15 minutes and needs no admin rights (Linux asks for your password
 once, to install system libraries). You don't need Python: the installer brings
-its own. When it finishes, the eagle opens and asks for a free Gemini key, your
-name, a microphone check, and which modules you want.
+its own. You need a microphone and about 3 GB of free disk. A Mac needs Apple's
+Command Line Tools; the installer says so if they are missing. When it finishes, the eagle opens and asks which modules you want, for a
+free Gemini key, and to hear your voice once.
 
 You get an app icon (Desktop and Start Menu on Windows, app menu and Desktop on
 Linux, Applications on macOS) and an `eagle` command in any terminal.
 
-**A free Gemini key:** go to [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey),
-sign in, choose *Create API key*, and paste it into the eagle's setup. Google's
-free tier is rate-limited, not billed; if the eagle goes quiet after heavy use,
+**A free Gemini key:** in setup, choose *Get my free key*. Google's key page
+opens in the Chrome profile you are signed in to; click *Create API key*, then
+*Copy*, and the eagle picks the key up from the clipboard and carries on. A key
+already set up on the computer for the Gemini CLI (`GEMINI_API_KEY`) is
+offered instead, once Google accepts it. Google's free tier is rate-limited, not billed; if the eagle goes quiet after heavy use,
 that is the limit, and it resets.
 
 ## Use
@@ -38,6 +41,12 @@ Click the icon or type `eagle`, then talk. `Esc` stops it mid-action.
 
 To keep it one keystroke away, bind `eagle` to a shortcut in your OS settings.
 Aethelark installs no global hotkey listener of its own.
+
+**Your Chrome sign-ins.** The eagle browses in its own hidden browser. When a
+site wants you signed in, it can open that site in your own Chrome (or Edge or
+Brave) instead, where you already are. Turn it on once in Settings → Accounts.
+Chrome asks you to *Allow* each time the eagle connects, and shows a bar while
+it is connected.
 
 ## Modules
 
@@ -62,9 +71,7 @@ version is ready.
 To uninstall: on Windows, Settings → Apps → Aethelark. On macOS and Linux:
 
 ```bash
-rm -rf ~/.aethelark ~/.local/bin/eagle
-rm -rf ~/Applications/Aethelark.app                                             # macOS
-rm -f ~/.local/share/applications/aethelark.desktop ~/Desktop/Aethelark.desktop # Linux
+eagle uninstall
 ```
 
 Your keys and memory are kept in a separate folder (below), so removing the app
@@ -81,6 +88,8 @@ doesn't erase your setup.
   when it is listening or speaking.
 - **Anything that speaks, pops up or listens unprompted is off until you turn it
   on.** The phone remote is off by default.
+- **It uses your Chrome only if you turn that on**, only for sites that need
+  your sign-in, and in a window of its own. Chrome asks you each time.
 - An installed copy keeps no log files.
 - Tools that need the internet contact those services directly (Google, YouTube,
   weather, web search). Installing and updating fetch from GitHub.

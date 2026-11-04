@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import threading
 import time
@@ -31,18 +32,47 @@ TTL_S = 180.0
 PARAM = "confirm_token"
 
 _turns = 0
+_heard: list[str] = []
+_HEARD_KEPT = 400
 _turns_lock = threading.Lock()
 
+_NO = re.compile(
+    r"\b(no|nope|nah|not|don'?t|do not|stop|cancel|wait|hold on|never ?mind|"
+    r"nu|nein|non)\b", re.I)
+_YES = re.compile(
+    r"\b(yes|yeah|yep|yup|ya|sure|ok|okay|alright|all right|go ahead|go for it|"
+    r"do it|confirm|confirmed|affirmative|correct|absolutely|definitely|please do|"
+    r"send it|print it|da|sigur|oui|ja|s[ií])\b", re.I)
 
-def note_user_turn() -> None:
+
+def note_user_turn(text: str = "", *, typed: bool = False) -> None:
     """The user said or typed something. Only this can clear a token."""
     global _turns
     with _turns_lock:
         _turns += 1
+        _heard.append(f" {text} " if typed else text)
+        del _heard[:-_HEARD_KEPT]
 
 
 def user_turns() -> int:
     return _turns
+
+
+def heard_since(turn: int) -> str:
+    with _turns_lock:
+        missed = _turns - turn
+        if missed <= 0:
+            return ""
+        return "".join(_heard[-missed:])
+
+
+def answer(text: str) -> str:
+    """'no', 'yes', or '' for whatever the user said after a question."""
+    if _NO.search(text):
+        return "no"
+    if _YES.search(text):
+        return "yes"
+    return ""
 
 
 class Gate:
@@ -104,6 +134,17 @@ class Gate:
                            "nothing was started."), ("The user agreed to "
                                                      "something else. Ask "
                                                      "again for THIS request.")
+        said = answer(heard_since(record.get("turn", 0)))
+        if said == "no":
+            return False, "The user said no, so nothing was started.", (
+                "Tell the user it was not done. Do not ask again unless they "
+                "ask for it.")
+        if said != "yes":
+            with self._lock:
+                self.records.setdefault(token, record)
+            return False, "Nothing was started: the user has not said yes.", (
+                "Ask the user the question again and wait for a clear yes or "
+                "no before calling again with the token.")
         return True, "", ""
 
     def issue(self, name: str, args: dict[str, Any]) -> str:

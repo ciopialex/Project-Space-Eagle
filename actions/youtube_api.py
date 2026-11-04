@@ -1,28 +1,13 @@
-"""The user's own YouTube account, through the API they already authorised.
+"""The user's own YouTube account through the YouTube Data API, using the Google
+token from Settings -> Connect Google (needs a configured OAuth client). One HTTPS
+call, about 20x faster than scraping. Without a token, `liked` falls back to
+reading the page in the eagle's browser.
 
-Built after the browser route was proven impossible for Google, not instead of
-trying it. Chrome binds a Google session to the profile that created it, so
-importing one into the eagle's browser is detected and revoked — measured on
-the real profile: every cookie transferred and decrypted, the browser loaded
-all 61 including SID/SAPISID/__Secure-1PSID, and YouTube reported signed out
-anyway and deleted LOGIN_INFO. That is session-theft protection working, and
-the answer is not to defeat it.
+Importing a Google session into another browser profile does not work: Google
+detects and revokes it.
 
-Aethelark is already an authorised OAuth client for this account — the user
-signs into Google during onboarding, and the token has a refresh token. So the
-question "what did I like most recently" is one HTTPS call against credentials
-that already exist: no browser, no window to sign into, nothing revocable, and
-about 20x faster than loading and scraping the page.
-
-The user's rule for choosing: use an API over emulation when it does the same
-job at least 30-40% faster. Here it is also the difference between working and
-not working.
-
-What this deliberately does NOT do is replace `web_agency`. Most of the web has
-no API, and emulation is the general capability. This is the narrow, faster
-path for one site that happens to have both an API and a hard defence against
-the alternative — and when the API cannot answer (watch history, which Google
-has not exposed since 2016), it says so and names the route that might.
+Not a replacement for web_agency. When the API cannot answer (watch history,
+unexposed since 2016), it says so.
 """
 from __future__ import annotations
 
@@ -33,33 +18,22 @@ from core.tool_result import ToolResult
 
 _API = "https://www.googleapis.com/youtube/v3"
 
-#: Read aloud, not printed. Fifty titles is a minute of somebody's life, and
-#: this is a voice assistant where length is latency.
+# Read aloud: length is latency.
 MAX_ITEMS = 10
 
-#: YouTube's own id for "Liked videos". Reading this playlist returns them
-#: newest-first, which is what "my latest liked video" actually means —
-#: `videos.list(myRating=liked)` sorts by upload date instead and would answer
-#: a different question convincingly.
+# YouTube's id for "Liked videos", newest first. videos.list(myRating=liked) sorts by
+# upload date instead.
 _LIKED_PLAYLIST = "LL"
 
 
-#: Returned by `_liked_from_page` when the browser is not signed in. Distinct
-#: from [], which means "signed in, and this account has no liked videos".
-#: Collapsing the two told an empty account to sign in, and told a signed-out
-#: browser that the account was empty.
+# Returned when the browser is not signed in; [] means signed in with no liked videos.
 SIGNED_OUT = object()
 
-#: The liked-videos playlist, as a page rather than an API call.
+# The liked-videos playlist as a page.
 _LIKED_URL = "https://www.youtube.com/playlist?list=LL"
 
-#: Pull the titles out of a YouTube list page.
-#:
-#: Deliberately not `#video-title`, which is what every tutorial says and what
-#: YouTube used to ship - measured live, that selector now matches ZERO
-#: elements. Watch links are the thing that has survived every redesign, so
-#: they are what this keys on, deduplicated by video id because each video
-#: appears as several links (thumbnail, title, channel).
+# Titles from a YouTube list page, keyed on watch links (stable across redesigns;
+# #video-title matches nothing now), deduplicated by video id.
 _TITLES_JS = r"""(() => {
   const seen = new Map();
   for (const a of document.querySelectorAll('a[href*="watch?v="]')) {
@@ -76,8 +50,7 @@ _TITLES_JS = r"""(() => {
   return [...seen.values()];
 })()"""
 
-#: YouTube's accessible label ends with the runtime — "... 5 minute și 32 de
-#: secunde", "... 16 minute". Fine for a screen reader, noise read aloud.
+# YouTube's accessible label ends with the runtime; strip it.
 _DURATION_TAIL = re.compile(
     r"\s+\d+\s*(?:h|hr|hours?|ore|or[ăa]|min|mins?|minutes?|minute|minut|"
     r"sec|secs?|seconds?|secunde|secund[ăa])\b.*$", re.IGNORECASE)
@@ -103,17 +76,9 @@ def _page_blocked(page) -> str:
 
 
 def _liked_from_page(limit: int):
-    """Read the liked-videos page in the eagle's own browser.
-
-    Reads FIRST, then judges. The obvious order - check for a sign-in wall,
-    then read - does not work on YouTube: its sidebar carries "sign in to like
-    videos" on every page while signed out, including pages whose content is
-    fully readable. Gating on that made the eagle refuse to read a list it
-    could already see. Titles on the page are better evidence that the page
-    was readable than the absence of a banner somewhere else on it.
-
-    Returns SIGNED_OUT when there is nothing to read AND the page says why,
-    [] when the account genuinely has no liked videos.
+    """Read the liked-videos page in the eagle's browser. Reads first, then judges:
+    YouTube's sidebar says "sign in" even on readable pages. SIGNED_OUT when there
+    is nothing to read and the page says why; [] when there are no liked videos.
     """
     browser = _browser()
     browser.start()
@@ -135,23 +100,14 @@ _ACTIONS = ("liked", "subscriptions", "playlists", "history")
 
 
 class ApiNotEnabled(Exception):
-    """The YouTube Data API is switched off on the Google Cloud project.
-
-    Its own type because it is indistinguishable from a scope problem over the
-    wire - both are 403 - and the remedies have nothing in common. The user
-    reconnected Google, granted YouTube, and was still told to "sign in to
-    Google again", which is the same sin as claiming their data is private:
-    sending somebody to redo work they have already done.
+    """The YouTube Data API is off on the Cloud project. Its own type: it looks like
+    a scope problem (both 403) but signing in again does not help.
     """
 
 
 class NeedsReconnect(Exception):
-    """The token is missing, expired, or predates the YouTube scope.
-
-    Its own type because the remedy is one click of the user's, and it must
-    never be reported as "YouTube did not answer" - true, useless, and it
-    reads as a broken service rather than a consent the user has not given
-    yet. Every existing token is in this state until they reconnect once.
+    """The token is missing, expired, or predates the YouTube scope: one reconnect
+    fixes it.
     """
 
 
@@ -165,8 +121,7 @@ def _get(url: str, params: dict, token: str) -> dict:
     response = requests.get(url, params=params, timeout=15,
                             headers={"Authorization": f"Bearer {token}"})
     if response.status_code in (401, 403):
-        # Read the REASON. accessNotConfigured means the API is disabled on
-        # the Cloud project and no amount of signing in will help.
+        # accessNotConfigured: the API is disabled on the Cloud project.
         try:
             error = response.json().get("error", {})
             reasons = {d.get("reason") for d in error.get("errors", [])}
@@ -182,21 +137,9 @@ def _get(url: str, params: dict, token: str) -> dict:
 
 
 def _titles(payload: dict) -> list[str]:
-    """One line per item: the spoken title, then the exact link.
-
-    The id used to be dropped. The API hands back `resourceId.videoId` in the
-    same snippet as the title, and returning only the title meant the next
-    tool had to SEARCH YouTube to re-find a video this call had already
-    identified — a round-trip that can also land on the wrong video, because
-    titles collide (covers, re-uploads, "(Official Video)", lyric versions).
-    Live, that chain simply failed: `youtube_api` returned "Put Yourself First
-    & Success Will Follow… — Napoleon Hill" and `youtube_video summarize`
-    refused it as "not a YouTube link".
-
-    The link rides in the message rather than `ToolResult.data` because `data`
-    never reaches the model — `to_response()` emits result/ok/guidance only.
-    It is bracketed and labelled so it reads as a reference rather than part
-    of the sentence; `core/prompt.txt` already forbids reading URLs aloud.
+    """One line per item: the spoken title, then the exact link, so the next tool
+    does not have to search again (titles collide). In the message because `data`
+    never reaches the model; core/prompt.txt forbids reading URLs aloud.
     """
     out = []
     for item in (payload.get("items") or []):
@@ -208,8 +151,7 @@ def _titles(payload: dict) -> list[str]:
                    or snippet.get("channelTitle") or "").strip()
         line = f"{title} — {channel}" if channel else title
 
-        # playlistItems put it in snippet.resourceId; a plain videos/search
-        # response puts it at item.id (sometimes as a dict).
+        # playlistItems: snippet.resourceId; videos/search: item.id, sometimes a dict.
         vid = (snippet.get("resourceId") or {}).get("videoId")
         if not vid:
             raw_id = item.get("id")
@@ -231,7 +173,7 @@ def _speak(items: list[str], noun: str, limit: int) -> ToolResult:
 
 
 def _api_disabled(detail: str) -> ToolResult:
-    """The API is off at the Cloud project. Their account and sign-in are fine."""
+    """The API is off at the Cloud project; the account and sign-in are fine."""
     m = re.search(r"project (\d+)", detail or "")
     where = (f"https://console.developers.google.com/apis/api/"
              f"youtube.googleapis.com/overview?project={m.group(1)}" if m else
@@ -253,9 +195,7 @@ def _youtube_api(params: dict) -> ToolResult:
             f"'{action}' is not something this tool does.",
             guidance=f"Use one of: {', '.join(_ACTIONS)}.")
 
-    # Said plainly because it is TRUE. The failure this codebase guards against
-    # is claiming a limit that does not exist — not admitting one that does.
-    # Google removed the watch-history API in 2016 and never replaced it.
+    # True: Google removed the watch-history API in 2016.
     if action == "history":
         return ToolResult.failure(
             "Google does not expose watch history through the YouTube API — "
@@ -307,10 +247,7 @@ def _youtube_api(params: dict) -> ToolResult:
         return _speak(_titles(data), "playlists", limit)
 
     except (ApiNotEnabled, NeedsReconnect) as first_choice_failed:
-        # The page fallback is for `liked` only - it is the one with a page
-        # worth reading. Every OTHER action still gets a real answer below,
-        # rather than being re-raised into the generic handler, which is what
-        # leaked "unexpected error: project 000000000000" to the user.
+        # The page fallback is only for `liked`; other actions still get a real answer.
         if action == "liked":
             titles = _liked_from_page(limit)
             if titles is not SIGNED_OUT:

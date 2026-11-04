@@ -1,42 +1,17 @@
-"""Run model-generated Python without handing it the machine.
+"""Run model-generated Python (desktop_control's `task`) without handing it the
+machine.
 
-`desktop_control(action="task")` asks the brain for code and executes it. The
-previous sandbox restricted `__builtins__` to 22 harmless names and then asked
-the model, in the prompt, not to delete files or call subprocess. Verified by
-running it, all six of these worked:
+Containment: paths resolve through the same kind of gate file_controller uses
+(resolve, then check), and nothing can be deleted.
 
-    read /etc/passwd via the injected Path
-    overwrite an arbitrary file
-    delete an arbitrary file
-    reach subprocess.Popen via ().__class__.__bases__[0].__subclasses__()
-    invoke Popen(['id']) and read the real uid back
-    reach os through a loaded module's __globals__ and call popen()
+A check before it runs: every known escape went through a private attribute
+(__class__, __bases__, __subclasses__, __globals__), so any name starting with an
+underscore is refused, including via getattr and str.format. An allow-list on
+syntax, not a blocklist of tricks.
 
-A prompt is a request. This is the enforcement.
-
-Two mechanisms, because either alone leaks:
-
-**Containment.** Paths resolve through the same gate `file_controller` uses —
-one function, resolution before checking so symlinks cannot step outside, and
-already covered by traversal tests. Generated code cannot address anything
-outside the allowed roots, and cannot delete at all: the prompt already
-promised no deletion, and `file_controller` is the tool that deletes, through
-the trash with an undo journal.
-
-**A check before it runs.** Every route to `subprocess` above went through a
-private attribute — `__class__`, `__bases__`, `__subclasses__`, `__globals__`.
-Generated desktop code has no business touching any name beginning with an
-underscore, so the check refuses them outright, and refuses `getattr` reaching
-the same names dynamically. That is an allow-list on syntax rather than a
-blocklist of known tricks, which is what makes it hold against the next trick.
-
-## What this deliberately does NOT contain
-
-`pyautogui` still drives the real mouse and keyboard, because that is the
-tool's entire purpose. Generated code can therefore still type into whatever
-window has focus — including a terminal. Containing that means removing the
-feature, so it is a stated trade-off, not an oversight: the model can move the
-mouse, and cannot read your files, reach the network, or spawn a process.
+Not contained: pyautogui still drives the real mouse and keyboard, which is the
+tool's purpose, so generated code can type into whatever window has focus. It
+cannot read files outside the roots, reach the network, or spawn a process.
 """
 from __future__ import annotations
 
@@ -46,11 +21,11 @@ from typing import Any, Iterable
 
 from core.tool_result import ToolResult
 
-#: Attribute and name access that has no legitimate use in generated desktop
-#: code, and is the route every demonstrated escape took.
+# Attribute and name access with no legitimate use here: the route of every demonstrated
+# escape.
 _PRIVATE = "_"
 
-#: Statements that hand execution somewhere this module cannot follow.
+# Statements that hand execution somewhere this module cannot follow.
 _BANNED_NODES = {
     ast.Import: "import statements",
     ast.ImportFrom: "import statements",
@@ -58,7 +33,7 @@ _BANNED_NODES = {
     ast.Nonlocal: "nonlocal",
 }
 
-#: Callables that re-open the door by name.
+# Callables that re-open the door by name.
 _BANNED_CALLS = {"eval", "exec", "compile", "__import__", "open", "input",
                  "globals", "locals", "vars", "breakpoint", "memoryview"}
 
@@ -68,10 +43,8 @@ class Denied(Exception):
 
 
 def audit_code(code: str) -> str | None:
-    """`None` if the code is safe to run, else the reason it is not.
-
-    Checks syntax rather than behaviour, on purpose: it runs before anything
-    executes, so there is no state to be tricked about.
+    """None if the code is safe to run, else why not. Checks syntax before anything
+    executes.
     """
     try:
         tree = ast.parse(code or "")
@@ -83,7 +56,7 @@ def audit_code(code: str) -> str | None:
             if isinstance(node, kind):
                 return f"generated code may not use {label}"
 
-        # `x.__class__` — the first step of every escape that worked.
+        # `x.__class__`.
         if isinstance(node, ast.Attribute) and node.attr.startswith(_PRIVATE):
             return (f"generated code may not touch the private attribute "
                     f"'{node.attr}'")
@@ -93,30 +66,16 @@ def audit_code(code: str) -> str | None:
             if name in _BANNED_CALLS:
                 return f"generated code may not call {name}()"
 
-        # A private name spelled as a string and fetched later. Static
-        # attribute checking is worth nothing without this.
-        #
-        # ANYWHERE in the string, not just a whole dunder at both ends. The
-        # original test was `startswith("__") and endswith("__")`, and two
-        # halves defeat it: `getattr((), '__cla' + 'ss__')` passes, because
-        # '__cla' does not end in '__' and 'ss__' does not start with it.
-        # `_safe_getattr` catches that particular chain at run time, but a
-        # check that only holds because a second one exists is not a check.
-        #
-        # It also closes the escape that got through BOTH layers:
-        # `'{0.__class__}'.format(())` returned <class 'tuple'>. str.format
-        # resolves attributes itself, so there is no getattr call to intercept
-        # and no ast.Attribute node to see -- the private name lives entirely
-        # inside a string literal.
+        # A private name anywhere in a string: covers getattr with a split name ('__cla'
+        # + 'ss__') and '{0.__class__}'.format(()), which resolves attributes with no
+        # getattr call.
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if "__" in node.value:
                 return (f"generated code may not put a private name in a "
                         f"string ({node.value[:40]!r})")
 
-        # `.format` reaches attributes without an attribute node, so a format
-        # string assembled at run time would still get through the check above.
-        # Generated desktop code has no need for it: an f-string does the same
-        # job and its attribute access IS an ast.Attribute, which is checked.
+        # `.format` reaches attributes without an attribute node; f-strings do the same
+        # job and are checked.
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if node.func.attr in {"format", "format_map"}:
                 return ("generated code may not call .format() — use an "
@@ -126,11 +85,8 @@ def audit_code(code: str) -> str | None:
 
 
 def _contain(raw: Any, roots: tuple[Path, ...]) -> Path:
-    """Resolve `raw` and prove it sits inside `roots`, or raise `Denied`.
-
-    Deliberately the same shape as `file_controller._resolve`: resolve first,
-    then check, so a symlink pointing out is caught by its target rather than
-    its name.
+    """Resolve `raw` and prove it is inside `roots`, or raise Denied. Resolve first,
+    so a symlink is judged by its target.
     """
     try:
         resolved = Path(str(raw)).expanduser().resolve()
@@ -149,11 +105,8 @@ def _contain(raw: Any, roots: tuple[Path, ...]) -> Path:
 
 
 class SafePath:
-    """A `Path` that cannot leave the allowed roots, and cannot delete.
-
-    Only the operations generated code legitimately needs are exposed. Anything
-    absent is absent on purpose — an unknown attribute raises rather than
-    falling through to the real `Path`, so this cannot be widened by accident.
+    """A Path that cannot leave the allowed roots and cannot delete. Unknown
+    attributes raise rather than fall through.
     """
 
     __slots__ = ("_p", "_roots")
@@ -162,7 +115,6 @@ class SafePath:
         object.__setattr__(self, "_roots", tuple(roots))
         object.__setattr__(self, "_p", _contain(raw, tuple(roots)))
 
-    # -- joining stays contained ------------------------------------------
     def __truediv__(self, other: Any) -> "SafePath":
         return SafePath(self._p / str(other), self._roots)
 
@@ -181,7 +133,6 @@ class SafePath:
     def __hash__(self) -> int:
         return hash(str(self._p))
 
-    # -- reading -----------------------------------------------------------
     @property
     def name(self) -> str: return self._p.name
 
@@ -210,21 +161,16 @@ class SafePath:
 
     def stat(self): return self._p.stat()
 
-    # -- writing, still contained -----------------------------------------
     def write_text(self, data: str, encoding: str = "utf-8") -> int:
         return self._p.write_text(str(data), encoding=encoding)
 
     def mkdir(self, parents: bool = False, exist_ok: bool = True) -> None:
         self._p.mkdir(parents=parents, exist_ok=exist_ok)
 
-    # -- deliberately absent: unlink, rmdir, rename, replace, chmod,
-    #    symlink_to, touch. Deletion belongs to file_controller, which routes
-    #    it through the trash and records an undo.
+    # Absent: unlink, rmdir, rename, replace, chmod, symlink_to, touch. Deletion belongs
+    # to file_controller (trash plus undo).
 
-    #: Why each absent operation is absent. Without this the refusal reads
-    #: "'SafePath' object has no attribute 'unlink'", which tells the model
-    #: nothing it can act on — it looks like a broken tool rather than a
-    #: boundary, and the next thing it tries is a workaround.
+    # Why each absent operation is absent, so the refusal reads as a boundary.
     _USE_FILE_CONTROLLER = "Use file_controller, which trashes rather than " \
                            "erases and records an undo."
     _REFUSED = {
@@ -250,11 +196,7 @@ class SafePath:
 
 
 def _safe_shutil(roots: tuple[Path, ...]):
-    """`copy2`/`copytree`/`disk_usage`, with both ends contained.
-
-    These take raw strings, so containing `Path` alone would leave a hole
-    straight through them — `shutil.copy2('/etc/passwd', ...)` was reachable.
-    """
+    """copy2 / copytree / disk_usage with both ends contained: they take raw strings."""
     import shutil as _sh
 
     def copy2(src, dst):
@@ -271,9 +213,8 @@ def _safe_shutil(roots: tuple[Path, ...]):
                                "disk_usage": staticmethod(disk_usage)})()
 
 
-#: The mouse, keyboard and screen functions generated code may call. The module
-#: itself is never handed over: its own imports are public attributes, and
-#: `pyautogui.sys.modules['os'].system(...)` ran a shell command through it.
+# The mouse, keyboard and screen functions allowed. Never the module:
+# pyautogui.sys.modules['os'] reaches a shell.
 _INPUT_FUNCTIONS = (
     "click", "doubleClick", "tripleClick", "rightClick", "middleClick",
     "moveTo", "moveRel", "move", "dragTo", "dragRel", "drag",
@@ -291,7 +232,7 @@ def _input_only(module):
 
 
 def _safe_getattr(obj, name, *default):
-    """`getattr`, minus the ability to spell a private name at runtime."""
+    """getattr, minus private names spelled at run time."""
     if isinstance(name, str) and name.startswith(_PRIVATE):
         raise Denied(f"'{name}' is not available to generated code")
     return getattr(obj, name, *default)

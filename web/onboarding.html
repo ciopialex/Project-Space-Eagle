@@ -52,6 +52,8 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
 .field:focus{box-shadow:inset 0 0 0 1.5px rgba(236,236,242,.55)}
 .field::placeholder{color:var(--faint)}
 .field.center{text-align:center;padding:0 18px}
+/* A centred caret lands on top of a centred placeholder; the heading already asks. */
+.field.center:focus::placeholder{color:transparent}
 .reveal{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:0;
   color:var(--muted);font-family:inherit;font-size:12px;cursor:pointer;padding:6px 8px;border-radius:7px}
 .reveal:hover{color:#fff}
@@ -80,7 +82,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
   .hint{font-size:12.5px;line-height:1.5;color:var(--dim,#9aa4b2);margin:-4px 0 0;max-width:34ch;text-align:center}
   .hint b{color:var(--ink,#eef1f6);font-weight:600}
-  .modprog{width:100%;display:flex;flex-direction:column;gap:6px;margin:4px 0 14px;font-size:13px;color:var(--dim,#9aa4b2);text-align:left}
+  .modprog{width:100%;display:flex;flex-direction:column;gap:6px;margin:4px 0 14px;font-size:13px;color:var(--dim,#9aa4b2);text-align:center}
   .modprog b{color:var(--ink,#eef1f6);font-weight:600}
   .modprog .bad{color:#e57373}
   .modlist{display:flex;flex-direction:column;gap:10px;margin:6px 0 22px;width:100%}
@@ -106,20 +108,19 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
     <section class="screen" data-step="key">
       <div class="mark"><img src="../assets/images/eagle_white.png" alt=""></div>
       <h1 id="key-title">Connect Gemini</h1>
-      <p class="sub" id="key-sub">Aethelark thinks with Google's Gemini. A key is free and takes about a minute to create.</p>
-      <div class="field-wrap">
+      <p class="sub" id="key-sub"></p>
+      <div class="field-wrap" id="key-paste" style="display:none">
         <input class="field" id="api-key" type="password" placeholder="Paste your Gemini API key"
                autocomplete="off" spellcheck="false" oninput="keyChanged()" onkeydown="if(event.key==='Enter')checkKey()">
         <button class="reveal" id="reveal" onclick="toggleReveal()">Show</button>
       </div>
       <div class="status" id="key-status"></div>
-      <button class="link" onclick="openUrl('https://aistudio.google.com/apikey')">No key yet? Get a free one from Google</button>
-      <p class="hint" id="key-hint">Sign in with Google, click <b>Create API key</b>, then <b>Copy</b>. Come back here and I'll find it.</p>
       <div class="grow"></div>
       <div class="row">
         <button class="btn ghost" id="key-back" onclick="go('modules')">Back</button>
-        <button class="btn" id="key-next" disabled onclick="checkKey()">Continue</button>
+        <button class="btn" id="key-main"></button>
       </div>
+      <button class="link" id="key-alt"></button>
     </section>
 
     <section class="screen" data-step="name">
@@ -128,12 +129,12 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       <p class="sub">I'll use it when I talk to you. You can change it later.</p>
       <div class="field-wrap">
         <input class="field center" id="name-input" placeholder="Your name" maxlength="40"
-               autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')go('mic')">
+               autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')go(afterName())">
       </div>
       <div class="grow"></div>
       <div class="row">
-        <button class="btn ghost" onclick="go('key')">Back</button>
-        <button class="btn" onclick="go('mic')">Continue</button>
+        <button class="btn ghost" onclick="go(state.from_done ? 'done' : 'key')">Back</button>
+        <button class="btn" onclick="go(afterName())">Continue</button>
       </div>
     </section>
 
@@ -149,9 +150,22 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       <div class="grow"></div>
       <div class="row">
         <button class="btn ghost" id="mic-retry" onclick="startMic()" style="display:none">Try again</button>
-        <button class="btn" id="mic-next" disabled onclick="go('done')">Continue</button>
+        <button class="btn" id="mic-next" disabled onclick="go(afterMic())">Continue</button>
       </div>
-      <button class="link" id="mic-skip" onclick="go('done')">Skip for now</button>
+      <button class="link" id="mic-skip" onclick="go(afterMic())">Skip for now</button>
+    </section>
+
+    <section class="screen" data-step="chrome">
+      <div class="mark"><img src="../assets/images/eagle_white.png" alt=""></div>
+      <h1>Already signed in?</h1>
+      <p class="sub">I can use your <span class="ch-n">Chrome</span> sign-ins, so you never sign in twice.</p>
+      <p class="hint" id="ch-steps" style="display:none">In <span class="ch-n">Chrome</span>:<br>1. Paste into the address bar and press Enter<br>2. Tick <b>Allow remote debugging</b><br>Later, when I first use it, click <b>Allow</b>.</p>
+      <div class="status" id="ch-status"></div>
+      <div class="grow"></div>
+      <div class="row">
+        <button class="btn ghost" id="ch-skip" onclick="go('done')">Not now</button>
+        <button class="btn" id="ch-go" onclick="useChrome()">Use Chrome</button>
+      </div>
     </section>
 
     <section class="screen" data-step="modules">
@@ -165,7 +179,9 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
     <section class="screen" data-step="done">
       <div class="mark"><img src="../assets/images/eagle_white.png" alt=""></div>
       <h1 id="done-title">You're all set.</h1>
+      <button class="link" id="done-rename" style="display:none;margin:-6px 0 10px" onclick="renameFromDone()"></button>
       <p class="sub">I live in the small bar at the top of your screen. Just start talking. Double-click the bar to open the full window.</p>
+      <p class="hint" id="done-try"></p>
       <div class="modprog" id="done-modules" style="display:none"></div>
       <div id="aec" style="display:none">
         <p class="sub">Want to cut in while I'm talking, at a normal voice? That needs echo cancellation, which changes your computer's default microphone and speakers.</p>
@@ -184,7 +200,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
 <script>
 (function(){
   var bridge = null;
-  var ORDER = ['welcome', 'modules', 'key', 'name', 'mic', 'done'];
+  var ORDER = ['welcome', 'modules', 'key', 'name', 'mic', 'chrome', 'done'];
   var state = {api_key: '', key_ok: false, user_name: '', mode: 'setup'};
   var step = 'welcome';
 
@@ -192,7 +208,9 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
   function esc(t){ return String(t == null ? '' : t).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
 
   function renderDots(){
-    var steps = state.mode === 'key' ? ['key'] : ORDER;
+    var steps = state.mode === 'key' ? ['key'] : ORDER.filter(function(s){
+      return (s !== 'chrome' || state.chrome) && (s !== 'name' || !state.name_known) && (s !== 'modules' || (state.offer && state.offer.length));
+    });
     $('dots').innerHTML = steps.map(function(s){
       return '<span class="dot' + (ORDER.indexOf(s) <= ORDER.indexOf(step) ? ' on' : '') + '"></span>';
     }).join('');
@@ -209,10 +227,11 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
     if (to === 'name') {
       var n = $('name-input'); setTimeout(function(){ n.focus(); }, 60);
     }
-    if (to === 'key') setTimeout(function(){ $('api-key').focus(); }, 60);
     if (to === 'done') {
       var nm = ($('name-input').value || '').trim();
       $('done-title').textContent = nm ? ("You're all set, " + nm + ".") : "You're all set.";
+      $('done-rename').textContent = nm ? ('Not ' + nm + '?') : 'What should I call you?';
+      $('done-rename').style.display = state.name_known ? '' : 'none';
     }
     renderDots();
   };
@@ -225,19 +244,65 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
     $('reveal').textContent = shown ? 'Show' : 'Hide';
   };
 
+  var KEY_VIEWS = {
+    get:   {sub: "I think with Google's Gemini. Your own key is free, and I'll open the page for you.",
+            main: 'Get my free key', act: function(){ getKey(); },
+            alt: 'I already have a key', altAct: function(){ keyView('paste'); }},
+    wait:  {sub: '', main: 'Open the page again', act: function(){ getKey(); }, paste: true,
+            typed: 'Continue', alt: '', altAct: null},
+    found: {sub: 'I found a Gemini key on this computer, and Google accepts it.',
+            main: 'Use it', act: function(){ if (bridge && bridge.use_found_key) bridge.use_found_key(); },
+            alt: 'Get a new one instead', altAct: function(){ getKey(); }},
+    saved: {sub: 'Your key is saved.', main: 'Continue', act: function(){ go(afterKey()); },
+            alt: 'Use a different key', altAct: function(){ keyView('get'); }},
+    paste: {sub: 'Paste your key. I\'ll check it with Google.', main: 'Continue',
+            act: function(){ checkKey(); }, paste: true, needsText: true,
+            alt: 'Get a free key instead', altAct: function(){ getKey(); }}
+  };
+
+  function keyView(v){
+    var k = KEY_VIEWS[v];
+    state.key_view = v;
+    if (v !== 'wait') $('key-sub').textContent = state.mode === 'key' && state.reason && v === 'get' ? state.reason : k.sub;
+    $('key-paste').style.display = k.paste ? '' : 'none';
+    $('key-main').textContent = k.main;
+    $('key-main').onclick = k.act;
+    $('key-alt').textContent = k.alt;
+    $('key-alt').onclick = k.altAct;
+    $('key-alt').style.visibility = k.alt ? '' : 'hidden';
+    if (v !== 'wait') { var st = $('key-status'); st.className = 'status'; st.textContent = ''; }
+    keyChanged();
+    if (k.paste && v === 'paste') setTimeout(function(){ $('api-key').focus(); }, 60);
+  }
+  window.keyView = keyView;
+
+  window.getKey = function(){
+    if (bridge && bridge.get_key) bridge.get_key();
+  };
+
+  window.afterKey = function(){ return state.name_known ? 'mic' : 'name'; };
+
   window.keyChanged = function(){
     state.key_ok = false;
+    var k = KEY_VIEWS[state.key_view || 'get'];
     var v = ($('api-key').value || '').trim();
-    $('key-next').disabled = !(v.length >= 10 || (state.has_key && !v));
-    var st = $('key-status'); st.className = 'status'; st.textContent = '';
+    $('key-main').disabled = !!k.needsText && v.length < 10;
+    // A key in the field is not still being waited for.
+    var st = $('key-status');
+    if (state.key_view === 'wait' && st.className === 'status') {
+      st.innerHTML = v ? '' : '<span class="spin"></span>Waiting for your key…';
+    }
+    if (k.typed) {
+      $('key-main').textContent = v ? k.typed : k.main;
+      $('key-main').onclick = v ? function(){ checkKey(); } : k.act;
+    }
   };
 
   window.checkKey = function(){
     var v = ($('api-key').value || '').trim();
-    if (!v && state.has_key && state.mode !== 'key') { go('name'); return; }
     if (v.length < 10 || !bridge) return;
     state.api_key = v;
-    $('key-next').disabled = true;
+    $('key-main').disabled = true;
     var st = $('key-status');
     st.className = 'status';
     st.innerHTML = '<span class="spin"></span>Checking with Google…';
@@ -261,6 +326,16 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
     if (bridge && bridge.enable_echo_cancel) bridge.enable_echo_cancel();
   };
 
+  window.afterName = function(){ return state.from_done ? 'done' : 'mic'; };
+  window.renameFromDone = function(){ state.from_done = true; go('name'); };
+  window.afterMic = function(){ return state.chrome ? 'chrome' : 'done'; };
+  window.useChrome = function(){
+    if (state.chrome_on) { go('done'); return; }
+    $('ch-go').disabled = true;
+    $('ch-status').className = 'status'; $('ch-status').textContent = 'Waiting for ' + state.chrome + '…';
+    if (bridge && bridge.chrome_setup) bridge.chrome_setup();
+  };
+
   window.answerModules = function(){
     var picked = [];
     document.querySelectorAll('#modlist input:checked:not(:disabled)').forEach(function(i){ picked.push(i.value); });
@@ -279,6 +354,11 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       state.mode = opts.mode || 'setup';
       if (opts.user_name) $('name-input').value = opts.user_name;
       if (opts.aec_offer) $('aec').style.display = '';
+      state.chrome = opts.chrome || '';
+      document.querySelectorAll('.ch-n').forEach(function(n){ n.textContent = state.chrome || 'Chrome'; });
+      $('ch-go').textContent = 'Use ' + (state.chrome || 'Chrome');
+      var ex = (opts.examples || []).slice(0, 2);
+      $('done-try').innerHTML = ex.length ? 'Try: ' + ex.map(function(e){ return '&ldquo;' + esc(e) + '&rdquo;'; }).join(' or ') : '';
       state.has_key = !!opts.has_key;
       state.offer = (opts.modules || []);
       $('modlist').innerHTML = state.offer.map(function(m){
@@ -287,16 +367,14 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
                '<span><b>' + esc(m.title) + '</b>' + (m.installed ? ' <i>installed</i>' : '') +
                '<br>' + esc(m.about) + '</span></label>';
       }).join('');
-      if (state.has_key && state.mode !== 'key') {
-        $('key-sub').textContent = 'Your key is saved. Paste a new one only if you want to replace it.';
-        $('key-next').disabled = false;
-      }
+      state.name_known = !!opts.user_name;
       if (state.mode === 'key') {
+        state.reason = opts.reason || 'Google turned the current key down. Get a new one to continue.';
         $('key-title').textContent = 'Update your Gemini key';
-        $('key-sub').textContent = opts.reason || 'Google turned the current key down. Paste a new one to continue.';
         $('key-back').style.display = 'none';
         $('quit').title = 'Close';
       }
+      keyView(state.has_key && state.mode !== 'key' ? 'saved' : 'get');
       go(opts.step || 'welcome');
     },
     setModuleProgress: function(m){
@@ -313,13 +391,44 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       box.innerHTML = rows.join('');
       box.style.display = rows.length ? '' : 'none';
     },
+    setChrome: function(r){
+      r = r || {};
+      if (r.on) {
+        state.chrome_on = true;
+        $('ch-steps').style.display = 'none';
+        $('ch-status').className = 'status ok';
+        $('ch-status').textContent = 'Done. Your sign-ins work for me now.';
+        $('ch-go').disabled = false; $('ch-go').textContent = 'Continue';
+        $('ch-skip').style.display = 'none';
+      } else if (r.on === false && !state.chrome_waiting) {
+        state.chrome_waiting = true;
+        $('ch-steps').style.display = '';
+      } else {
+        $('ch-status').className = 'status';
+        $('ch-status').textContent = 'Not switched on yet. You can do it later in Settings.';
+        $('ch-go').disabled = false;
+      }
+    },
     clipboardKey: function(k){
       // A key copied from Google's page: use it, if the field is empty and this is the key screen.
       var f = $('api-key');
-      if (step !== 'key' || (f.value || '').trim() || state.key_ok) return;
+      if (step !== 'key' || state.key_view === 'saved' || (f.value || '').trim() || state.key_ok) return;
+      if (state.key_view !== 'wait') keyView('paste');
       f.value = k;
       keyChanged();
       checkKey();
+    },
+    foundKey: function(){
+      if (!state.key_ok && state.key_view === 'get') keyView('found');
+    },
+    keyPageOpened: function(r){
+      r = r || {};
+      keyView('wait');
+      var where = r.browser ? (r.browser + (r.account ? ' (' + r.account + ')' : '')) : 'your browser';
+      $('key-sub').innerHTML = 'Opened in ' + esc(where) + '.<br>Click <b>Create API key</b>, then <b>Copy</b>. I&rsquo;ll take it from there.';
+      var st = $('key-status'); st.className = 'status';
+      st.innerHTML = '<span class="spin"></span>Waiting for your key…';
+      $('api-key').placeholder = 'Or paste it here';
     },
     setKeyResult: function(r){
       r = r || {};
@@ -327,12 +436,13 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
       if (r.ok) {
         state.key_ok = true;
         st.className = 'status ok'; st.textContent = 'Connected.';
+        $('key-main').disabled = true;
         setTimeout(function(){
-          if (state.mode === 'key') { finish(); } else { go('name'); }
-        }, 550);
+          if (state.mode === 'key') { finish(); } else { go(afterKey()); }
+        }, 650);
       } else {
         st.className = 'status err'; st.textContent = r.message || "That key didn't work.";
-        $('key-next').disabled = false;
+        $('key-main').disabled = false;
       }
     },
     setAec: function(r){
@@ -354,6 +464,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
         $('mic-status').className = 'status ok';
         $('mic-status').textContent = 'I can hear you.';
         $('mic-next').disabled = false;
+        setTimeout(function(){ if (step === 'mic') go(afterMic()); }, 900);
       } else if (m.state === 'quiet') {
         $('mic-status').className = 'status';
         $('mic-status').textContent = "I didn't hear anything. Check your microphone, then try again.";

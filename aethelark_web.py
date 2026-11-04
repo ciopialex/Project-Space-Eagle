@@ -1,31 +1,19 @@
-"""Aethelark — integrated web-rendered app.
+"""Aethelark: the app's entry point.
 
-Runs the REAL voice/swarm backend (main.AethelarkLive) behind a native pill +
-QWebEngine web dashboard (the exact artifact). `WebShellUI` is a drop-in
-adapter exposing the interface AethelarkLive expects (write_log / set_state /
-muted / set_audio_level / …), translating it into native-pill updates +
-dashboard.push(...) per the message contract in Aethelark_Web_Pivot_Plan.md.
-
-This is the ONLY entry point. The QPainter cockpit that main.py used to launch
-was deleted on 2026-08-28: main.py is a library exposing AethelarkLive, and
-ui.py is down to the fonts, metrics and spring curve this file imports.
-The installed `eagle` command execs this file.
+Runs the voice backend (main.AethelarkLive) behind the island (web/pill.html) and
+the dashboard (web/dashboard.html). WebShellUI is the interface AethelarkLive
+talks to. The installed `eagle` command execs this file.
 
 Run:  .venv/bin/python aethelark_web.py
 """
 import json
 import sys
 
-# Line-buffer stdout before anything prints. Redirected output is
-# block-buffered by default, so `eagle > log.txt` loses everything
-# still in the buffer when the process dies - which is exactly the
-# moment the log matters most.
+# Line-buffered, so a crash does not lose the end of a redirected log.
 from core import logsetup  # noqa: E402,F401
 import os
-# Qt importing Chromium's GPU frames as GLX native pixmaps aborts the process
-# at random ("Failed to restore OpenGL context after clean-up"). Software
-# compositing hands frames over in shared memory and never takes that path;
-# WebGL and raster stay on the GPU.
+# Software compositing: GLX pixmap import aborts Qt at random ("Failed to restore OpenGL
+# context"). WebGL and raster stay on the GPU.
 if sys.platform.startswith("linux"):
     _flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
     if "--disable-gpu-compositing" not in _flags:
@@ -51,39 +39,20 @@ BASE = pathlib.Path(__file__).resolve().parent
 DASHBOARD_HTML = BASE / "web" / "dashboard.html"
 PILL_HTML = BASE / "web" / "pill.html"
 API_KEYS = user_paths.api_keys_path()
-# The island window is sized ONCE, for the largest state FSM-1 can reach
-# (the 440×364 Expanded card), and never resized again: resizing a window with
-# a QWebEngineView in it relayouts Chromium every frame, which is the stutter
-# the CSS-transform approach exists to remove. Everything the user sees morph
-# is a transition inside the page.
-#
-# ISLAND_TOP_PAD matches `.stage{padding-top}` in pill.html — the page measures
-# its hit regions from there, so Qt has to agree or the mask sits off the card.
-# ISLAND_MARGIN is dead transparent space for the drop-shadow (34px blur) and
-# the spring's overshoot; the mask below is what stops it eating clicks.
+# The island window is sized once, for the largest state, and never resized: resizing
+# relayouts Chromium every frame. Every morph happens inside the page.
+# ISLAND_TOP_PAD must match `.stage{padding-top}` in pill.html. ISLAND_MARGIN is room
+# for the shadow and the spring's overshoot.
 ISLAND_TOP_PAD = 20
 ISLAND_MARGIN = 44
 
-#: What the cards shipped today need. Kept as a FLOOR rather than replaced,
-#: because it is the only number here with a running app behind it — the
-#: geometry below is derived from declarations that have existed for one day.
+# The floor: what the cards shipped today need.
 _MIN_PILL_W, _MIN_PILL_H = 560, 480
 
 
 def _island_window_size() -> tuple[int, int]:
-    """Big enough for the largest card any installed module declares.
-
-    This was two hand-typed numbers with a comment naming the card they had to
-    clear — which works exactly until someone installs a module with a taller
-    card and nobody remembers the comment. The window is sized ONCE at startup
-    (resizing a QWebEngineView relayouts Chromium every frame), so being too
-    small is not something the page can recover from at runtime: the card is
-    simply drawn clipped.
-
-    Never returns less than what ships today, so a module declaring nothing
-    cannot shrink the window out from under a card that already fits. A broken
-    manifest falls back to the floor for the same reason every other failure
-    here does: a module going missing must not stop the eagle booting.
+    """Big enough for the largest card any installed module declares, never smaller
+    than the floor. A broken manifest falls back to the floor.
     """
     width, height = _MIN_PILL_W, _MIN_PILL_H
     try:
@@ -98,17 +67,8 @@ def _island_window_size() -> tuple[int, int]:
 
 
 def island_assets(manifest) -> tuple[str, str]:
-    """The card template and stylesheet the host should register for a module.
-
-    Split out of `_setup_module_watcher._sync` so there is something to test.
-    The bug that forced it: `[island] css = "style.css"` NAMES a file, and the
-    loader used the declared value as the stylesheet's CONTENT. Every module
-    that declares the key got a <style> tag holding the literal filename --
-    zero rules -- and its card rendered with no stylesheet at all: every stage
-    visible at once, no layout, the logo at its natural size. The whole suite
-    passed while that shipped, because nothing anywhere called this code.
-
-    Looked up beside the module's own manifest (see island_dirs).
+    """The card template and stylesheet to register for a module. `css` names a file
+    beside the manifest; its content is what gets registered.
     """
     from core.module_bus.bus import island_dirs
     tpl = css = ""
@@ -144,12 +104,7 @@ def island_meta(manifest) -> dict:
 
 
 def island_logos(manifest) -> dict:
-    """Company marks a module ships in `island/logos.json`, keyed by symbol.
-
-    The page used to carry its own two dozen logos while the trade module
-    shipped hundreds that nothing read. The module owns its marks; the host
-    only hands them to the page.
-    """
+    """Company marks a module ships in island/logos.json, keyed by symbol."""
     from core.module_bus.bus import island_dirs
     for island in island_dirs(manifest.source, manifest.key):
         f = island / "logos.json"
@@ -164,20 +119,8 @@ def island_logos(manifest) -> dict:
 
 PILL_W, PILL_H = _island_window_size()
 
-#: No voice state interrupts a card any more, so the set and its predicate
-#: are gone rather than emptied.
-#:
-#: The rule was: SPEAKING must not interrupt or no card survives long enough
-#: to read; LISTENING must, "because by then the card is answering a question
-#: they have moved on from". The first half was right. The second half was an
-#: assumption, and the common case is its opposite -- the user talks over the
-#: card BECAUSE of what is on it, and the card was destroyed for it.
-#:
-#: It was never really a ranking decision. The waveform and the card body both
-#: wrote #pbody, so one of them had to lose the element; ranking was how that
-#: got expressed. The island now carries a liveness dot in host chrome
-#: (`#plive` in web/pill.html), the two stop sharing a node, and nothing has
-#: to outrank anything.
+# No voice state interrupts a card: the voice shows in #plive, so the card and the
+# waveform never share a node.
 
 
 import ctypes
@@ -187,38 +130,14 @@ _X11_LIB = None
 _XEXT_LIB = None
 _X11_LOADED = False
 
-#: The installed X error handler, kept alive deliberately.
-#:
-#: ctypes callbacks are garbage collected like any other object, and Xlib keeps
-#: only the raw pointer. Letting this fall out of scope leaves the server
-#: calling into freed memory the next time anything goes wrong, which is a
-#: worse crash than the one it exists to prevent.
+# The installed X error handler, kept alive: Xlib holds only the raw pointer.
 _X_ERROR_HANDLER = None
 
 
 def _install_x_error_handler() -> None:
-    """Stop an X protocol error from killing the process.
-
-    `_apply_x11_input_shape` is wrapped in `try/except Exception` and that
-    catches NOTHING here. X errors are asynchronous: the server reports them
-    later, Xlib's default handler prints the request and calls exit(), and no
-    Python frame is unwound. The except clause is a false guarantee.
-
-    Measured by constructing the shell headlessly: the pill and dashboard came
-    up, XShapeCombineRectangles was handed a window id the platform had not
-    realised, and the process died with
-
-        X Error of failed request:  BadWindow (invalid Window parameter)
-        Major opcode of failed request:  129 (SHAPE)
-
-    having printed no traceback. A window that is not mapped yet, a compositor
-    with no SHAPE extension, or an id that changed under a reparent all reach
-    the same place — and the island is always-on-top chrome, so losing the hit
-    region is a cosmetic fault that should never take the eagle with it.
-
-    Swallowing is right rather than logging: these are advisory failures about
-    one call, the caller already returns False, and an error handler that
-    printed would spam a frame loop.
+    """Stop an X protocol error from killing the process. X errors are asynchronous
+    and Xlib's default handler calls exit(), so a Python except cannot catch them.
+    Errors are swallowed: they are advisory, and printing would spam a frame loop.
     """
     global _X_ERROR_HANDLER
     if _X_ERROR_HANDLER is not None or _X11_LIB is None:
@@ -242,13 +161,8 @@ class _XRectangle(ctypes.Structure):
 
 
 def _init_x11():
-    """Load libX11/libXext once, with the prototypes ctypes will not guess.
-
-    `restype` matters more than it looks. ctypes defaults it to `c_int`, so a
-    64-bit `Display *` comes back truncated to 32 bits. On this machine it
-    happened to work because malloc handed out a low address; inside a loaded
-    Qt process the same call returns 0x7f..., and the truncated value is then
-    passed back in as a live display pointer.
+    """Load libX11/libXext once, with explicit restype: the default c_int truncates a
+    64-bit Display pointer.
     """
     global _X11_LIB, _XEXT_LIB, _X11_LOADED
     if _X11_LOADED:
@@ -274,8 +188,7 @@ def _init_x11():
             ctypes.c_int, ctypes.c_int,
         ]
         _X11_LIB, _XEXT_LIB = x11, xext
-        # Before the first request goes out, not after the first one fails:
-        # the default handler exits the process, so there is no second chance.
+        # Install before the first request: the default handler exits the process.
         _install_x_error_handler()
         return True
     except Exception:
@@ -284,13 +197,8 @@ def _init_x11():
 
 
 def _rounded_spans(x: int, y: int, w: int, h: int, radius: int):
-    """A rounded rectangle as horizontal strips.
-
-    One strip per row through the two corner bands, plus a single rectangle for
-    everything between them. Strips rather than a filled path because both
-    consumers below want rectangles: Qt's region and X11's shape extension
-    take the same list, so the mask and the input shape cannot disagree about
-    where the card is.
+    """A rounded rectangle as horizontal strips, so Qt's region and the X11 shape
+    take the same list.
     """
     r = max(0, min(int(radius), min(w, h) // 2))
     spans = [(x, y + r, w, h - 2 * r)] if h - 2 * r > 0 else []
@@ -306,11 +214,8 @@ def _rounded_spans(x: int, y: int, w: int, h: int, radius: int):
 
 
 def _apply_x11_input_shape(widget, spans) -> bool:
-    """Set the window's INPUT shape, leaving its pixels unclipped.
-
-    Shaping input rather than masking the widget is what keeps the drop shadow
-    a smooth gradient: a Qt mask clips what is drawn as well as what is
-    clicked, and the shadow then ends on a hard stepped edge.
+    """Set the window's input shape, leaving its pixels unclipped, so the drop shadow
+    stays smooth.
     """
     if not spans or not _init_x11():
         return False
@@ -341,19 +246,9 @@ def _apply_x11_input_shape(widget, spans) -> bool:
 
 def apply_hit_region(widget, x: int, y: int, w: int, h: int,
                      radius: int = 32) -> str:
-    """Constrain `widget` so only the visible card accepts the mouse.
-
-    Returns which mechanism ended up doing it — "x11" or "mask" — and never
-    returns without one of them in place. That is the whole contract: a
-    frameless, always-on-top, translucent window is deliberately much larger
-    than the card so the shadow has room, and every pixel of that surplus is a
-    hole punched over whatever the user was doing. Clearing the mask first and
-    then discovering X11 is unavailable leaves exactly that hole, on Wayland,
-    on Windows, on macOS, and anywhere libXext is missing.
-
-    The X11 input shape is preferred because it leaves the drawn pixels alone;
-    the Qt mask is the fallback, and it clips the shadow, which is a cosmetic
-    price worth paying over an unclickable desktop.
+    """Make only the visible card accept the mouse. Returns "x11" or "mask" and never
+    returns without one in place. The X11 input shape is preferred; the Qt mask
+    clips the shadow.
     """
     from PyQt6.QtGui import QRegion
 
@@ -382,12 +277,8 @@ class _WinShim:
 
 
 class _LocalPage(QWebEnginePage):
-    """A page that can only ever show the app's own files.
-
-    Every page here carries the bridge, and the bridge installs modules and
-    runs tools. A link followed inside the view would hand both to whatever
-    site it pointed at, so the view never leaves; a clicked link opens in the
-    user's browser instead.
+    """A page that can only show the app's own files: the bridge installs modules and
+    runs tools, so links open in the user's browser instead.
     """
 
     def acceptNavigationRequest(self, url, nav_type, is_main_frame):
@@ -433,7 +324,6 @@ class WebBridge(QObject):
     @pyqtSlot()
     def toggle_mute(self): self._ui.toggle_mute()
 
-    # ---- Aesthetic picker ----
     @pyqtSlot(result=str)
     def aesthetic_options(self):
         """Sections + words for the picker to render."""
@@ -443,12 +333,7 @@ class WebBridge(QObject):
 
     @pyqtSlot(str, str, result=str)
     def set_aesthetic(self, choices_json, free_text):
-        """Park the user's taste until they say "build it".
-
-        The picker and the build command are separate events — chips get
-        tapped a minute before the mission starts — so the choice has to
-        survive the gap rather than being asked for again at plan time.
-        """
+        """Keep the user's taste until they say "build it"."""
         import json as _j
         from actions.swarm_orchestrator import set_aesthetic
         try:
@@ -458,7 +343,6 @@ class WebBridge(QObject):
         brief = set_aesthetic(choices, free_text or "")
         return "Saved — I'll build to that look." if brief else "Cleared."
 
-    # ---- Settings panel (the title-bar gear) ----
     @pyqtSlot()
     def open_settings(self): self._ui.push_settings()
     @pyqtSlot(str)
@@ -478,6 +362,10 @@ class WebBridge(QObject):
     @pyqtSlot()
     def connect_youtube(self): self._ui.connect_youtube()
     @pyqtSlot()
+    def chrome_setup(self): self._ui.chrome_setup()
+    @pyqtSlot()
+    def chrome_off(self): self._ui.chrome_off()
+    @pyqtSlot()
     def rerun_onboarding(self): self._ui.rerun_onboarding()
 
     @pyqtSlot(int, int)
@@ -495,8 +383,8 @@ class WebBridge(QObject):
 
 def _module_accounts() -> dict:
     """{module key: [{site, why, signed_in}]} for every installed module that
-    declares an account, read from disk so a module installed a moment ago
-    is included."""
+    declares an account, read from disk.
+    """
     try:
         from actions.grounding.web import sessions
         from core import user_paths
@@ -510,11 +398,8 @@ def _module_accounts() -> dict:
 
 
 def _lend_accounts_after_install(key: str) -> list:
-    """Hand a just-installed module any session the browser already holds.
-
-    Returns the sites it still needs a sign-in for, so the island can say
-    where to go. A user who signed in to the site before clicking Get never
-    sees the module fail for want of it.
+    """Hand a just-installed module any session the browser already holds. Returns
+    the sites that still need a sign-in.
     """
     if not key:
         return []
@@ -525,6 +410,9 @@ def _lend_accounts_after_install(key: str) -> list:
         from core.module_bus.manifest import load_manifests
         mods = [m for m in load_manifests(default_manifest_dirs()) if m.key == key]
         signed = sessions.signed_in_sites(user_paths.browser_profile_dir())
+        from actions.grounding.web import chrome_link
+        if chrome_link.usable():
+            signed += [a.site for m in mods for a in m.accounts]
         done = accounts.sync(mods, signed, which_module)
         lent = {site for _, site, r in done if r.get("ok")}
         return [a.site for m in mods for a in m.accounts if a.site not in lent]
@@ -551,9 +439,8 @@ class DashWindow(QMainWindow):
         self._push_sig.connect(self._push_on_gui_thread)
         self.view.load(QUrl.fromLocalFile(str(DASHBOARD_HTML)))
 
-    #: Same reasoning as PillWebWindow._run_js_sig: the dispatcher thread can
-    #: reach _push, and QWebEnginePage is GUI-thread-only. Marshalled here so
-    #: it is a property of the window rather than of the caller.
+    # QWebEnginePage is GUI-thread-only and the dispatcher thread can reach _push, so it
+    # is marshalled here.
     _push_sig = pyqtSignal(str, str)
 
     def push(self, fn, payload):
@@ -577,6 +464,11 @@ class PillBridge(QObject):
     @pyqtSlot()
     def expand(self): self._ui.open_dashboard()
 
+    @pyqtSlot(str, str)
+    def answer_request(self, esc_id, verdict):
+        """Allow / Don't allow, tapped on the island."""
+        self._ui.answer_request(esc_id, verdict)
+
     @pyqtSlot()
     def interrupt(self):
         """A tap on the island while the eagle is talking: stop."""
@@ -589,12 +481,7 @@ class PillBridge(QObject):
 
     @pyqtSlot(str, str)
     def request_depth(self, module, ticker):
-        """The page drilled into a view the card on screen cannot fill.
-
-        The island is drawn from whichever tools have already run. Drilling
-        into the seven-layer view when only a quote has been fetched shows a
-        card of em dashes, and until now the page had no way to ask for more.
-        """
+        """The page drilled into a view the card on screen cannot fill."""
         self._ui.fetch_card_depth(module or "", ticker or "")
 
     @pyqtSlot(str, str)
@@ -603,11 +490,8 @@ class PillBridge(QObject):
 
     @pyqtSlot(int, int, int, int)
     def hit_region(self, x, y, w, h):
-        """The page telling Qt which pixels are actually the island.
-
-        Called on every geometry change in the FSM. Everything outside stays
-        transparent to the mouse, so the desktop under the window's dead
-        margin keeps working.
+        """The page telling Qt which pixels are the island. Called on every geometry
+        change; everything else stays transparent to the mouse.
         """
         try:
             apply_hit_region(self._ui.pill_win, x, y, w, h)
@@ -621,11 +505,8 @@ class PillBridge(QObject):
 
     @pyqtSlot(bool)
     def deck_state(self, is_open):
-        """The page telling Python whether a row of candidates is on screen.
-
-        Pushed rather than polled: this is read on the voice turn path, and a
-        round trip into QWebEngine there would block the loop that is trying
-        to answer the user.
+        """The page telling Python whether a row of candidates is on screen. Pushed,
+        not polled: it is read on the voice turn path.
         """
         self._ui._deck_open = bool(is_open)
 
@@ -664,10 +545,8 @@ class PillBridge(QObject):
 
     @pyqtSlot()
     def island_collapsed(self):
-        """The page's decay timer reached the end and the card is gone.
-
-        Python suppresses state repaints while a card is up; without this it
-        would go on suppressing them after the card had already left.
+        """The page's decay timer ended and the card is gone, so Python stops
+        suppressing state repaints.
         """
         self._ui.note_island_collapsed()
 
@@ -695,32 +574,14 @@ class PillBridge(QObject):
         w = self._ui.pill_win
         o = getattr(w, "_drag_origin", None)
         if o:
-            # delta-based so it's correct regardless of screenX origin
             w.move(o[2] + (sx - o[0]), o[3] + (sy - o[1]))
 
 
 class PillWebWindow(QMainWindow):
-    """Transparent, frameless, always-on-top window rendering web/pill.html —
-    the Dynamic Island, pixel-identical to the artifact."""
+    """Transparent, frameless, always-on-top window rendering web/pill.html."""
 
-    #: Every write to the page travels on this, from whatever thread asked.
-    #:
-    #: The tool dispatcher does NOT run on the GUI thread — `_launch_main_app`
-    #: puts the asyncio loop on a daemon thread while Qt keeps the main one —
-    #: and three tools reach the page without going through a slot:
-    #: island_deck_move, island_deck_show and island_set_printer are called
-    #: straight out of `_execute_tool`. QWebEnginePage.runJavaScript is not
-    #: thread-safe, so those calls entered QtWebEngine from the wrong thread.
-    #:
-    #: Measured 2026-09-08 from a real session log. The last line written was
-    #:     [Tool] ▶ island_deck_move (epoch=7) {direction=next}
-    #: with no matching ✓ or ✗ and nothing after it: saying "next" over a deck
-    #: of five models took the whole eagle down inside the call.
-    #:
-    #: Everything else was already safe by accident rather than by design —
-    #: set_pill and set_island_ttl are reached from pyqtSignal slots, which Qt
-    #: marshals for you. This makes the marshalling the property of the seam
-    #: instead of a property of who happens to call it.
+    # Every write to the page goes through this signal, from any thread: runJavaScript
+    # is not thread-safe and tools call it from the dispatcher thread.
     _run_js_sig = pyqtSignal(str)
 
     def __init__(self, ui):
@@ -746,22 +607,23 @@ class PillWebWindow(QMainWindow):
         self.resize(PILL_W, PILL_H)
 
     def set_pill(self, state, data=None):
-        # Persist the latest state so it survives (a) a set before the page has
-        # loaded and (b) Chromium throttling the view while it's hidden.
+        # Keep the latest state, so it survives a set before the page loads and Chromium
+        # throttling while hidden.
         self._pending = (state, data or {})
         self._apply()
 
     def set_island_ttl(self, seconds: float):
-        """One decay clock, owned by the page because only it knows about
-        hover. Python supplies the number; the page runs it."""
+        """The page owns the decay clock because only it knows about hover; Python
+        supplies the number.
+        """
         self.run_js(
             "window.island && (window.island.ttlMs = %d);"
             % max(0, int(seconds * 1000)))
 
     def register_module(self, key: str, template: str = "", style: str = "",
                         logos: dict | None = None, meta: dict | None = None):
-        # Same trap as set() above: window.pill is the <div id="pill"> until
-        # the page's script replaces it, so the object test alone passes.
+        # window.pill is the <div id="pill"> until the page's script replaces it, so
+        # test for the function.
         js = ("window.pill && typeof window.pill.registerModule === 'function' "
               "&& window.pill.registerModule(%s, %s, %s, %s, %s);") % (
             json.dumps(key), json.dumps(template), json.dumps(style),
@@ -770,14 +632,8 @@ class PillWebWindow(QMainWindow):
         self.run_js(js)
 
     def run_js(self, js: str) -> None:
-        """Fire-and-forget JavaScript at the pill page, from any thread.
-
-        The window owns the view, so the one place that touches the page from
-        Python is here rather than scattered through the shell — and because
-        it is the one place, making it thread-safe makes every caller
-        thread-safe. Emitting rather than calling: Qt gives a cross-thread
-        signal a queued connection and runs the slot on the GUI thread, while
-        a call already on the GUI thread stays direct and synchronous.
+        """Fire-and-forget JavaScript at the pill page, from any thread. Emitting a
+        signal runs it on the GUI thread; the one place Python touches the page.
         """
         self._run_js_sig.emit(js)
 
@@ -786,23 +642,9 @@ class PillWebWindow(QMainWindow):
 
     def _apply(self):
         st, data = self._pending
-        # Through run_js like everything else, so no path to the page bypasses
-        # the marshal. These callers are already on the GUI thread; routing
-        # them here costs a direct connection and removes a second doorway.
-        # `window.pill &&` is NOT enough of a guard, and this was throwing on
-        # every launch:
-        #
-        #     js: Uncaught TypeError: window.pill.set is not a function
-        #
-        # The page has <div class="pill" id="pill">, and an element with an id
-        # becomes a property of window. So until the page's own script runs and
-        # reassigns it, `window.pill` IS that div — truthy, so the guard passes,
-        # and `.set` is undefined on a DIV. Measured: with only the markup
-        # loaded, `window.pill === document.getElementById('pill')` is true.
-        #
-        # Guarding on the FUNCTION rather than the object. Skipping is safe:
-        # loadFinished re-applies the pending state once the script has run,
-        # which is what `self._pending` is for.
+        # Through run_js, so nothing bypasses the marshal. Guard on the function:
+        # window.pill is the #pill div until the page script runs; loadFinished re-
+        # applies _pending.
         self.run_js(
             "window.pill && typeof window.pill.set === 'function' "
             "&& window.pill.set(%s, %s)" % (json.dumps(st), json.dumps(data)))
@@ -813,9 +655,9 @@ class PillWebWindow(QMainWindow):
 
 
 class WebClipboardPanel(QWidget):
-    """Clipboard Intelligence for the web app (ported from the classic UI):
-    when the user copies text, a floating tech-noir panel offers Translate /
-    Summarise / Explain / Fix — one click routes it to the brain."""
+    """Clipboard panel: when the user copies text, offer Translate / Summarise /
+    Explain / Fix.
+    """
     action_requested = pyqtSignal(str)
     _ACTIONS = [
         ("TRANSLATE", "Translate this text to English: {text}"),
@@ -880,8 +722,7 @@ class WebClipboardPanel(QWidget):
 
     def show_for(self, text, x, y):
         self._text = text
-        # The size, never the content. The clipboard carries passwords and
-        # one-time codes, and this panel sits on top of every window.
+        # Log the size, never the content: the clipboard carries passwords and codes.
         words = len(text.split())
         self._preview.setText(f"{words} word{'' if words == 1 else 's'} copied")
         self.adjustSize()
@@ -891,15 +732,14 @@ class WebClipboardPanel(QWidget):
 
 
 class WebShellUI(QObject):
-    """The object AethelarkLive drives. Thread-safe: backend runs in a worker
-    thread and calls these; GUI work is marshalled to the main thread via signals."""
-    # The web pill's waveform is CSS-animated, so the backend must NOT spend CPU
-    # computing a per-frame RMS envelope during speech (it's a no-op here). The
-    # playback loop reads this to skip that work — keeps voice snappy.
+    """The object AethelarkLive drives. Thread-safe: the backend calls from worker
+    threads and GUI work is marshalled by signals.
+    """
+    # The waveform is CSS-animated, so the backend skips the per-frame level envelope.
     consumes_audio_level = True
 
-    # Declared at class level so core.ui_contract can verify conformance
-    # statically. The backend assigns these at startup (main.py:850-852).
+    # Declared at class level so core.ui_contract can check conformance; the backend
+    # assigns them at startup.
     on_text_command = None
     on_remote_clicked = None
     on_interrupt = None
@@ -915,6 +755,8 @@ class WebShellUI(QObject):
     _modules_sig      = pyqtSignal()
     _ambient_refresh_sig = pyqtSignal()
     _notice_sig       = pyqtSignal(str, str)   # (text, action) -> island notice
+    _ask_sig          = pyqtSignal()           # a held request appeared or was answered
+    _chrome_setup_sig = pyqtSignal()
     _shop_sig         = pyqtSignal()           # an install moved on -> repaint the shop
     _module_ready_sig = pyqtSignal(str)        # (title) an install finished
     _module_gone_sig = pyqtSignal()            # a module was removed
@@ -926,8 +768,7 @@ class WebShellUI(QObject):
         load_app_fonts()
         self._app.setStyle("Fusion")
 
-        # Set crisp high-res Aethelark Eagle icon for OS dock, taskbar, and Alt-Tab switcher
-        icon_file = BASE / "assets" / "images" / "aethelark.png"
+        icon_file = BASE / "assets" / "images" / "app_icon.png"
         if not icon_file.is_file():
             icon_file = BASE / "web" / "public" / "favicon-512x512.png"
         if icon_file.is_file():
@@ -936,24 +777,25 @@ class WebShellUI(QObject):
 
         self.pinned = False
 
-        #: Modules the user has actually brought up in this session. Until a
-        #: module is in here it may only reach the island by having live work
-        #: on a machine — see `_ambient_may_speak`.
+        # Modules the user brought up this session; until then a module reaches the
+        # island only with live work (_ambient_may_speak).
         self._ambient_engaged: set[str] = set()
-        #: "<module>:<printer>" for every machine seen with a job on it this
-        #: session, so the end of that job is allowed to speak and the end of
-        #: a job nobody watched is not.
+        # "<module>:<printer>" for every machine seen with a job this session, so only
+        # the end of a watched job may speak.
         self._ambient_live_jobs: set[str] = set()
         from core.activities import ActivityBoard
         self._activity_board = ActivityBoard()
+        self._asking = ""
+        self._ask_sig.connect(self._sync_ask)
+        from core import escalations
+        escalations.add_listener(self._on_escalation_ui)
         self._activity_sig: tuple = ()
         self._agent_busy: dict[str, tuple[bool, float]] = {}
         self._level_at = 0.0
         self._muted = False
         self._last_state = None      # dedupe: backend re-asserts SPEAKING per audio frame
         self._active_pill_context = None
-        #: Whether what is on screen arrived unprompted. Declared here so
-        #: `_may_take_the_screen` reads a real attribute rather than a default.
+        # Whether what is on screen arrived unprompted (_may_take_the_screen).
         self._active_pill_is_ambient = False
         self._log_lines = []
         self._assistant_name = "Aethelark"
@@ -961,8 +803,8 @@ class WebShellUI(QObject):
         self._routing = None      # cached capability routing; drives lane labels
 
         self.on_text_command = None
-        #: Set by AethelarkLive. Called with one short line whenever the
-        #: island starts showing something different.
+        # Set by AethelarkLive: called with one line whenever the island starts showing
+        # something different.
         self.on_island_subject = None
         self.on_remote_clicked = None
         self.on_interrupt = None
@@ -974,8 +816,7 @@ class WebShellUI(QObject):
         self.on_card_action = None
         self.on_session_refresh = None
         self.on_refine_pick = None
-        #: Whether the user is talking right now, from the voice loop's own
-        #: speech detector. Drives the island between resting and hearing.
+        # Whether the user is talking now, from the voice loop's speech detector.
         self._hearing = False
         self._reconfig_win = None
 
@@ -988,8 +829,7 @@ class WebShellUI(QObject):
 
         geo = QApplication.primaryScreen().availableGeometry()
         self._pill_geo = QRect(geo.x() + (geo.width() - PILL_W) // 2, geo.y() + 6, PILL_W, PILL_H)
-        # Expanded = a centered card at the artifact's screen proportions (~0.63 × 0.70),
-        # NOT fullscreen — so the collapse morph keeps the artifact's exact ratio & feel.
+        # Expanded is a centred card at about 0.63 × 0.70 of the screen, not fullscreen.
         ew, eh = int(geo.width() * 0.63), int(geo.height() * 0.70)
         self._expanded_geo = QRect(geo.x() + (geo.width() - ew) // 2,
                                    geo.y() + (geo.height() - eh) // 2, ew, eh)
@@ -1003,12 +843,12 @@ class WebShellUI(QObject):
         self._hearing_sig.connect(self._on_hearing)
         self._modules_sig.connect(self._on_modules_changed)
         self._ambient_refresh_sig.connect(self._refresh_ambient)
+        self._chrome_setup_sig.connect(self.chrome_setup)
         self._notice_sig.connect(
             lambda text, action: self.pill_win.set_pill(
                 "notice", {"text": text, "action": action}))
-        #: Installs started from Settings: name -> {"state", "step"}. Kept
-        #: here, not in the page, so closing Settings changes nothing about
-        #: an install in flight and reopening it shows where it got to.
+        # Installs started from Settings: name -> {"state", "step"}. Kept here so
+        # closing Settings does not affect them.
         self._installs: dict[str, dict] = {}
         self._install_lock = threading.Lock()
         self._shop_sig.connect(self._push_shop)
@@ -1028,9 +868,8 @@ class WebShellUI(QObject):
         self._metric_tmr.timeout.connect(self._tick)
         self._metric_tmr.start(2000)
 
-        # Clipboard assist — copy text, get quick actions. Opt-in: a panel on
-        # every copy is noise for most people, and the clipboard is where
-        # passwords and one-time codes pass through.
+        # Clipboard assist, opt-in: the clipboard is where passwords and codes pass
+        # through.
         self._last_clip = ""
         self._clip_panel = WebClipboardPanel()
         self._clip_panel.action_requested.connect(self._dispatch_command)
@@ -1039,7 +878,7 @@ class WebShellUI(QObject):
         except Exception as e:
             print(f"[aethelark_web] clipboard watch unavailable: {e}")
 
-        # Module Dynamic Island Auto-Sync & OS File System Watcher
+        # Module island templates and the modules folder watcher.
         self._setup_module_watcher()
         self._setup_ambient_events()
         self._prune_undo_journal()
@@ -1047,19 +886,8 @@ class WebShellUI(QObject):
         self.show_pill()
 
     def _prune_undo_journal(self):
-        """Drop staged blobs nothing refers to any more.
-
-        `core/journal.py` stages a full copy of every file the file tool
-        overwrites or deletes, so that the change can be reversed. `prune()`
-        exists to bound that and had no caller anywhere, so the copies
-        accumulated for the life of the install — every overwrite paying disk
-        for a rollback nothing was ever going to perform.
-
-        file_controller's `undo` action is what spends them; this keeps the
-        ones nothing can spend any more from piling up.
-
-        Best-effort and never fatal: housekeeping that prevents a launch would
-        be worse than the growth it prevents.
+        """Drop staged undo blobs nothing refers to any more. Best-effort; never
+        stops a launch.
         """
         try:
             from core import journal
@@ -1071,8 +899,9 @@ class WebShellUI(QObject):
             print(f"[journal] prune skipped: {e}")
 
     def _setup_module_watcher(self):
-        """Zero-poll hot module loader: registers module templates into PillWebWindow
-        and watches ~/.aethelark/modules/ for hot-mounts."""
+        """Register module island templates with the pill and watch the modules
+        folder for installs and removals.
+        """
         import os
         import pathlib
         from pathlib import Path
@@ -1097,9 +926,8 @@ class WebShellUI(QObject):
 
         user_mod_dir = str(default_manifest_dirs()[0])
         os.makedirs(user_mod_dir, exist_ok=True)
-        # A module installed or removed while the eagle runs. The directory
-        # changes when `<module> register` creates or deletes its folder; the
-        # settle timer turns a burst of writes into one refresh.
+        # The settle timer turns a burst of writes from `<module> register` into one
+        # refresh.
         self._mod_settle = QTimer(self)
         self._mod_settle.setSingleShot(True)
         self._mod_settle.timeout.connect(lambda: (_sync(), self._modules_sig.emit()))
@@ -1114,13 +942,8 @@ class WebShellUI(QObject):
 
 
     def _fit_island_window(self):
-        """Grow the island's window when an installed module brings a bigger card.
-
-        The window is sized once, at startup, for the cards installed then --
-        resizing a QWebEngineView relayouts Chromium, which is why it is not
-        resized per state. But a module installed while the eagle ran had its
-        card drawn clipped until a restart. Growing once per install is one
-        relayout. Never shrinks: a card already on screen keeps its room.
+        """Grow the island's window when a newly installed module brings a bigger
+        card. One relayout per install; never shrinks.
         """
         try:
             w, h = _island_window_size()
@@ -1160,69 +983,42 @@ class WebShellUI(QObject):
         self._ambient_listeners = ListenerSupervisor(
             listener_specs(manifests, MODULE_BUS._resolved))
 
-        #: Two seconds. The events these carry are minutes apart — a first
-        #: layer, a spool running low — so polling faster buys nothing, and a
-        #: stat() per module is cheap enough that it never needs to be clever.
+        # Two seconds: these events are minutes apart, and a stat() per module is cheap.
         self._ambient_timer = QTimer(self)
         self._ambient_timer.timeout.connect(self._drain_ambient_events)
         self._ambient_timer.start(2000)
 
-        # Before starting ours, clear any left running by an eagle that died
-        # without getting to stop_all. They are not harmless: enough of them
-        # exhaust a printer's websocket and every telemetry read then fails.
+        # Clear listeners left by an eagle that died: enough of them exhaust a printer's
+        # websocket.
         self._ambient_listeners.sweep_orphans()
 
         started = self._ambient_listeners.ensure_running()
         print(f"[ambient] watching {len(manifests)} module(s); "
               f"started {started or 'no'} listener(s)")
 
-    #: A machine with a job on it right now. Set by the operator, 2026-09-05:
-    #: "If the printer is currently PRINTING, yes, bring it up without me
-    #: saying anything, if it's NOT, don't bring it up unless I mention it."
+    # A machine with a job on it right now may speak unasked.
     _LIVE_JOB_STATES = frozenset({
         "PRINTING", "PAUSED", "PREPARING", "HEATING", "LEVELING", "UPLOADING"})
 
-    #: How a job ends. These speak only about a job this session watched start
-    #: — the tail of a sentence already on screen. An ERROR sitting on an idle
-    #: machine since before launch is not news, it is a status.
+    # How a job ends: these speak only about a job this session watched start.
     _JOB_ENDED_STATES = frozenset({"COMPLETED", "STOPPED", "ERROR"})
     _STATUS_ONLY_STATES = frozenset({"IDLE", "STANDBY", "DISCONNECTED", "OFFLINE",
                                      "UNREACHABLE", "UNKNOWN", "UPLOADING"})
 
     def _ambient_may_speak(self, event) -> bool:
-        """Whether an unasked-for event has earned the island.
-
-        The rule this enforces is already written in `start_ambient_events`:
-        modules do not speak first. What was missing was any test of it, so a
-        printer that had been sitting idle since boot announced itself as the
-        first thing on screen every single launch — and announced itself as
-        UNREACHABLE, on the strength of one dropped UDP packet, while
-        answering a broadcast from the same laptop in 0.19s.
-
-        Two ways through:
-
-          - The user brought this module up in this session. From then on it
-            is a conversation and the module may add to it.
-          - There is a job on the machine right now, or a job this session
-            saw running has just ended. That is the second half of a sentence
-            the user started by pressing print.
-
-        Everything else — idle, offline, unreachable, a spool that is low on a
-        machine nobody is using — is a status, not news. It is still there to
-        be asked about; it just does not interrupt.
+        """Whether an unasked-for event has earned the island: the user brought this
+        module up this session, or a job is running or just ended on a watched
+        machine. Anything else is a status.
         """
         payload = event.payload if isinstance(event.payload, dict) else {}
         telemetry = payload.get("telemetry")
         state = ""
         if isinstance(telemetry, dict):
             state = str(telemetry.get("state") or "").upper()
-        # The state can arrive as "PrinterState.PRINTING" through asdict on a
-        # str-Enum, so match on the tail rather than the whole token.
+        # The state can arrive as "PrinterState.PRINTING", so match the tail.
         state = state.rsplit(".", 1)[-1]
 
-        # A machine sitting there is status, not news, even in a session that
-        # used the module: an idle Centauri Carbon 2 took the island over the
-        # camera card of a print that had just started on the other printer.
+        # An idle machine is status, not news, even in a session that used the module.
         if state in self._STATUS_ONLY_STATES:
             return False
         if event.module in self._ambient_engaged:
@@ -1266,13 +1062,10 @@ class WebShellUI(QObject):
 
         allowed = cards
         if not allowed:
-            # Deliberately quiet, and deliberately not counted as a failure:
-            # this is the normal state of a fleet nobody is using.
+            # Quiet and not a failure: a fleet nobody is using.
             return
 
-        # The island shows one thing. poll() has already ordered by the
-        # module's own priority, so the head is what belongs on screen; the
-        # rest happened and are not worth interrupting for.
+        # poll() has ordered by the module's priority: show the head, drop the rest.
         top = allowed[0]
         if not self._may_take_the_screen(top):
             return
@@ -1280,43 +1073,20 @@ class WebShellUI(QObject):
             print(f"[ambient] {len(allowed)} events; showing {top.event} "
                   f"(priority {top.priority})")
 
-        # duration_ms is the module saying how long its own event is worth
-        # looking at — a first layer is worth six seconds, an error twelve.
+        # duration_ms: how long the module says its own event is worth looking at.
         ttl = float(top.payload.get("duration_ms") or 0) / 1000.0
         self.set_pill_context(top.module, dict(top.payload),
                               ttl_s=ttl if ttl > 0 else 8.0, ambient=True)
 
-    #: What an unprompted event has to score to take the screen away from a
-    #: card the user asked for.
-    #:
-    #: The module ranks its own events against each other and the host ranks
-    #: them against a person, because only the host knows there is a person
-    #: reading. a3d's scale makes the line legible: printer_error 100,
-    #: printer_paused 95 and spool_low_alert 80 are all things you would want
-    #: to be told mid-sentence; first_layer_passed 35, print_complete 30,
-    #: print_progress 25 and printer_standby 5 are things that can wait for the
-    #: card in front of you to finish.
-    #:
-    #: Nothing is dropped either way -- an event that does not clear this is
-    #: still on the bus and still answerable when asked. It just does not take
-    #: the screen out from under a question the user asked thirty seconds ago.
+    # What an unprompted event must score to replace a card the user asked for. On a3d's
+    # scale: errors, pauses and low spools clear it; progress and standby do not.
+    # Nothing is dropped from the bus either way.
     AMBIENT_INTERRUPTS_A_CARD = 80
 
     def _may_take_the_screen(self, event) -> bool:
-        """Whether an unprompted event may replace what is already up.
-
-        `_ambient_may_speak` answers a different question -- whether this
-        module has earned the right to say anything at all -- and it was the
-        only gate there was. So a printer_standby at priority 5 could clear a
-        card the user had just asked for, two seconds after it arrived, purely
-        because the drain runs on a 2s timer and repainted unconditionally.
-
-        Three cases, and only the middle one is new:
-          - nothing on screen: anything may take it.
-          - a card the USER asked for: only an interrupt-grade event may.
-          - a card an earlier ambient event put up: replaceable, because
-            poll() has already ordered these by the module's own priority and
-            the newer head is by definition the more important news.
+        """Whether an unprompted event may replace what is up: anything may take an
+        empty island; only an interrupt-grade event replaces a card the user asked
+        for; a card an earlier ambient event put up is replaceable.
         """
         if self._active_pill_context is None:
             return True
@@ -1398,25 +1168,19 @@ class WebShellUI(QObject):
         w = self._clip_panel.width() or 360
         self._clip_panel.show_for(text, geo.x() + (geo.width() - w) // 2, geo.y() + 96)
 
-    # ---- window transitions (main thread) ----
     def show_pill(self):
         self.pill_win.setGeometry(self._pill_geo)
         self.pill_win.show(); self.pill_win.raise_()
 
-    # Expand/collapse is animated INSIDE the page (a GPU-composited transform on
-    # the card), not by resizing the Chromium window. Resizing forced a full page
-    # relayout every frame — the stutter you saw. The window is simply shown at
-    # its final size and the card springs in via CSS.
+    # Expand and collapse animate inside the page; the window is shown at its final
+    # size.
     _MORPH_OUT_MS = 260   # must cover the aeOut keyframe duration in web/dashboard.html
 
     def open_dashboard(self):
-        # Show the extended card at full size; the "spring from the island" is the
-        # CSS aeIn animation growing the card from the top-centre.
+        # Show the card at full size; CSS aeIn grows it from the top centre.
         self.dashboard.setGeometry(self._expanded_geo)
-        # Keep the window invisible for one frame so the CSS from-state (tiny +
-        # transparent) is applied BEFORE it's shown — otherwise the full-size card
-        # flashes for a frame. Fails safe: revealed unconditionally at 24ms even
-        # if the morph JS didn't run.
+        # Keep the window invisible for one frame so the CSS from-state applies first;
+        # revealed at 24 ms regardless.
         self.dashboard.setWindowOpacity(0.0)
         self.dashboard.show()
         self.dashboard.activateWindow(); self.dashboard.raise_()
@@ -1426,8 +1190,7 @@ class WebShellUI(QObject):
         self._push_all()
 
     def collapse_to_pill(self):
-        # Shrink the card back toward the island (CSS aeOut), then hand off to the
-        # live pill once the animation has finished.
+        # Shrink toward the island (CSS aeOut), then hand off to the pill.
         self.dashboard.push("playMorph", "out")
         QTimer.singleShot(self._MORPH_OUT_MS, self._after_collapse)
 
@@ -1438,17 +1201,11 @@ class WebShellUI(QObject):
         self.show_pill()
 
     def on_dashboard_blur(self):
-        # Interaction model (revised): the dashboard NO LONGER collapses just
-        # because it lost focus. Clicking another window (e.g. Claude Code next
-        # to Aethelark) must keep the dashboard open so the two can sit side by
-        # side. Collapse to the pill happens ONLY on an explicit trigger:
-        #   • the Collapse button in the UI          → bridge.collapse()
-        #   • a voice command ("go to pill mode", …) → collapse_to_pill()
-        #   • another window going fullscreen         → (handled elsewhere)
-        # so plain blur is intentionally a no-op now.
+        # The dashboard does not collapse on focus loss, so it can sit beside another
+        # window. It collapses only on the Collapse button, a voice command, or another
+        # window going fullscreen.
         return
 
-    # ---- bridge-driven ----
     def _on_ui_ready(self):
         self._ui_ready = True; self._push_all()
 
@@ -1461,12 +1218,7 @@ class WebShellUI(QObject):
             threading.Thread(target=self.on_text_command, args=(text,), daemon=True).start()
 
     def halt_swarm(self):
-        """INTERJECT · HALT SWARM: the eagle stops talking AND every agent stops.
-
-        This button used to do the first half only -- it was wired to the same
-        interrupt as Esc -- so agents kept building under a button that said
-        HALT.
-        """
+        """The eagle stops talking and every agent stops."""
         self.request_stop()
 
         def _halt():
@@ -1480,15 +1232,14 @@ class WebShellUI(QObject):
     def toggle_mute(self):
         self.muted = not self._muted
 
-    # ---- Settings panel (title-bar gear) ----
-    # ---- Settings > Modules: the shop ----
     def install_module(self, name: str) -> None:
-        """"Get" in the shop. Runs in the background, like an editor installing
-        an extension: the user can close Settings and carry on; the island says
-        when it is ready, and the running session picks it up with no restart.
+        """"Get" in the shop. Installs in the background; the island says when it is
+        ready and the running session picks it up.
         """
-        name = (name or "").strip()
+        from core.module_bus.installer import catalog_name
+        name = catalog_name(name or "") or ""
         if not name:
+            self.write_log("ERR: that module is not in the catalog, so it was not installed.")
             return
         if (self._installs.get(name) or {}).get("state") in ("queued", "installing"):
             return
@@ -1498,9 +1249,7 @@ class WebShellUI(QObject):
                          name=f"install-{name}").start()
 
     def remove_module(self, name: str) -> None:
-        """"Remove" in the shop. Its actions leave the eagle's tool list, which
-        is the point: a module the user does not use costs the model attention
-        on every turn. Adding it back is one Get."""
+        """"Remove" in the shop: its actions leave the eagle's tool list."""
         name = (name or "").strip()
         if not name:
             return
@@ -1524,8 +1273,7 @@ class WebShellUI(QObject):
 
     def _install_job(self, name: str) -> None:
         from core.module_bus import installer
-        # One at a time: two installs share the download tool and the
-        # modules folder, and a queue is easier to read than a race.
+        # One install at a time: they share the download tool and the modules folder.
         with self._install_lock:
             self._installs[name] = {"state": "installing", "step": "Starting…"}
             self._shop_sig.emit()
@@ -1553,8 +1301,7 @@ class WebShellUI(QObject):
             else title)
 
     def _on_module_ready(self, title: str) -> None:
-        """GUI thread. Load the module now rather than waiting on the folder
-        watcher, then tell the user on the island."""
+        """GUI thread. Load the module now, then say so on the island."""
         try:
             self._mod_settle.start(200)
         except Exception as e:
@@ -1585,21 +1332,19 @@ class WebShellUI(QObject):
         self._shop_sig.emit()
 
     def push_settings(self):
-        """Send a fresh settings snapshot to the panel. Computed off the GUI
-        thread — the first snapshot probes installed browsers (shells out to
-        xdg-settings), which must never block the UI / steal the audio GIL."""
+        """Send a fresh settings snapshot to the panel, computed off the GUI thread
+        (it shells out to xdg-settings).
+        """
         def _work():
             try:
                 from actions.app_settings import snapshot
                 self._push_settings_async(snapshot())
             except Exception as e:
                 print(f"[aethelark_web] settings snapshot failed: {e}")
-            # After the panel is drawn, so the shop has somewhere to go.
             self._shop_sig.emit()
         threading.Thread(target=_work, daemon=True).start()
 
     def _push_settings_async(self, snap):
-        # From a worker thread we can't touch the web view directly.
         self._settings_sig.emit(snap or {})
 
     def sync_island_prefs(self):
@@ -1619,13 +1364,22 @@ class WebShellUI(QObject):
             key = (data.pop("brain_api_key", "") or "").strip()
             from core import prefs
             before = prefs.enabled("labs_tools_enabled")
+            # Names live in the session's instructions, read when it connects: a
+            # rename the live session never heard was answered with the old name.
+            was = _config()
+            renamed = any(k in data and (data[k] or "") != (was.get(k) or "")
+                          for k in ("user_name", "assistant_name"))
             snap = save(data)
             if key:
-                snap = set_brain_key(data.get("brain_provider")
-                                     or snap["brain"]["provider"], key)
+                provider = (data.get("brain_provider") or snap["brain"]["provider"]
+                            or "google").lower()
+                if provider == "google":
+                    self.set_brain_key("google", key)
+                else:
+                    snap = set_brain_key(provider, key)
             self._push("setSettings", snap)
             self.sync_island_prefs()
-            if prefs.enabled("labs_tools_enabled") != before and self.on_session_refresh:
+            if (renamed or prefs.enabled("labs_tools_enabled") != before) and self.on_session_refresh:
                 threading.Thread(target=self.on_session_refresh, daemon=True).start()
         except Exception as e:
             print(f"[aethelark_web] save_settings failed: {e}")
@@ -1638,11 +1392,8 @@ class WebShellUI(QObject):
             print(f"[aethelark_web] autostart toggle failed: {e}")
 
     def set_brain_key(self, provider, key):
-        """Check a new key with Google, and only keep it if Google says yes.
-
-        Off the GUI thread: the check is a network call. A key that was
-        refused mid-session is replaced here too, so the voice loop waiting
-        on `reconfig_complete` carries on without a relaunch.
+        """Check a new key with Google and keep it only if Google accepts it. Off the
+        GUI thread. A key refused mid-session is replaced here too.
         """
         def _work():
             try:
@@ -1668,8 +1419,7 @@ class WebShellUI(QObject):
                 if status == "ok":
                     self.write_log(f"NET: Google connected — {res.get('email', '')}")
                 elif status == "not_configured":
-                    # The OAuth seam has no client_id yet — tell the user plainly
-                    # instead of the button silently snapping back to 'Connect'.
+                    # No OAuth client is configured: say so.
                     self.write_log("NET: Google sign-in isn't switched on yet "
                                    "(needs a google_client_id). Guest + browser "
                                    "automation still work in the meantime.")
@@ -1685,13 +1435,8 @@ class WebShellUI(QObject):
         threading.Thread(target=_flow, daemon=True).start()
 
     def connect_youtube(self):
-        """One button, whichever wall the user is actually at.
-
-        Connecting YouTube used to take four separate discoveries - sign in,
-        find the token predates the YouTube scope, reconnect, then find the
-        Data API switched off on the Cloud project. Each has a different fix,
-        and the eagle spent two rounds blaming the user's account for the last
-        one. This does the right one and says what it did.
+        """Connect YouTube: does whichever step the user is actually stuck at, and
+        says what it did.
         """
         import threading
 
@@ -1722,15 +1467,8 @@ class WebShellUI(QObject):
         threading.Thread(target=_run, daemon=True).start()
 
     def browser_sign_in(self, site: str):
-        """Open the eagle's own browser so the user can sign in to `site`.
-
-        This is the answer to "how do I log in?", which until now existed only
-        as a voice command you had to know to say. The eagle's browser is
-        separate from the user's Chrome on purpose, and nothing in the
-        interface said so or offered a way to act on it.
-
-        Off the UI thread: making the browser visible restarts it, which takes
-        a moment, and the panel must not freeze while it does.
+        """Open the eagle's own browser so the user can sign in to `site`. Off the UI
+        thread: making the browser visible restarts it.
         """
         import threading
 
@@ -1749,20 +1487,48 @@ class WebShellUI(QObject):
                     domain += ".com"
                 result = web_agency({"url": "https://" + domain,
                                      "action": "sign_in"})
-                # ok=False is the NORMAL outcome here: the window is open and
-                # the sign-in has not happened yet. Relayed as-is rather than
-                # dressed up as an error.
+                # ok=False is the normal outcome: the window is open and the sign-in has
+                # not happened yet.
                 self.write_log("SYS: " + (result.message or "Sign-in window opened."))
                 self._shop_sig.emit()
-                # `_push` touches the web view, which from a worker thread
-                # takes the whole app down - the crash the user hit. The
-                # settings signal marshals it back to the GUI thread, which is
-                # why `_push_settings_async` exists at all.
+                # From a worker thread, only through the settings signal: _push touches
+                # the web view.
                 self._push_settings_async(snapshot())
             except Exception as e:
                 self.write_log(f"SYS: Could not open the sign-in window: {e}")
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def chrome_setup(self):
+        """Let the eagle use the user's Chrome. Chrome allows it only from its own
+        settings page and will not open that page for another app, so the address
+        goes on the clipboard and Chrome comes forward.
+        """
+        from actions.grounding.web import chrome_link
+        st = chrome_link.begin_setup()
+        name = st["browser"] or "Chrome"
+        if st["state"] != "off":
+            self.show_notice(f"The eagle uses your {name} sign-ins")
+            self.push_settings()
+            return
+        QApplication.clipboard().setText(st["setup_url"])
+        self.show_notice(f"In {name}: paste the copied address, press Enter, "
+                         "tick Allow remote debugging")
+
+        def _wait():
+            if chrome_link.wait_until_on():
+                self.show_notice(f"Done. Sites you are signed in to in {name} "
+                                 "now work for the eagle")
+            self.push_settings()
+        threading.Thread(target=_wait, daemon=True).start()
+
+    def chrome_off(self):
+        from core import prefs
+        from actions.grounding.web import chrome_link
+        prefs.save({"chrome_signins": False})
+        if chrome_link._DEFAULT is not None:
+            threading.Thread(target=chrome_link._DEFAULT.close, daemon=True).start()
+        self.push_settings()
 
     def disconnect_google(self):
         try:
@@ -1772,14 +1538,13 @@ class WebShellUI(QObject):
             print(f"[aethelark_web] disconnect_google failed: {e}")
 
     def link_whatsapp(self):
-        # Opens WhatsApp Web in the eagle's own browser so the user can scan the QR
-        # once; the login persists in the profile used by send_message. Non-blocking.
+        # Open WhatsApp Web in the eagle's own browser for a one-time QR scan; the login
+        # persists in send_message's profile. Non-blocking.
         self.write_log("NET: Opening WhatsApp Web — scan the QR once to link.")
         self.browser_sign_in("web.whatsapp.com")
 
     def rerun_onboarding(self):
-        # Re-open the full ignition flow. on_done just refreshes the panel — the
-        # main app keeps running behind it (config is merged, never wiped).
+        # Re-open setup. The main app keeps running; config is merged, never wiped.
         def _done():
             try:
                 self._reonboard.close()
@@ -1790,7 +1555,6 @@ class WebShellUI(QObject):
         self._reonboard.showMaximized()
         self._reonboard.raise_()
 
-    # ---- pushing state to the web UI ----
     def _push(self, fn, payload):
         if self._ui_ready:
             self.dashboard.push(fn, payload)
@@ -1823,9 +1587,7 @@ class WebShellUI(QObject):
         self._push("setMemory", self._memory_facts())
 
     def _memory_changed(self) -> bool:
-        """True if the long-term memory file changed since we last read it.
-        Avoids re-parsing memory from disk on every 2s tick (that GIL churn
-        competed with the audio threads)."""
+        """True if the long-term memory file changed since it was last read."""
         try:
             from memory.memory_manager import MEMORY_PATH
             mtime = MEMORY_PATH.stat().st_mtime
@@ -1842,20 +1604,14 @@ class WebShellUI(QObject):
         self._push("setMetrics", {"cpu": f"{s['cpu']:.0f}%",
                                   "mem": f"{s['mem']:.0f}%", "gpu": gpu})
 
-    # ---- HARDCORE: the live swarm view ----
-    # board status -> (lane css class [work|review|block], badge text)
+    # Board status -> (lane CSS class, badge text).
     _SWARM_STMAP = {
         "working": ("work", "WORKING"), "review_blocked": ("block", "NEEDS YOU"),
         "failed": ("block", "FAILED"), "merged": ("review", "MERGED"),
         "stopped": ("review", "STOPPED"),
     }
     def _agent_label(self, assignee):
-        """Name a swarm lane honestly, given how the agent is actually running.
-
-        A CLI subprocess is "Claude Code"; the same agent driven through an SDK
-        is "Claude Agent"; a local model is "Gemma Agent". Calling an SDK worker
-        "Claude Code CLI" would claim a subprocess that does not exist.
-        """
+        """Name a swarm lane by how the agent actually runs: CLI, SDK or local model."""
         from core.capability.identity import label_from_routing
         try:
             if self._routing is None:
@@ -1866,11 +1622,8 @@ class WebShellUI(QObject):
         return label_from_routing(assignee, self._routing)
 
     def _swarm_view(self):
-        """Transform the live swarm blackboard into the #swarm UI's shape.
-
-        Returns None on error, an idle payload when no swarm is running, else the
-        live mission/agents/timeline. This is what makes HARDCORE real instead of
-        the static mockup — it reads the same blackboard the orchestrator writes.
+        """The live swarm blackboard in the #swarm UI's shape. None on error, an idle
+        payload when no swarm runs.
         """
         try:
             from actions.swarm_orchestrator import swarm_snapshot
@@ -2001,6 +1754,8 @@ class WebShellUI(QObject):
             from actions.swarm_sentinel import swarm_root_of
         except Exception:
             return
+        from core import escalations
+        waiting = {e.agent for e in escalations.pending()}
         seen = set()
         for (key, sdir), sess in POOL.all_sessions().items():
             if swarm_root_of(sdir) is not None or getattr(sess, "role", "") == "chief":
@@ -2025,8 +1780,10 @@ class WebShellUI(QObject):
                 "id": ident,
                 "state": "ended" if done_for > self._AGENT_DISMISS_S else "active",
                 "leading": f"{sess.agent_name} · {pathlib.Path(sdir).name}",
-                "trailing": "working" if busy else "done",
-                "relevance": 70 if busy else 40, "stale_after_s": 86400}})
+                "trailing": ("needs your OK" if sess.agent_name in waiting
+                             else "working" if busy else "done"),
+                "relevance": 90 if sess.agent_name in waiting else 70 if busy else 40,
+                "stale_after_s": 86400}})
             if was and not busy:
                 self.pill_win.set_pill("ready", {"label": f"{sess.agent_name} finished",
                                                  "id": f"{ident}:{int(since)}"})
@@ -2067,8 +1824,7 @@ class WebShellUI(QObject):
             print(f"[aethelark_web] phase push skipped: {e}")
 
     def _tick(self):
-        # Metrics are cheap (a psutil snapshot); memory is only re-read + pushed
-        # when the file actually changed, not every 2 seconds.
+        # Metrics every tick; memory only when the file changed.
         self._push_metrics()
         self._push_swarm()
         self._push_agents()
@@ -2103,7 +1859,6 @@ class WebShellUI(QObject):
                                   "value": str(v)})
         return facts[:5]
 
-    # ---- signal slots (main thread) ----
     def _on_hearing(self, on: bool):
         self._hearing = bool(on)
         if (self._last_state or "").upper() == "LISTENING":
@@ -2111,9 +1866,9 @@ class WebShellUI(QObject):
                                    self._pill_data("LISTENING"))
 
     def _on_modules_changed(self):
-        """Installed modules changed on disk: refresh the session, then the
-        listeners that watch for their events. Off the GUI thread, because the
-        session refresh waits for any reply in flight to finish."""
+        """Installed modules changed: refresh the session, then the event listeners.
+        Off the GUI thread: the refresh waits for any reply in flight.
+        """
         def _work():
             handler = self.on_modules_changed
             if handler is not None:
@@ -2129,35 +1884,30 @@ class WebShellUI(QObject):
         self._setup_ambient_events()
 
     def _on_state(self, state):
-        # Forwarded unconditionally: voice state and card state are orthogonal
-        # and the page is the only thing that knows which is on screen, so it
-        # is the only thing that can place a voice state. A card up routes it
-        # to the liveness dot; no card routes it to the capsule body.
+        # Forwarded unconditionally: only the page knows whether a card is up, so only
+        # it can place a voice state.
         self.pill_win.set_pill(self._pill_state(state), self._pill_data(state))
         self._push("setState", state)
 
     def _on_pill_context(self, module: str, data: dict, ttl_s: float,
                          ambient: bool = False):
         self._active_pill_context = (module, data)
-        #: Whether what is on screen is something the user asked for. Read by
-        #: `_may_take_the_screen` to decide whether an unprompted event is
-        #: allowed to replace it. Travels on the signal rather than being set
-        #: beside the emit, so it can never disagree with the context it
-        #: describes — both are written here, on the GUI thread, together.
+        # Whether what is on screen is something the user asked for
+        # (_may_take_the_screen). Travels on the signal so it cannot disagree with the
+        # context.
         self._active_pill_is_ambient = bool(ambient)
         self.pill_win.set_island_ttl(ttl_s)
         self.pill_win.set_pill(module, data)
-        # The page owns decay, because only the page knows whether the cursor
-        # is resting on the card. This timer is the backstop for the case where
-        # the page never reports back — a stuck context would otherwise
-        # suppress every state repaint for the rest of the session.
+        # The page owns decay. This timer is the backstop if the page never reports
+        # back.
         self._pill_context_timer.stop()
         self._pill_context_timer.start(
             int(ttl_s * 1000) + self._BACKSTOP_GRACE_MS)
 
     def note_island_opened(self, module: str):
-        """A card the page opened itself holds the screen like one the user
-        asked Python for: background events wait behind it."""
+        """A card the page opened itself holds the screen like one the user asked
+        for.
+        """
         self._active_pill_context = (module, {})
         self._active_pill_is_ambient = False
 
@@ -2169,11 +1919,8 @@ class WebShellUI(QObject):
         self._pill_context_timer.start(max(0, left_ms) + self._BACKSTOP_GRACE_MS)
 
     def live_media(self, module: str, subject: str, on: bool):
-        """Switch a module's live media (a printer camera) on or off.
-
-        Requests for one subject run in order on one thread and the last one
-        wins, so a card closed while the camera was still starting ends with
-        the camera off, not on.
+        """Switch a module's live media (a printer camera) on or off. Requests for
+        one subject run in order and the last one wins.
         """
         from main import MODULE_BUS
         with self._live_lock:
@@ -2212,30 +1959,18 @@ class WebShellUI(QObject):
         self._active_pill_is_ambient = False
         self._pill_context_timer.stop()
 
-    #: How long the backstop waits past the context's own decay before
-    #: deciding the page is never going to report back.
+    # How long the backstop waits past the context's own decay.
     _BACKSTOP_GRACE_MS = 10_000
 
     def _on_pill_context_expired(self):
         if self._active_pill_context is None:
             return                      # the page already collapsed it
         if self.deck_is_open():
-            # A deck is a decision in progress, and the page suspends its own
-            # decay for exactly that reason. This timer did not know about
-            # decks, so at ttl_s + grace it reset the pill and took five
-            # downloaded models off the screen while the user was choosing
-            # between them. It re-arms rather than standing down, so a context
-            # that really is stuck still clears once the deck goes away.
+            # A deck is a decision in progress: re-arm instead of clearing it.
             self._pill_context_timer.start(self._BACKSTOP_GRACE_MS)
             return
         if self._pill_state(self._last_state) != "idle":
-            # A turn is in flight. The page holds a card through a voice turn
-            # on purpose now -- that is what the liveness dot is for, and the
-            # dwell clock is frozen for the duration -- so this firing during
-            # a conversation is a false positive, not a stuck context. It
-            # re-arms rather than standing down, exactly as the deck case
-            # above does, so a genuinely stuck context still clears once the
-            # talking stops.
+            # A turn is in flight and the page holds cards through voice turns: re-arm.
             self._pill_context_timer.start(self._BACKSTOP_GRACE_MS)
             return
         self._active_pill_context = None
@@ -2243,12 +1978,8 @@ class WebShellUI(QObject):
                                self._pill_data(self._last_state))
 
     def _pill_state(self, s):
-        """Which face the island shows for a voice-loop state.
-
-        LISTENING is the state the loop sits in whenever the mic is open,
-        which is almost always. Drawing it as a moving waveform meant the
-        island animated forever, identically in a silent room. It now rests,
-        and shows the waveform only while the user is actually talking.
+        """Which face the island shows for a voice-loop state. LISTENING rests unless
+        the user is actually talking.
         """
         s = (s or "").upper()
         if s == "LISTENING":
@@ -2294,11 +2025,7 @@ class WebShellUI(QObject):
         self._push("setLog", self._log_lines[-40:])
 
     def _on_reconfig(self):
-        """Google refused the key: say so on the island and open the key screen.
-
-        This used to print one line to a terminal and wait for a flag nothing
-        ever set, so the only fix was quitting and relaunching.
-        """
+        """Google refused the key: say so on the island and open the key screen."""
         self.pill_win.set_pill("notice", {"text": "Gemini key refused · tap to fix",
                                           "action": "key"})
         win = self._reconfig_win
@@ -2314,17 +2041,15 @@ class WebShellUI(QObject):
 
         self._reconfig_win = OnboardingWindow(
             on_done=_done, mode="key", on_cancel=lambda: None,
-            reason="Google turned your Gemini key down. Paste a new one to "
-                   "keep going.")
+            reason="Google turned your Gemini key down. Get a new one, "
+                   "free, to keep going.")
         self._reconfig_win.showMaximized()
         self._reconfig_win.raise_()
 
-    # ---- the interface AethelarkLive expects (thread-safe) ----
+    # The interface AethelarkLive expects (thread-safe).
     def set_state(self, state):
-        # The playback loop re-asserts SPEAKING on EVERY audio frame (~20/s).
-        # In the web app each change rebuilds the pill DOM via runJavaScript, so
-        # firing 20x/s glitched the waveform and stole CPU from audio (the old
-        # QPainter UI didn't care). Only act on real transitions.
+        # The playback loop re-asserts SPEAKING on every audio frame: act only on real
+        # transitions.
         if state == self._last_state:
             return
         self._last_state = state
@@ -2333,6 +2058,50 @@ class WebShellUI(QObject):
         if not str(text).startswith(("SYS:", "ERR:")):
             print(f"[chat] {text}")
         self._log_sig.emit(text)
+    def request_chrome_setup(self) -> None:
+        """chrome_setup from any thread: it touches the clipboard."""
+        self._chrome_setup_sig.emit()
+
+    def _on_escalation_ui(self, esc) -> None:
+        if getattr(esc, "kind", "") == "resolved" or not getattr(esc, "informational", False):
+            self._ask_sig.emit()
+
+    def _sync_ask(self) -> None:
+        """GUI thread. The island shows the oldest held request, or lets go of
+        the one it showed once that is answered."""
+        from core import escalations
+        esc = escalations.oldest()
+        if esc is not None:
+            if esc.id == self._asking:
+                return
+            self._asking = esc.id
+            lines = [ln.strip() for ln in esc.excerpt.split(" / ") if ln.strip()]
+            self.pill_win.set_pill("ask", {
+                "id": esc.id, "agent": esc.agent,
+                "what": lines[0] if lines else esc.reason,
+                "command": lines[-1] if len(lines) > 1 else "",
+                "why": esc.reason})
+            return
+        if self._asking:
+            done, self._asking = self._asking, ""
+            self.pill_win.set_pill("ask_done", {"id": done})
+
+    def answer_request(self, esc_id: str, verdict: str) -> None:
+        """A tap on Allow or Don't allow: the user's own answer, delivered the
+        same way a spoken one is."""
+        if verdict not in ("allow", "deny"):
+            return
+        from core import escalations
+        esc = escalations.find(esc_id)
+        if esc is None:
+            self._ask_sig.emit()
+            return
+
+        def _work():
+            from actions.swarm_orchestrator import deliver_verdict
+            print(f"[island] {deliver_verdict(esc, verdict, by='tap')}")
+        threading.Thread(target=_work, daemon=True, name="island-answer").start()
+
     def show_notice(self, text: str, action: str = "") -> None:
         """One line on the island until the next state change replaces it.
         `action="key"` makes a tap open the key screen; anything else, nothing."""
@@ -2361,22 +2130,16 @@ class WebShellUI(QObject):
         self.root.quit()
 
     def notify_phone_connected(self): pass
-    # ---- the deck on the island, as the voice tools see it ----------------
 
     def deck_is_open(self) -> bool:
         return bool(getattr(self, "_deck_open", False))
 
-    #: Hard cap on the island line. The page already trims to 96; this is the
-    #: backstop, because this text is spent from the same context budget as the
-    #: conversation and nothing else guards it on this side.
+    # Hard cap on the island line: it is spent from the conversation's context budget.
     _ISLAND_LINE_MAX = 120
 
     def note_island_subject(self, line: str) -> None:
-        """Tell the model what the user is looking at.
-
-        Deduplicated here as well as in the page: the page is one window into
-        one process and this is the thing that actually spends context, so the
-        guard belongs on both ends of the wire rather than only the far one.
+        """Tell the model what the user is looking at. Deduplicated here as well as
+        in the page, because this end spends context.
         """
         line = (line or "").strip()[:self._ISLAND_LINE_MAX]
         if not line or line == getattr(self, "_island_subject", None):
@@ -2385,8 +2148,7 @@ class WebShellUI(QObject):
         handler = getattr(self, "on_island_subject", None)
         if handler is None:
             return
-        # Off the GUI thread for the same reason _dispatch_command is: this
-        # reaches the live session, and the session is not ours to block on.
+        # Off the GUI thread: this reaches the live session.
         threading.Thread(target=handler, args=(line,), daemon=True).start()
 
     def island_fleet(self) -> str:
@@ -2429,11 +2191,8 @@ class WebShellUI(QObject):
         return True
 
     def island_deck_show(self, index: int) -> bool:
-        """Jump to a 0-based position in the deck.
-
-        Returns whether that position exists, so "show me the eighth one" over
-        a deck of five is answered rather than silently ignored. The size comes
-        from the page, which is the only thing that knows it.
+        """Jump to a 0-based position in the deck. Returns whether it exists; the
+        size comes from the page.
         """
         index = int(index)
         if not (0 <= index < int(getattr(self, "_deck_len", 0))):
@@ -2455,13 +2214,8 @@ class WebShellUI(QObject):
 
     def set_pill_context(self, module: str, data: dict, ttl_s: float = 20.0,
                          *, ambient: bool = False):
-        """Put a module's card on the island.
-
-        `ambient=True` marks a card the module raised on its own. It paints
-        identically; the difference is that it does not count as the user
-        having brought that module up. Without the distinction the ambient
-        gate below would open itself: one unprompted card would register as
-        engagement and every later one would be allowed through.
+        """Put a module's card on the island. ambient=True marks a card the module
+        raised itself: it does not count as the user bringing the module up.
         """
         if not ambient:
             self._ambient_engaged.add(module)
@@ -2474,24 +2228,14 @@ class WebShellUI(QObject):
         from core.card_assembly import needs_depth
         from main import CARD_STORE, MODULE_BUS, TOOL_SPECS, ToolSpec
 
-        # What fills the deeper card is the module's to say: `prefetch` on its
-        # cards. A module that declares none has no deeper view to fetch.
+        # The deeper card is filled by the module's `prefetch` tools; none means nothing
+        # to fetch.
         tools = MODULE_BUS.depth_tools(module)
         if not tools or not ticker:
             return
 
-        # A prefetch may already have filled this in while the capsule sat on
-        # screen. Cashing that in here — a dict copy and a signal emit — is
-        # what makes the click instant instead of paying the ~35s fetch again;
-        # that is the entire point of prefetching. A quiet caller (the
-        # prefetch itself) has nothing to repaint even when this fires.
-        #
-        # How long that stored answer stays worth reusing is the module's call,
-        # not this file's: `[island].fresh_for` in its manifest. The store has
-        # no expiry of its own and outlives the turn that filled it, so without
-        # a bound a price fetched minutes ago was handed back and painted as
-        # current. A module that declares nothing gets 0, which means no bound
-        # — the old behaviour, and the right one for answers that do not rot.
+        # Reuse what a prefetch already stored, within the module's `[island].fresh_for`
+        # (0 means no bound).
         face = MODULE_BUS.island_face(tools[0])
         fresh_for = float(getattr(face, "fresh_for", 0.0) or 0.0)
         stored = CARD_STORE.card_for(ticker, fresh_for=fresh_for)
@@ -2500,34 +2244,18 @@ class WebShellUI(QObject):
                 self.set_pill_context(module, stored, ttl_s=30.0)
             return
 
-        # The card may already hold the deep answer — the model runs analyze
-        # itself for "is Nvidia a good buy". Paying 35s again for figures
-        # already on screen is the wrong kind of thorough.
+        # The card may already hold the deep answer.
         current = (self._active_pill_context or ("", {}))[1]
         if not needs_depth(current):
             return
         if getattr(self, "_depth_inflight", None) == (module, ticker):
-            # Already fetching exactly this — but WHY it is being fetched can
-            # change while it runs, and dropping the second caller loses that.
-            #
-            # Measured 2026-09-07 by instrumenting both calls. The capsule
-            # lands and fires prefetch_depth(quiet=True) at t=7ms; the user
-            # clicks into the layers 600ms later and fires
-            # request_depth(quiet=False), which lands here and returns. The
-            # quiet fetch then completes, absorbs analyze AND governance into
-            # CARD_STORE — and repaints nothing, because a prefetch must never
-            # repaint what someone is reading.
-            #
-            # So the expanded card sat empty over data that had already
-            # arrived, and only filled if the user clicked a SECOND time after
-            # the fetch finished. The optimisation meant to make the click
-            # instant was the reason the click showed nothing.
+            # Already fetching this: record that someone is now looking, so the running
+            # fetch repaints when it lands.
             if not quiet:
                 self._depth_wants_paint = True
             return
         self._depth_inflight = (module, ticker)
-        #: Somebody is looking at the card this fetch is for. Set by the loud
-        #: caller, whether it started the fetch or arrived during one.
+        # Someone is looking at the card this fetch is for.
         self._depth_wants_paint = not quiet
 
         def _run():
@@ -2539,19 +2267,16 @@ class WebShellUI(QObject):
                     payload = (result.data.get("result")
                                if isinstance(result.data, dict) else None)
                     if not isinstance(payload, dict):
-                        # One tool having nothing to say is not a reason to
-                        # abandon the rest of the card.
+                        # One tool with nothing to say does not abandon the rest of the
+                        # card.
                         print(f"[aethelark_web] {tool} gave the card nothing "
                               f"for {ticker}: {result.message[:90]}")
                         continue
                     card = CARD_STORE.absorb(tool, payload, {"ticker": ticker})
-                    # `_depth_wants_paint`, not `quiet`: this fetch may have
-                    # STARTED quiet as a prefetch and been claimed by a click
-                    # while it ran. What matters is whether anyone is looking
-                    # now, not why it began.
+                    # Whether anyone is looking now, not why the fetch began.
                     if getattr(self, "_depth_wants_paint", False):
-                        # Repaint after each, so the layers appear without
-                        # waiting on governance behind them.
+                        # Repaint after each tool, so layers appear without waiting on
+                        # the rest.
                         self.set_pill_context(module, card, ttl_s=30.0)
             except Exception as e:
                 print(f"[aethelark_web] depth fetch failed for {ticker}: {e}")
@@ -2582,14 +2307,19 @@ class WebShellUI(QObject):
             self.set_state("LISTENING")
 
     def wait_for_api_key(self):
+        reported = False
         while True:
             try:
                 d = json.loads(API_KEYS.read_text(encoding="utf-8"))
                 if d.get("gemini_api_key"):
                     self._win._ready = True
                     return
+            except FileNotFoundError:
+                pass
             except Exception as _e:
-                print(f"[aethelark_web.py] Non-fatal error at line 686: {_e}")
+                if not reported:
+                    print(f"[aethelark_web] config not readable yet: {_e}")
+                    reported = True
             time.sleep(0.3)
 
 
@@ -2604,13 +2334,7 @@ def _config() -> dict:
 
 
 def _is_onboarded() -> bool:
-    """Set up means: finished the flow AND holding a key to think with.
-
-    `onboarded` alone was not enough. Skipping through the flow, or choosing
-    a provider the voice loop does not read, marked the install as set up with
-    no Gemini key -- and the app then waited for one forever behind an idle
-    island, with nothing on screen saying why.
-    """
+    """Set up means the flow finished and a Gemini key is saved."""
     cfg = _config()
     return bool(cfg.get("onboarded")) and bool(cfg.get("gemini_api_key"))
 
@@ -2623,6 +2347,10 @@ class OnboardBridge(QObject):
     def onboard_ready(self): self._win.on_ready()
     @pyqtSlot(str)
     def validate_key(self, key): self._win.validate_key(key)
+    @pyqtSlot()
+    def get_key(self): self._win.get_key()
+    @pyqtSlot()
+    def use_found_key(self): self._win.use_found_key()
     @pyqtSlot(str)
     def open_url(self, url): self._win.open_url(url)
     @pyqtSlot(str)
@@ -2633,6 +2361,8 @@ class OnboardBridge(QObject):
     def stop_mic_check(self): self._win.stop_mic_check()
     @pyqtSlot()
     def enable_echo_cancel(self): self._win.enable_echo_cancel()
+    @pyqtSlot()
+    def chrome_setup(self): self._win.chrome_setup()
     @pyqtSlot(str)
     def complete(self, payload): self._win.complete(payload)
     @pyqtSlot()
@@ -2650,13 +2380,11 @@ class OnboardBridge(QObject):
 
 
 class OnboardingWindow(QMainWindow):
-    """First-run setup, and the place a refused key is fixed.
-
-    `mode="setup"` walks welcome -> key -> name -> microphone -> done.
-    `mode="key"` shows only the key screen: the running eagle's key was turned
-    down, and the one thing to do is paste a new one.
+    """First-run setup, and the place a refused key is fixed. mode="key" shows only
+    the key screen.
     """
     _push_sig = pyqtSignal(str, str)   # (fn, json-payload) — marshals to GUI thread
+    _front_sig = pyqtSignal()
 
     def __init__(self, on_done, mode: str = "setup", reason: str = "",
                  on_cancel=None):
@@ -2666,6 +2394,7 @@ class OnboardingWindow(QMainWindow):
         self._mode = mode
         self._reason = reason
         self._validated_key = ""
+        self._found_key = ""
         self._last_clip = ""
         self._mic_stop = threading.Event()
         self._mic_thread = None
@@ -2681,6 +2410,7 @@ class OnboardingWindow(QMainWindow):
         self.channel.registerObject("pybridge", self.bridge)
         self.view.page().setWebChannel(self.channel)
         self._push_sig.connect(self._do_push)
+        self._front_sig.connect(self._come_back)
         self.view.load(QUrl.fromLocalFile(str(ONBOARDING_HTML)))
 
     def _do_push(self, fn, payload):
@@ -2693,9 +2423,14 @@ class OnboardingWindow(QMainWindow):
 
     def on_ready(self):
         cfg = _config()
-        start = {"mode": self._mode, "user_name": cfg.get("user_name") or "",
+        from actions.grounding.web import chrome_link
+        chrome = chrome_link.status()
+        start = {"mode": self._mode,
+                 "user_name": cfg.get("user_name") or chrome_link.account_name(),
                  "has_key": bool(cfg.get("gemini_api_key")),
-                 "aec_offer": self._offer_echo_cancel()}
+                 "aec_offer": self._offer_echo_cancel(),
+                 "chrome": chrome["browser"] if chrome["state"] != "none" else "",
+                 "examples": WebShellUI._BASE_SUGGESTIONS}
         if self._mode == "key":
             start.update(step="key", reason=self._reason)
         else:
@@ -2708,14 +2443,14 @@ class OnboardingWindow(QMainWindow):
             except Exception as e:
                 print(f"[onboarding] could not list the modules: {e}")
         self.push("startAt", start)
-        if self._mode != "key":
-            self._clip_timer = QTimer(self)
-            self._clip_timer.timeout.connect(self._watch_clipboard)
-            self._clip_timer.start(800)
+        self._clip_timer = QTimer(self)
+        self._clip_timer.timeout.connect(self._watch_clipboard)
+        self._clip_timer.start(800)
+        if not start["has_key"] or self._mode == "key":
+            threading.Thread(target=self._look_for_key, daemon=True).start()
 
-        # The one expensive full scan of the machine, persisted so later
-        # launches load it in a millisecond. Off-thread: nvidia-smi and lspci
-        # can block briefly.
+        # The full machine scan, saved so later launches load it at once. Off-thread:
+        # nvidia-smi and lspci can block.
         def _probe():
             try:
                 from core.capability.profile import save, scan
@@ -2726,11 +2461,9 @@ class OnboardingWindow(QMainWindow):
 
     @staticmethod
     def _offer_echo_cancel() -> bool:
-        """Whether to offer echo cancellation: it can be turned on here, and is not.
-
-        Offered, never applied: it changes the default microphone and speakers
-        for every app on the computer, which is the user's call. Talking over
-        the eagle at a normal voice depends on it (core/barge_in.py).
+        """Whether to offer echo cancellation: it can be turned on and is not.
+        Offered, never applied: it changes the default microphone and speakers for
+        every app.
         """
         try:
             from core import echo_cancel
@@ -2751,14 +2484,28 @@ class OnboardingWindow(QMainWindow):
                 else f"It could not be turned on: {detail[:120]}")})
         threading.Thread(target=_work, daemon=True).start()
 
+    def chrome_setup(self):
+        from actions.grounding.web import chrome_link
+        st = chrome_link.begin_setup()
+        if st["state"] != "off":
+            self.push("setChrome", {"on": True})
+            return
+        QApplication.clipboard().setText(st["setup_url"])
+        self.push("setChrome", {"on": False})
+
+        def _wait():
+            self.push("setChrome", {"on": chrome_link.wait_until_on(timeout=600)})
+        threading.Thread(target=_wait, daemon=True).start()
+
     def open_url(self, url: str):
         from PyQt6.QtGui import QDesktopServices
         if str(url).startswith("https://"):
             QDesktopServices.openUrl(QUrl(str(url)))
 
     def start_modules(self, names_json: str):
-        """The modules the user ticked are added now, while they get a key and
-        finish setup; the last screen shows where each one got to."""
+        """Install the ticked modules now, while the user finishes setup; the last
+        screen shows where each got to.
+        """
         from core import setup_modules
         from core.module_bus import installer
         try:
@@ -2784,13 +2531,44 @@ class OnboardingWindow(QMainWindow):
                         install=install, report=report)).start()
 
     def _watch_clipboard(self):
-        """Someone who has just copied a key from Google's page should not have
-        to paste it. Only a string shaped exactly like a Gemini key leaves here."""
-        import re
+        """Pick a copied key off the clipboard. Only a string shaped exactly like a
+        Gemini key goes to the page.
+        """
+        from core import gemini_key
         text = (QApplication.clipboard().text() or "").strip()
-        if text != self._last_clip and re.fullmatch(r"AIza[0-9A-Za-z_\-]{35}", text):
+        if text != self._last_clip and gemini_key.shaped(text):
             self._last_clip = text
             self.push("clipboardKey", text)
+
+    def _look_for_key(self):
+        from core import gemini_key
+        for key in gemini_key.on_this_computer():
+            if gemini_key.check(key)[0]:
+                self._found_key = key
+                self.push("foundKey", {})
+                return
+
+    def use_found_key(self):
+        if self._found_key:
+            self._validated_key = self._found_key
+            self.push("setKeyResult", {"ok": True, "message": ""})
+
+    def get_key(self):
+        from actions.grounding.web import chrome_link
+        url = "https://aistudio.google.com/apikey"
+        g = chrome_link.open_signed_in(url)
+        if g is None:
+            self.open_url(url)
+        self.push("keyPageOpened", {"browser": g.browser.name if g else "",
+                                    "account": g.email if g else ""})
+
+    def _come_back(self):
+        if self.isActiveWindow():
+            return
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        QApplication.alert(self)
 
     def validate_key(self, key: str):
         def _work():
@@ -2798,10 +2576,10 @@ class OnboardingWindow(QMainWindow):
             ok, message = gemini_key.check(key)
             if ok:
                 self._validated_key = (key or "").strip()
+                self._front_sig.emit()
             self.push("setKeyResult", {"ok": ok, "message": message})
         threading.Thread(target=_work, daemon=True).start()
 
-    # ── microphone check ───────────────────────────────────────────────
     def start_mic_check(self):
         self.stop_mic_check()
         self._mic_stop = threading.Event()
@@ -2814,11 +2592,8 @@ class OnboardingWindow(QMainWindow):
         self._mic_stop.set()
 
     def _mic_probe(self, stop: threading.Event):
-        """Open the default input, report its level, and say when a voice is heard.
-
-        Runs the same library the voice loop uses, so a microphone that works
-        here works there -- and one that fails here fails with a sentence the
-        user can act on, instead of a silent island later.
+        """Open the default input with the voice loop's own library, report its
+        level, and say when a voice is heard.
         """
         try:
             import numpy as np
@@ -2862,7 +2637,6 @@ class OnboardingWindow(QMainWindow):
             self.push("setMic", {"state": "error", "message":
                       f"The microphone could not be opened ({str(e)[:80]})."})
 
-    # ── finishing ──────────────────────────────────────────────────────
     def complete(self, payload):
         self.stop_mic_check()
         if getattr(self, "_clip_timer", None):
@@ -2888,12 +2662,16 @@ class OnboardingWindow(QMainWindow):
             user_paths.write_private(API_KEYS, json.dumps(cfg, indent=4))
         except Exception as e:
             print(f"[onboarding] could not write config: {e}")
+        from config import reset_client_cache
+        reset_client_cache()
         self.close()
         self._on_done()
 
     def cancel(self):
         """The ✕. First run: quit. Fixing a key: just close the window."""
         self.stop_mic_check()
+        if getattr(self, "_clip_timer", None):
+            self._clip_timer.stop()
         if self._on_cancel is not None:
             self.close()
             self._on_cancel()
@@ -2901,38 +2679,38 @@ class OnboardingWindow(QMainWindow):
             QApplication.instance().quit()
 
 
+VOICE_DID_NOT_START = "Voice didn't start. Run: eagle --doctor --fix"
+
+
 def _launch_main_app():
+    # The app lives in the pill, a Tool window Qt does not count. Left at the default,
+    # closing any other window while the full window was hidden (the key screen when
+    # Google refused a key, done or dismissed) quit the whole eagle. Quit is explicit.
+    QApplication.instance().setQuitOnLastWindowClosed(False)
     ui = WebShellUI("face.png")
 
     def _say_if_update_is_ready():
         from core.update_check import newer_version
         if newer_version(BASE):
-            ui.show_notice("A new version is ready. Run eagle update in a terminal.")
+            ui.show_notice("New version ready. Run: eagle update")
 
     QTimer.singleShot(20000, lambda: threading.Thread(
         target=_say_if_update_is_ready, daemon=True, name="update-check").start())
 
     def runner():
         ui.wait_for_api_key()
-        from main import AethelarkLive, _run_core
+        try:
+            from main import AethelarkLive, _run_core
+        except Exception:
+            # This thread dying used to leave the pill looking idle and never
+            # listening, with nothing on screen to say so.
+            import traceback
+            traceback.print_exc()
+            ui.show_notice(VOICE_DID_NOT_START)
+            return
         import asyncio
 
-        # `_run_core` exists precisely for this and was never called. Its own
-        # docstring names the failure it prevents — "a beautiful dead window is
-        # the worst failure mode available, because it looks fine" — and that
-        # is exactly what shipped: `asyncio.run` was invoked bare on a daemon
-        # thread, so anything escaping run() killed the thread in silence,
-        # leaving the window open and the pill animating over nothing.
-        #
-        # Measured 2026-09-07: the loop's default executor was shut down
-        # mid-session, which broke getaddrinfo, which broke every reconnect.
-        # The eagle spent the rest of the session retrying DNS every three
-        # seconds, forever, with no supervisor to notice and nothing on screen
-        # to say so.
-        #
-        # A restart builds a NEW event loop and therefore a new default
-        # executor, so the class of failure that killed that session is
-        # survivable now rather than terminal.
+        # Supervised by _run_core, which builds a new event loop on a restart.
         def start():
             live = AethelarkLive(ui)
             asyncio.run(live.run())
@@ -2940,22 +2718,57 @@ def _launch_main_app():
         _run_core(ui, start)
 
     threading.Thread(target=runner, daemon=True).start()
-    # keep a reference so the shell isn't garbage-collected
+    # Keep a reference so the shell is not garbage-collected.
     QApplication.instance()._aethelark_ui = ui
 
 
 def _name_the_app(app):
-    """The window's identity for the desktop: a pinned launcher is matched to
-    its windows by this name, and without it the taskbar shows two icons."""
+    """The desktop matches a pinned launcher to its windows by this name."""
     app.setApplicationName("aethelark")
     app.setDesktopFileName("aethelark")
 
 
+def _quiet_once_started() -> None:
+    """Started detached by the launcher: stop writing into its start-up capture once
+    the app is up.
+    """
+    if not os.environ.pop("EAGLE_DETACHED", ""):
+        return
+
+    def to_null() -> None:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 1)
+        os.dup2(null, 2)
+        os.close(null)
+
+    QTimer.singleShot(8000, to_null)
+
+
+def _windows_through_x11(environ=None) -> bool:
+    """On Wayland, Qt's own windows can neither stay on top nor place themselves:
+    measured on Ubuntu 26.04, the pill sat mid-screen and sank behind the next
+    window opened. Through Xwayland the desktop honours both. Linux only, only
+    where Xwayland runs, and never over a platform the user chose."""
+    env = os.environ if environ is None else environ
+    if (sys.platform.startswith("linux") and env.get("WAYLAND_DISPLAY")
+            and env.get("DISPLAY") and not env.get("QT_QPA_PLATFORM")):
+        env["QT_QPA_PLATFORM"] = "xcb"
+        return True
+    return False
+
+
 def main():
+    _windows_through_x11()
     app = QApplication.instance() or QApplication(sys.argv)
     _name_the_app(app)
     load_app_fonts()
     app.setStyle("Fusion")
+    _quiet_once_started()
 
     if _is_onboarded():
         _launch_main_app()
@@ -2968,9 +2781,9 @@ def main():
 
 
 def _carries_no_signature(path) -> bool:
-    """Whether a bundle carries no signature entry at all — which is a
-    different thing from carrying one that does not verify. Reading a zip
-    entry is not cryptography, so this needs no crypto library present."""
+    """Whether a bundle has no signature entry at all, which differs from one that
+    does not verify.
+    """
     import zipfile
     try:
         with zipfile.ZipFile(path) as archive:
@@ -2980,22 +2793,14 @@ def _carries_no_signature(path) -> bool:
 
 
 def _maybe_modules() -> bool:
-    """`eagle --install-module <file>`, `eagle --modules`.
-
-    Handled before anything else starts, for the same reason `--doctor` is: a
-    person who has just bought a module has not necessarily got the eagle
-    running, and installing one must not require an API key, a window, or a
-    brain that answers. The checking, the refusal of a tampered or
-    path-escaping archive and the clean replace on upgrade all already existed
-    in core.module_bus; until now the only thing that called them was a test.
+    """`eagle --install-module <file>`, `eagle --modules`. Handled before anything
+    starts: installing a module needs no key, window or brain.
     """
     import sys
     argv = sys.argv[1:]
 
     if "--modules" in argv:
-        # One listing, whichever way a module arrived. This printed its own,
-        # from a different reader than `eagle modules`, and the two could
-        # disagree about the same directory.
+        # One listing, the same reader as `eagle modules`.
         from core.module_bus.installer import main as _modules
         raise SystemExit(_modules(["modules"]))
 
@@ -3012,9 +2817,8 @@ def _maybe_modules() -> bool:
 
     from core.module_bus import BundleError, ModuleManager
     path = argv[i + 1]
-    # A bundle carrying no signature at all is the one a developer builds for
-    # themselves. One carrying a signature that does not verify is refused
-    # whatever flags are passed — see install_bundle.
+    # No signature at all is a developer's own build. A signature that does not verify
+    # is always refused.
     allow_unsigned = "--allow-unsigned" in argv
 
     try:
@@ -3022,10 +2826,8 @@ def _maybe_modules() -> bool:
                                                   allow_unsigned=allow_unsigned)
     except BundleError as e:
         print(f"That module was not installed.\n\n{e}", file=sys.stderr)
-        # Only for a bundle carrying no signature at all. A bundle whose
-        # signature does not verify must never be answered with a flag to
-        # try next: no flag launders that, and suggesting one reads as if
-        # something might.
+        # Only for an unsigned bundle: a signature that does not verify gets no flag to
+        # try next.
         if not allow_unsigned and _carries_no_signature(path):
             print(f"\nIf you built this module yourself, install it with:\n"
                   f"  eagle --install-module {path} --allow-unsigned",
@@ -3036,9 +2838,7 @@ def _maybe_modules() -> bool:
               f"{e}", file=sys.stderr)
         raise SystemExit(1)
 
-    # A bundle carries source, not its dependencies: provisioning builds them
-    # their own environment. It had no caller, so a bundle whose command lives
-    # in that environment installed and could never run.
+    # A bundle carries source, not dependencies: provisioning builds its environment.
     manager = ModuleManager()
     if not manager.is_ready(manifest.key):
         print(f"Setting up {manifest.key} (downloading what it needs; this can "

@@ -1,15 +1,9 @@
-"""Media transport, on whichever platform this is.
+"""Media transport on whichever platform this is. Every mutating call reads status()
+back and compares it to what the action promised.
 
-Every mutating call reads `status()` back and compares it to what the action
-promised. What this replaced was `pyautogui.press("space")`: a keystroke to
-whatever window had focus, which could not fail, could not be verified, and —
-in the scenario this assistant exists for, a podcast playing while the user is
-in a game — went to the game.
-
-Three rules here are easy to get backwards, and each is documented where it is
-enforced: why `can()` is read only after the action, at `_refusal`; why an
-unreadable state is not "nothing is playing", at `_player_present`; and why
-that read-back is a bounded poll rather than one immediate read, at `_settle`.
+Three rules are documented where enforced: can() is read only after a refusal
+(_refusal), an unreadable state is not "nothing is playing" (_player_present), and
+the read-back is a bounded poll (_settle).
 """
 from __future__ import annotations
 
@@ -19,30 +13,16 @@ from actions.cli import registry
 from actions.cli.base import MediaBackend
 from core.tool_result import ToolResult
 
-#: How long a mutating command may keep re-reading `status()` waiting for the
-#: state it promised, and how often it reads. Both come from a measurement, not
-#: a preference. A media command is a call on a bus; the state is a property
-#: the player's own process updates afterwards, so the two do not land
-#: together. Timed against a live Chromium/MPRIS player on Linux: `play`
-#: returned with the state still reading "paused" and read "playing" 48ms
-#: later, while a `pause` sent to an already-paused player was still being
-#: polled at 2869ms because nothing was ever going to change.
-#:
-#: So: the interval is short enough that the 48ms case costs two or three
-#: reads, and the deadline is long enough to cover a bus slower than this
-#: machine's without making a genuinely dead command hang the assistant. Do not
-#: swap this for a fixed sleep — a sleep pays the worst case every time and
-#: still guesses; the loop below exits at the first read that agrees.
+# How long and how often a command re-reads status() for the promised state. The player
+# updates its state after the bus call returns (measured: 48 ms after `play`). A poll
+# exits at the first agreeing read; a fixed sleep always pays the worst case.
 _SETTLE_TIMEOUT_S = 0.5
 _SETTLE_INTERVAL_S = 0.025
 
 
 def backends_for(platform: str) -> list[MediaBackend]:
-    """Preference order per platform. First entry is the best available path.
-
-    Each import sits inside its branch, not at the top: `windows.py` reaches
-    for WinRT, which cannot load anywhere else, and a top-level import would
-    take this package down on every machine we develop on.
+    """Preference order per platform, first is best. Imports stay inside their
+    branch: windows.py needs WinRT.
     """
     if platform == "windows":
         from actions.cli.media.windows import SmtcBackend
@@ -50,16 +30,13 @@ def backends_for(platform: str) -> list[MediaBackend]:
     if platform == "macos":
         from actions.cli.media.macos import OsascriptMediaBackend
         return [OsascriptMediaBackend()]
-    # One rung on Linux by design: MPRIS is what every player publishes, so a
-    # second backend would be a second way to reach the same bus.
+    # One rung on Linux: MPRIS is what every player publishes.
     from actions.cli.media.linux import MprisBackend
     return [MprisBackend()]
 
 
-#: action -> (backend method, the state it promises, the sentence when it
-#: worked, the verb for a refusal). `next`/`previous` promise nothing: a skip
-#: leaves a paused player paused, and demanding "playing" back would fail a
-#: track change that worked perfectly.
+# action -> (backend method, the state it promises, the sentence when it worked, the
+# refusal verb). next/previous promise nothing: a skip leaves a paused player paused.
 _ACTIONS = {
     "play": ("play", "playing", "Playing", "resume"),
     "pause": ("pause", "paused", "Paused", "pause"),
@@ -72,11 +49,8 @@ _PHRASE = {"playing": "Playing.", "paused": "Paused.",
 
 
 def _result_no_player() -> ToolResult:
-    """Nothing to control. Not a malfunction, and it must not sound like one.
-
-    The macOS half of the guidance says what `macos.py` is limited to, because
-    a user whose YouTube tab will not pause needs to hear the limit rather than
-    spend an afternoon hunting a bug.
+    """Nothing to control: not a malfunction. The macOS guidance states what macos.py
+    is limited to.
     """
     guidance = "Ask the user to start something playing, then try again."
     if registry.current_platform() == "macos":
@@ -94,11 +68,8 @@ def _resolve(backend: MediaBackend | None) -> MediaBackend | None:
 
 
 def _player_present(chosen: MediaBackend) -> bool | None:
-    """Is there a player at all — separately from whether it will answer.
-
-    True/False when the backend names a `target()`, None when it declines to.
-    A backend that leaves the optional default in place cannot say, and the
-    caller then words its answer to cover both cases rather than picking one.
+    """Is there a player at all? True/False when the backend names a target(), None
+    when it cannot say.
     """
     if type(chosen).target is MediaBackend.target:
         return None
@@ -125,15 +96,10 @@ def get_status(backend: MediaBackend | None = None) -> ToolResult:
 
 
 def _refusal(chosen: MediaBackend, action: str) -> ToolResult:
-    """The backend would not do it, and `can()` is finally worth asking.
-
-    Only on this path: on the happy path it was a second survey of the bus for
-    an answer the backend had already used. Here it buys the difference
-    between three genuinely different sentences.
-    """
+    """The backend refused: now ask can(), which separates three different answers."""
     verb = _ACTIONS[action][3]
     if chosen.can(action):
-        # It said yes and then did not do it — the player has probably just quit.
+        # It said yes and then did not: the player probably just quit.
         return ToolResult.failure(
             f"The player accepted a {verb} but did not carry it out.",
             guidance="It may have just closed. Check what is playing.",
@@ -142,7 +108,7 @@ def _refusal(chosen: MediaBackend, action: str) -> ToolResult:
     if present is False:
         return _result_no_player()
     if present is None:
-        # Cannot tell which it is, so say both rather than pick the likelier.
+        # Cannot tell which: say both.
         return ToolResult.failure(
             f"Nothing accepted the {verb}.",
             guidance=("Either nothing is playing, or the player will not "
@@ -156,26 +122,12 @@ def _refusal(chosen: MediaBackend, action: str) -> ToolResult:
 
 
 def _settle(chosen: MediaBackend, promised: str | None) -> str | None:
-    """Read `status()` back until it is what was promised, or time runs out.
-
-    The single immediate read this replaced was the whole bug: it caught the
-    state from *before* the command, so a play that worked came back "paused"
-    and was reported as a failure — and the model, told the action failed,
-    retried and toggled the audio straight back off. A false negative here is
-    worse than no verification at all.
-
-    Returns the last state seen either way, so the caller still fails honestly
-    on a command that genuinely did not take: waiting longer for a mismatch is
-    not the same as accepting it.
-
-    An unreadable `None` is polled through rather than returned at once, on
-    purpose — "not readable yet" is the same kind of not-yet as "not updated
-    yet", and a player that is still waking up gets the same grace as a slow
-    one. A player that never answers costs the deadline and then gets the
-    honest unverified success it always got.
+    """Read status() back until it is what was promised, or time runs out. Returns
+    the last state seen. A single immediate read caught the state from before the
+    command and reported a working play as a failure. None is polled through like
+    any not-yet.
     """
-    # Nothing promised, nothing to wait for: `next` leaves a paused player
-    # paused, so any state it reports is already the right one.
+    # Nothing promised: any state is right.
     if promised is None:
         return chosen.status()
     deadline = time.monotonic() + _SETTLE_TIMEOUT_S
@@ -187,7 +139,7 @@ def _settle(chosen: MediaBackend, promised: str | None) -> str | None:
 
 
 def _command(action: str, backend: MediaBackend | None) -> ToolResult:
-    """Act, then read the state back and check it against what was promised."""
+    """Act, then check the state against the promise."""
     if (chosen := _resolve(backend)) is None:
         return _result_no_player()
     method, promised, done, _ = _ACTIONS[action]
@@ -195,8 +147,7 @@ def _command(action: str, backend: MediaBackend | None) -> ToolResult:
         return _refusal(chosen, action)
     state = _settle(chosen, promised)
     if state is None:
-        # It probably worked; we cannot prove it. Say exactly that, and do NOT
-        # put `promised` in the data — that is a state nobody observed.
+        # Probably worked, unproven: say so, and do not put `promised` in the data.
         return ToolResult.success(
             f"{done}, but could not read the player's state back.",
             status=None, backend=chosen.name, verified=False)
@@ -226,11 +177,8 @@ def previous_track(backend: MediaBackend | None = None) -> ToolResult:
 
 
 def play_pause(backend: MediaBackend | None = None) -> ToolResult:
-    """Read the state, then send the explicit verb for it.
-
-    Same rule as `toggle_mute` in the audio slice, with the same reason: a
-    toggle reports a state it did not measure. Guessing here pauses the podcast
-    the user asked to resume, and then says it resumed it.
+    """Read the state, then send the explicit verb: a toggle reports a state it never
+    measured.
     """
     if (chosen := _resolve(backend)) is None:
         return _result_no_player()
@@ -241,10 +189,9 @@ def play_pause(backend: MediaBackend | None = None) -> ToolResult:
         return ToolResult.failure(
             "Could not read what the player is doing, so cannot tell whether "
             "to play or pause.",
-            # Names two actions the model can actually invoke: guidance
-            # pointing at a verb it cannot is a dead end dressed as a step.
+            # Name two actions the model can invoke.
             guidance=("Ask for it explicitly instead: media_play to resume, "
                       "media_pause to pause."),
             status=None, backend=chosen.name)
-    # A stopped player gets play: "play/pause" on silence means start it.
+    # A stopped player gets play.
     return pause(backend=chosen) if state == "playing" else play(backend=chosen)

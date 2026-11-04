@@ -1,21 +1,5 @@
-"""Act on the browser the eagle opened FOR THE USER — one implementation,
-reached by two callers: a mission step, and a single ad-hoc voice command.
-
-Before this file existed, everything here lived only inside
-core/mission_runners.py's _user_click/_user_type/_user_open/_user_look,
-private to that module and only reachable from inside a running mission.
-A live babysitting session (2026-08-13/14) showed the cost of that: asked
-to "click the search bar" as a single command, the model had no DOM-exact
-option and fell to computer_control's pixel/AT-SPI path instead — a
-completely different, less reliable implementation with its own bugs
-(AT-SPI was structurally broken in that environment), unrelated to the
-page the model was actually looking at.
-
-`actions/browser_control.py` now exposes these directly as its own
-`click`/`type`/`look` actions; `core/mission_runners.py`'s `_user_*`
-functions became thin adapters that call the same code. There is exactly
-one implementation of "find a control on the visible page and act on it"
-from here on.
+"""Act on the browser the eagle opened for the user. One implementation, reached by
+browser_control's click/type/look actions and by mission runners.
 """
 from __future__ import annotations
 
@@ -28,16 +12,12 @@ def _user_window(create: bool = False):
 
 
 def what_is_here(port, limit: int = 12) -> str:
-    """The names actually on the page, for a failure that could not find its
-    own — "no control matches" alone makes the model guess again."""
+    """The names actually on the page, for a failure that could not find its target."""
     try:
         from actions.grounding.web.page import nodes_from_records
         from actions.web_agency import _spread
         names = []
-        # Spread across the page, not the first N — taking the front returned
-        # "Home; All Models; Following; MakerLab" on a page of search
-        # results (the sidebar, in document order), the same positional
-        # bias hidden content everywhere else in this codebase.
+        # Spread across the page, not the first N (the sidebar).
         for n in _spread(nodes_from_records(port.collect()), budget=60, run=6):
             nm = str(getattr(n, "name", "") or "").strip()
             if nm and nm not in names:
@@ -49,19 +29,13 @@ def what_is_here(port, limit: int = 12) -> str:
         return ""
 
 
-#: Roles you can type into. `searchbox` first: typing a search query into a
-#: newsletter signup is the failure this ordering exists to avoid.
+# Roles you can type into, searchbox first.
 _FIELD_ROLES = ("searchbox", "textbox")
 
 
 def best_text_field(nodes):
-    """The field a person would type in, or None.
-
-    "Search for X" is two actions wearing one step — focus a field, then
-    type — and a person does not need to be told which field; they look
-    for the one they can type in. None is a real answer: guessing at a
-    control that is not editable is how `Page.fill: Element is not ...`
-    happened live, and how text ends up somewhere nobody asked for.
+    """The field a person would type in, or None. None is a real answer: never guess
+    at a non-editable control.
     """
     best, best_rank = None, ()
     for n in nodes or ():
@@ -84,7 +58,7 @@ def best_text_field(nodes):
 
 
 def focus_and_type(port, grounder, text: str) -> tuple[bool, str]:
-    """Put the cursor in the page's text field, then type. Exact, not blind."""
+    """Focus the page's text field, then type. Exact, not blind."""
     try:
         where = port.type_into_focused(text)
         if where:
@@ -127,30 +101,17 @@ def user_click(description: str) -> ToolResult:
             "no browser window is open for the user",
             guidance="Call browser_control action='go_to' with a url first.")
 
-    # `resolve_and_click` (WebGrounder, grounding/web/grounder.py) does the
-    # whole job a bare `find_node`-then-`click` used to leave to luck: retry
-    # among tied candidates until one produces a real, verified outcome
-    # (outcome.py), and fall back to vision when nothing structural matches
-    # at all. This function has never had a consent gate — that stays true
-    # here; `gate_fn` is a real no-op, not a TODO, because adding one is out
-    # of scope for wiring this in.
+    # resolve_and_click retries among tied candidates until one produces a verified
+    # outcome, falling back to vision. No consent gate here: gate_fn is a deliberate no-
+    # op.
     node, outcome = grounder.resolve_and_click(
         description, page=port, click_fn=port.click,
         gate_fn=lambda node: None)
 
-    # `node` — NOT `outcome` — is what says whether anything was clicked.
-    # This used to read `if not outcome:` and report "no control matching X"
-    # for both, which meant every click that produced no page-level signal
-    # was denied: reproduced live by clicking a real checkbox named "Accept
-    # terms", which came back `ok=False`, "no control matching 'Accept
-    # terms' — the page has: Accept terms", with the checkbox sitting there
-    # ticked. A tool that denies doing what it just did is worse than one
-    # that fails, because the model then does it again.
+    # `node`, not `outcome`, says whether anything was clicked: a ticked checkbox
+    # produces no page-level signal.
     if node is None:
-        # Nothing was clicked at all: structural retry exhausted, vision
-        # found nothing (or the page could not be read) — the same
-        # "genuinely no match" failure this always reported, worded and
-        # guided exactly as before.
+        # Nothing was clicked at all.
         here = what_is_here(port)
         return ToolResult.failure(
             f"no control matching {description!r}"
@@ -158,20 +119,13 @@ def user_click(description: str) -> ToolResult:
             guidance="Call browser_control action='look' and use one of "
                      "the names it returns.")
 
-    # Vision clicked a coordinate rather than a resolved control — there was
-    # never a `WebNode` with a real accessible name behind it, so naming it
-    # "clicked 'X'" would claim a name the page never gave. Honest instead
-    # of invented.
+    # Vision clicked a coordinate: do not claim a name the page never gave.
     what = ("the matched element" if getattr(node, "from_vision", False)
             else f"{node.name!r}")
 
     if outcome:
         return ToolResult.success(f"clicked {what} in the user's window")
-    # Delivered, unverified — and said that way round. `ok=True` claims only
-    # what is certain (the click was performed on a control that matched);
-    # the sentence after it reports what was observed, which is nothing.
-    # Same shape `_actuation_result` (web_agency.py) already uses for this
-    # exact case, rather than a success hedged into meaninglessness.
+    # Delivered, unverified, and said that way round.
     return ToolResult.success(
         f"clicked {what} in the user's window. Nothing on the page changed "
         "— call browser_control action='look' if you expected it to.")
@@ -187,10 +141,7 @@ def user_type(description: str | None, text: str) -> ToolResult:
         return ToolResult.failure("nothing to type",
                                   guidance="Pass text='...'.")
 
-    # "Type motherboard" names no control, because a person does not name
-    # one — they just clicked the field. With no explicit description, type
-    # into whatever the PAGE reports as focused: exact, because the browser
-    # knows, and it is the field a previous click landed on.
+    # No named control: type into whatever the page reports as focused.
     if not description:
         ok, detail = focus_and_type(port, grounder, text)
         if ok:
@@ -208,7 +159,7 @@ def user_type(description: str | None, text: str) -> ToolResult:
 
 
 def user_open(url: str) -> ToolResult:
-    port, _ = _user_window(create=True)   # the one call that may open one
+    port, _ = _user_window(create=True)  # The one call that may open a window.
     if not url:
         return ToolResult.failure("no url to open",
                                   guidance="Pass url='https://...'.")
@@ -233,14 +184,7 @@ def user_look(limit: int = 40) -> ToolResult:
     from actions.grounding.web.page import nodes_from_records
     nodes = nodes_from_records(port.collect())
 
-    # web_agency already checks this on its own hidden browser; this DOM
-    # path never did. Live, 2026-08-14: a Cloudflare "Just a moment..."
-    # interstitial has a handful of real controls (a heading, a Ray ID
-    # footer link), so it read as an ordinary thin page instead of a wall —
-    # every click/type attempt then failed against fields that were never
-    # really on the page, with no indication why. Unlike web_agency's
-    # hidden browser, this IS the window the user is looking at, so the
-    # actionable answer is simpler: ask them to clear it themselves.
+    # This is the window the user is looking at: a bot wall is theirs to clear.
     from actions.grounding.web.handoff import bot_wall_reason
     blocked = bot_wall_reason(nodes, port.url())
     if blocked:
@@ -253,12 +197,8 @@ def user_look(limit: int = 40) -> ToolResult:
 
     names = what_is_here(port, limit=limit)
     if not nodes:
-        # A window with zero controls is not a look that "worked" — it is
-        # indistinguishable from a blank/failed-to-load page. `user_look` is
-        # a rung on mission_ladder's "read" ladder (web_look, user_look,
-        # screen_look); reporting ok=True here would stop the ladder before
-        # it ever reaches screen_look, the visual fallback that exists
-        # exactly for this case. Matches the pre-refactor `ok=bool(nodes)`.
+        # Zero controls is not a working look; ok=False lets the read ladder reach
+        # screen_look.
         return ToolResult.failure(
             "0 controls in the user's window",
             guidance="The page may not have loaded, or may be blank — try "

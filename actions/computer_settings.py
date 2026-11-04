@@ -1,4 +1,3 @@
-#computer_settings.py
 import json
 from core.tool_result import Failed, ToolResult, settled
 import re
@@ -16,7 +15,9 @@ try:
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
-except ImportError:
+# Any failure, not only ImportError: on Linux the import opens the X display,
+# and on GNOME Wayland that raised and took the whole voice loop down with it.
+except Exception:
     _PYAUTOGUI = False
 
 try:
@@ -59,9 +60,7 @@ def _get_macos_wifi_interface() -> str:
         print(f"[computer_settings.py] Non-fatal error at line 54: {_e}")
     return "en0" 
 
-#: How far "turn it up" moves. Was five keypresses of unknown size on Windows
-#: and a 10% shell argument on Linux; now one number we choose, apply from the
-#: measured value, and verify.
+# How far "turn it up" moves, applied from the measured level and verified.
 _VOLUME_STEP = 10
 
 
@@ -82,27 +81,14 @@ def volume_mute():
 
 
 def volume_unmute():
-    """Its own function, deliberately.
-
-    `ACTION_MAP` used to alias "unmute" onto `volume_mute` because the old
-    implementation was a toggle, so both words landed on the same keypress.
-    Against an explicit `set_mute(True)` that alias would mute the user when
-    they asked to be unmuted - the loudest possible version of the tool lying
-    about what it did.
-    """
+    """Unmute explicitly: aliasing it onto a mute toggle would mute the user."""
     from actions.cli import audio
     return audio.set_mute(False)
 
 
 def volume_toggle_mute():
-    """Reads the state, then sets its opposite explicitly.
-
-    It was a hardcoded refusal - correct while `AudioBackend` was get / set /
-    set_muted with no reader, but still advertised in the action vocabulary, so
-    every "toggle mute" cost the model a turn to be told no. With `get_muted`
-    on the contract the toggle is measurable: read, invert, verify. It still
-    refuses on a backend that cannot report the state, because a toggle that
-    guesses cannot say what it changed to.
+    """Read the state and set its opposite. Refuses on a backend that cannot read it:
+    a guessing toggle cannot say what it changed to.
     """
     from actions.cli import audio
     return audio.toggle_mute()
@@ -119,8 +105,9 @@ def volume_set(value: int):
 
 
 def _linux_sysfs_brightness(delta_pct: float) -> bool:
-    """Adjust brightness via /sys/class/backlight sysfs — pure Python, no subprocess.
-    delta_pct: fraction to add (e.g. +0.1 or -0.1). Returns True on success."""
+    """Adjust brightness via /sys/class/backlight. delta_pct is a fraction to add
+    (+0.1). True on success.
+    """
     backlight_dir = Path("/sys/class/backlight")
     if not backlight_dir.exists():
         return False
@@ -136,12 +123,10 @@ def _linux_sysfs_brightness(delta_pct: float) -> bool:
             new_b = min(max_b, cur_b + step)
         else:
             new_b = max(max(1, int(max_b * 0.01)), cur_b - step)  # floor at ~1%
-        # sysfs write requires root or udev rule; try brightnessctl as writer
-        # since direct write may fail on most distros without polkit
+        # Writing sysfs needs root or a udev rule, so try brightnessctl.
         (dev / "brightness").write_text(str(new_b))
         return True
     except PermissionError:
-        # Fall back to brightnessctl with the computed absolute value
         try:
             run_cmd(
                 ["brightnessctl", "set", str(new_b)],
@@ -154,22 +139,16 @@ def _linux_sysfs_brightness(delta_pct: float) -> bool:
         return False
 
 
-#: GNOME owns the backlight on a desktop session and will set it without root,
-#: which is the whole problem xrandr was being used to work around. Measured on
-#: this machine 2026-09-03: 27% -> 32% moved /sys/class/backlight from 26621 to
-#: 31373. The xrandr path this replaces returned True while changing nothing —
-#: it clamped `min(1.0, current + delta)` against a ceiling the display already
-#: sat at, and it moved software gamma rather than the panel in any case.
+# GNOME owns the backlight in a desktop session and sets it without root. xrandr only
+# moved software gamma.
 _GNOME_POWER = ("--session", "--dest", "org.gnome.SettingsDaemon.Power",
                 "--object-path", "/org/gnome/SettingsDaemon/Power")
 _SCREEN_IFACE = "org.gnome.SettingsDaemon.Power.Screen"
 
 
 def _read_brightness():
-    """The panel's brightness as a percentage, or None if it cannot be read.
-
-    Tried in the order that works without privileges. Reading matters as much
-    as writing: an action that cannot check itself can only ever claim success.
+    """The panel's brightness as a percentage, or None. Unprivileged readers first;
+    an action that cannot check itself can only claim success.
     """
     try:
         done = run_cmd(["gdbus", "call", *_GNOME_POWER, "--method",
@@ -197,7 +176,7 @@ def _read_brightness():
 
 
 def _write_brightness(pct):
-    """Ask GNOME for a level. Whether it took is decided by reading it back."""
+    """Ask GNOME for a level; reading it back decides whether it took."""
     try:
         run_cmd(["gdbus", "call", *_GNOME_POWER, "--method",
                  "org.freedesktop.DBus.Properties.Set",
@@ -209,14 +188,7 @@ def _write_brightness(pct):
 
 
 def _step_brightness(delta_pct):
-    """Move the backlight and report what actually happened.
-
-    The shape `volume_set` already uses: hand back what the interface measured,
-    never what was asked for. Before this, every path reported
-    "Done: brightness_up." — brightnessctl was absent, the sysfs node is
-    root-owned, and xrandr clamped to a no-op. Three dead routes, three
-    successes claimed, and the screen never moved.
-    """
+    """Move the backlight and report the measured level, never the requested one."""
     import shutil
 
     before = _read_brightness()
@@ -321,11 +293,8 @@ def brightness_down():
     return None
 
 def _focused_window_name() -> str | None:
-    """The title of the window that currently has focus, or None.
-
-    None means "I do not know what is in front" — never permission. An action
-    that destroys something must name its target and fail CLOSED when it
-    cannot.
+    """The title of the focused window, or None. None is never permission: a
+    destructive action fails closed without a target.
     """
     try:
         from actions.grounding.resolver import structural_grounder
@@ -345,17 +314,13 @@ def _focused_window_name() -> str | None:
     return None
 
 
-#: Windows the eagle must never close, however clearly it can see them. A
-#: terminal is where the operator lives — closing it kills the session driving
-#: the eagle, which is exactly what happened.
+# Windows the eagle must never close. A terminal may be running the session driving the
+# eagle.
 _NEVER_CLOSE = ("terminal", "konsole", "xterm", "iterm", "tmux", "screen",
                 "@", "bash", "zsh", "powershell", "cmd.exe", "claude")
 
-#: Titles the assistant actually gives its own windows — "AETHELARK",
-#: "AETHELARK — Ignition", "<page> — AETHELARK" (aethelark_web.py:308,
-#: ui.py:2872). Deliberately NOT "eagle": nothing here is ever titled that, and
-#: the substring matches a terminal sitting in ~/Projects/Space-Eagle, which is
-#: how "close this window" over a shell shut the assistant down instead.
+# Titles the assistant gives its own windows. Not "eagle": that matches a terminal in
+# ~/Projects/Space-Eagle.
 _OWN_WINDOW_MARKERS = ("aethelark", "dynamic island")
 
 
@@ -364,14 +329,9 @@ def _is_own_window(title: str) -> bool:
 
 
 def quit_eagle():
-    """Shut the assistant down from whatever thread asked.
-
-    Tools run on a shared ThreadPoolExecutor, which is not a QThread and has no
-    event loop, so `QTimer.singleShot` started there never fires — Qt warns
-    "Timers can only be used with threads started with QThread" and the call
-    returns having scheduled nothing. `QMetaObject.invokeMethod` with a queued
-    connection is the cross-thread primitive: it posts to the receiver's own
-    thread, which for the application object is the GUI thread.
+    """Shut the assistant down from any thread. Tools run on a plain thread pool
+    where QTimer never fires, so a queued QMetaObject.invokeMethod posts to the
+    GUI thread.
     """
     try:
         from PyQt6.QtCore import QMetaObject, Qt
@@ -383,8 +343,7 @@ def quit_eagle():
             return "Shutting down."
     except Exception as e:
         print(f"[computer_settings] graceful quit unavailable: {e}")
-    # No Qt application to ask politely. Signalling our own process is the
-    # honest remaining option, and it is reported as what it is.
+    # No Qt application: signal our own process, and say so.
     import os
     import signal
     os.kill(os.getpid(), signal.SIGTERM)
@@ -392,10 +351,8 @@ def quit_eagle():
 
 
 def close_app():
-    """Quit the focused application — once it is known which.
-
-    Guarded for the same reason as close_window: this chord kills whatever
-    holds focus, and live it went for the user's terminal.
+    """Quit the focused application, once it is known which. Guarded like
+    close_window.
     """
     try:
         where = _focused_window_name()
@@ -407,17 +364,13 @@ def close_app():
             "be any window.",
             guidance="Ask the user which window they mean, or focus it first.")
     low = where.lower()
-    # The refusal runs first. A protected window whose title happens to name
-    # this project — a shell in ~/Projects/Space-Eagle — must be refused, not
-    # treated as the assistant's own window.
+    # Refuse first: a protected window may name this project.
     if any(bad in low for bad in _NEVER_CLOSE):
         return Failed(
             f"Refusing to quit {where!r} — that looks like a terminal, and "
             f"closing it would kill the session running the eagle.",
             guidance="Tell the user which window it is and let them do it.")
-    # Only after the refusal: this is genuinely one of our own windows, so the
-    # honest action is to shut the assistant down rather than send it a
-    # keystroke and leave a half-dead process behind.
+    # Our own window: shut the assistant down rather than send it a keystroke.
     if _is_own_window(low):
         return quit_eagle()
     if _OS == "Darwin": pyautogui.hotkey("command", "q")
@@ -426,12 +379,8 @@ def close_app():
 
 
 def close_window(backend=None):
-    """Close the focused window — once it is known WHICH window that is.
-
-    Was one line: `pyautogui.hotkey("alt", "f4")`, which closes whatever holds
-    focus. Live, that tried to close the user's terminal — the one running the
-    session driving the eagle. Third instance of the same bug: an OS-level
-    action fired without knowing its target.
+    """Close the focused window, once it is known which: Alt+F4 alone once went for
+    the user's terminal.
     """
     try:
         where = _focused_window_name()
@@ -443,24 +392,17 @@ def close_window(backend=None):
             "be any window.",
             guidance="Ask the user which window to close, or focus it first.")
     low = where.lower()
-    # The refusal runs first. A protected window whose title happens to name
-    # this project — a shell in ~/Projects/Space-Eagle — must be refused, not
-    # treated as the assistant's own window.
+    # Refuse first: a protected window may name this project.
     if any(bad in low for bad in _NEVER_CLOSE):
         return Failed(
             f"Refusing to close {where!r} — that looks like a terminal, and "
             f"closing it would kill the session running the eagle.",
             guidance="Tell the user which window it is and let them close it.")
-    # Only after the refusal: this is genuinely one of our own windows, so the
-    # honest action is to shut the assistant down rather than send it a
-    # keystroke and leave a half-dead process behind.
+    # Our own window: shut the assistant down rather than send it a keystroke.
     if _is_own_window(low):
         return quit_eagle()
     if _OS == "Linux":
-        # The name check above and the close now address the same window id.
-        # A keystroke lands on whatever holds focus when it arrives, which is
-        # not necessarily the window that was just validated — the guard and
-        # the action were pointed at different things.
+        # Close by the validated window id, not by a keystroke to whatever has focus.
         from actions.cli import window as _window
         native = _window.close_active(backend=backend, protected=_NEVER_CLOSE)
         if native.ok or native.data.get("backend"):
@@ -491,10 +433,7 @@ def maximize_window(backend=None):
     elif _OS == "Windows":
         pyautogui.hotkey("win", "up")
     else:
-        # wmctrl is not installed on the reference machine and this branch
-        # therefore raised into the bare except every time, silently landing
-        # on the keystroke. Ask the native layer first and only fall back for
-        # real.
+        # Ask the native layer first (wmctrl is often not installed).
         from actions.cli import window as _window
         native = _window.maximize_active(backend=backend)
         if native.ok:
@@ -505,16 +444,13 @@ def snap_left(backend=None):
     if _OS == "Windows":
         pyautogui.hotkey("win", "left")
     elif _OS == "Darwin":
-        # macOS has no built-in snap; try Rectangle app shortcut if installed
+        # macOS has no built-in snap: try Rectangle's shortcut.
         try:
             run_cmd(["open", "-a", "Rectangle"], capture_output=True, timeout=1)
         except Exception as _e:
             print(f"[computer_settings.py] Non-fatal error at line 246: {_e}")
         pyautogui.hotkey("ctrl", "option", "left")
     else:  # Linux
-        # Was `wmctrl ... 0,0,0,960,1080`: a binary that is not installed here
-        # (so it raised), swallowed by a bare except (so it reported nothing),
-        # at a size hardcoded for one monitor (so it was wrong anyway).
         from actions.cli import window as _window
         return _window.snap("left", backend=backend)
 
@@ -557,24 +493,16 @@ def focus_search():
     else:               pyautogui.hotkey("ctrl", "l")
 
 def pause_video():
-    """Play/pause on whatever is really playing.
-
-    Keeps its old name on purpose: `ACTION_MAP`, `core/capabilities.py` and the
-    model's learned vocabulary all reach for `pause_video`, and renaming it
-    would strand every one of them. Only the body changed - it was
-    `pyautogui.press("space")`, a keystroke to whichever window had focus. With
-    a podcast playing while the user is in a game, that space went to the game:
-    the podcast kept playing, and the tool reported success either way.
-
-    It reads the state and sends the explicit verb, so it refuses rather than
-    guess when nothing can tell it what is playing.
+    """Play/pause on whatever is really playing, sent to the player as an explicit
+    verb after reading its state. Refuses rather than guess. Named pause_video
+    because ACTION_MAP and the model use that name.
     """
     from actions.cli import media
     return media.play_pause()
 
 
 def media_status():
-    """What is playing, if anything. There was no way to ask before."""
+    """What is playing, if anything."""
     from actions.cli import media
     return media.get_status()
 
@@ -585,9 +513,7 @@ def media_play():
 
 
 def media_pause():
-    """Pause, explicitly. Distinct from `pause_video` for the same reason
-    `volume_unmute` is distinct from `volume_mute`: a toggle asked to pause
-    will happily resume."""
+    """Pause explicitly: a toggle asked to pause will resume."""
     from actions.cli import media
     return media.pause()
 
@@ -600,7 +526,6 @@ def media_next():
 def media_previous():
     from actions.cli import media
     return media.previous_track()
-
 
 
 def refresh_page():
@@ -874,9 +799,7 @@ ACTION_MAP: dict[str, callable] = {
     "pause_video":         pause_video,
     "play_pause":          pause_video,
     "media_status":        media_status,
-    # The explicit verbs, reachable on purpose: `play_pause` refuses when it
-    # cannot read the state and tells the model to ask explicitly instead, so
-    # the two actions that guidance names have to exist.
+    # The explicit verbs play_pause's refusal tells the model to use.
     "media_play":          media_play,
     "media_pause":         media_pause,
     "next_track":          media_next,
@@ -939,28 +862,21 @@ _DANGEROUS_ACTIONS = {"restart", "shutdown"}
 
 from core.confirm import PARAM as CONFIRM_PARAM, Gate  # noqa: E402
 
-#: One gate for this tool, living as long as the process does.
+# One gate for this tool, for the life of the process.
 _GATE = Gate()
 
-#: Actions that reach the machine through a native interface (`actions.cli`)
-#: instead of emulated input. They need no pyautogui, so the missing-pyautogui
-#: guard must not refuse them: the BARE case - a machine with nothing
-#: installed - still gets everything that genuinely works. Listing the clified
-#: actions rather than the emulated ones keeps the guard conservative: a new
-#: action is assumed to need pyautogui until someone clifies it.
+# Actions that use a native interface (actions.cli), not emulated input, so they work
+# without pyautogui. New actions are assumed to need it until made native.
 _CLIFIED_ACTIONS = frozenset({
     "volume_up", "volume_down", "volume_set", "volume_get",
     "mute", "unmute", "toggle_mute",
-    # Read the level back and report the measured one, so the generic
-    # "Done: brightness_up." can never fire over them.
+    # These read the level back and report the measured value.
     "brightness_up", "brightness_down", "brightness_set", "brightness_max", "brightness_min",
-    # Media transport speaks to the player itself - MPRIS, SMTC, AppleScript -
-    # so it works on a machine with no emulation library at all. `pause_video`
-    # and `play_pause` are in here because they no longer press a key.
+    # Media transport talks to the player (MPRIS, SMTC, AppleScript), so it needs no
+    # emulation library.
     "pause_video", "play_pause", "media_status", "media_play", "media_pause",
     "next_track", "skip", "previous_track",
 })
-
 
 
 def _detect_action(description: str) -> dict:
@@ -1004,8 +920,7 @@ def computer_settings(
     player=None,
     session_memory=None,
 ) -> ToolResult:
-    """Returns a ToolResult. It reported `?` no-status live on a plain
-    volume_up, so the model had no way to know whether the volume moved."""
+    """Returns a ToolResult."""
     params      = parameters or {}
     raw_action  = params.get("action", "").strip()
     description = params.get("description", "").strip()
@@ -1025,10 +940,7 @@ def computer_settings(
             guidance="Ask the user what they want changed - volume, brightness, "
                      "a key press.")
 
-    # Narrow, not global. This used to refuse EVERY action when pyautogui was
-    # absent, including the ones that never touch it: volume now goes through
-    # wpctl / pactl / pycaw / osascript, and refusing it for a missing
-    # emulation library is the opposite of what clifying is for.
+    # Refuse only actions that need pyautogui when it is missing.
     if not _PYAUTOGUI and action not in _CLIFIED_ACTIONS:
         return ToolResult.failure(
             "pyautogui is not installed. Run: pip install pyautogui",
@@ -1039,10 +951,7 @@ def computer_settings(
         player.write_log(f"[Settings] {action}")
 
     if action in _DANGEROUS_ACTIONS:
-        # The same spoken-yes gate a module's print goes through. This used to
-        # wait for `confirmed=yes`, an argument the tool's schema never
-        # declared: the model could pass it on the first call without asking
-        # anyone -- or have no declared way to pass it at all.
+        # The spoken-yes gate (core/confirm.py).
         token = str(params.get(CONFIRM_PARAM) or "")
         cleared, refused, lead = _GATE.check(
             f"computer_settings.{action}", {"action": action}, token,
@@ -1063,10 +972,7 @@ def computer_settings(
 
     if action == "volume_set":
         try:
-            # `int(value or 50)` turned "set the volume to 0" into 50%, and the
-            # return line claimed the REQUESTED value - so a device that
-            # stopped at 60 still reported "Volume set to 90%". Hand back what
-            # the interface measured instead.
+            # 0 is a valid level, and the reply carries the measured value.
             requested = 50 if value is None or value == "" else int(value)
             return volume_set(requested)
         except Exception as e:
@@ -1123,23 +1029,11 @@ def computer_settings(
 
     try:
         outcome = func()
-        # A clified action already answered the question - it read the value
-        # back and its ToolResult carries the real one. Overwriting that with
-        # "Done: volume_up." was the same lie one layer up, and it made the
-        # whole native-backend slice invisible to the model. Every other
-        # action still returns None and still lands on `settled` below, so
-        # nothing else changes shape.
-        # `Failed` is included because it IS a `str` subclass: a ToolResult-only
-        # check missed it, so `close_window`'s "refusing to close your terminal"
-        # refusal reached the model as ok=True with no guidance - the model
-        # believing it had closed a window it had deliberately not touched.
-        # `settled` already tells the two apart, and still turns None into the
-        # generic "Done: {action}." every non-migrated action relies on.
+        # A native action already returned a ToolResult with the real value: pass it
+        # through. Failed is a str subclass and must not read as ok=True. None becomes
+        # "Done: {action}.".
         if isinstance(outcome, (ToolResult, Failed)) or (isinstance(outcome, str) and outcome):
             return settled(outcome)
-        # `settled`, not a bare string: this exact call reported `?` no-status
-        # live on a plain volume_up, so the model was told nothing about
-        # whether the volume had actually moved.
         return settled(f"Done: {action}.")
     except Exception as e:
         print(f"[Settings] Action failed ({action}): {e}")

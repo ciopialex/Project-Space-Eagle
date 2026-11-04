@@ -1,24 +1,11 @@
-"""What is missing, on THIS machine, and the exact command that fixes it.
+"""What is missing on this machine, and the exact command that fixes it.
 
-There was no preflight. A new install on any OS discovers what it needs one
-crash at a time, in whatever order it happens to reach them, and the failures
-do not name themselves: a missing Playwright browser looks like "the web tool
-is broken", missing AT-SPI bindings look like "it cannot see anything", and a
-missing macOS Accessibility grant looks like the mouse is simply ignored.
+1. Report only what was checked; UNKNOWN is not OK.
+2. Give the fix for this platform.
+3. Never claim a fix without re-checking.
 
-Three rules this follows, because the alternative is what the codebase already
-has too much of:
-
-1. **Report only what was actually checked.** No claim of health for a thing
-   that was skipped. `UNKNOWN` is a legitimate outcome and is not `OK`.
-2. **Say the fix for the platform you are on**, not a generic one. `apt` on a
-   Mac is not a fix, it is noise.
-3. **Never claim to have fixed something without re-checking it.** Everything
-   this session went wrong on was a report written before the verification.
-
-Some things cannot be automated and saying so is part of the job: macOS
-requires the user to grant Accessibility and Screen Recording by hand, and no
-amount of engineering removes that dialog.
+Some things cannot be automated: macOS requires the user to grant Accessibility
+and Screen Recording by hand.
 """
 from __future__ import annotations
 
@@ -42,9 +29,8 @@ class Check:
     detail: str = ""
     fix: str = ""          # a command that can be run
     auto: bool = False     # safe for --fix to run unattended
-    #: The fix changes a setting for the whole machine, not only the eagle's
-    #: own environment -- the desktop's accessibility, every app's audio.
-    #: --fix asks before running one, and never runs one without a person.
+    # The fix changes a machine-wide setting (desktop accessibility, every app's audio):
+    # --fix asks first and never runs one unattended.
     system: bool = False
 
     @property
@@ -71,17 +57,50 @@ def _plat() -> str:
 
 
 def _module(name: str, pip: str, why: str) -> Check:
+    import importlib.util
+    import warnings
     try:
-        importlib.import_module(name)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            importlib.import_module(name)
         return Check(why, OK)
     except Exception as e:
-        return Check(why, MISSING, str(e)[:70],
-                     fix=_pip(pip), auto=True)
+        try:
+            installed = importlib.util.find_spec(name) is not None
+        except Exception:
+            installed = False
+        if not installed:
+            return Check(why, MISSING, str(e)[:70], fix=_pip(pip), auto=True)
+        if isinstance(e, KeyError) and str(e).strip("'\"") in ("DISPLAY", "WAYLAND_DISPLAY"):
+            return Check(why, UNKNOWN, "no desktop session here",
+                         fix="run eagle --doctor from a terminal on your desktop")
+        return Check(why, MISSING, f"installed but would not start: {str(e)[:60]}")
+
+
+def _xlib_too_old() -> bool:
+    """python3-xlib 0.15, which pyautogui asks for, cannot read the auth cookies
+    GNOME on Wayland writes for Xwayland. The maintained python-xlib (0.33) can."""
+    try:
+        import Xlib
+        return tuple(Xlib.__version__) < (0, 33)
+    except Exception:
+        return False
+
+
+def _mouse_and_keyboard() -> Check:
+    check = _module("pyautogui", "pyautogui", "mouse and keyboard")
+    if not check.good and not check.fix and _plat() == "linux" and _xlib_too_old():
+        check.detail = "its X library is too old to open this desktop"
+        if "pip install --python" in _pip(""):     # uv
+            check.fix = _pip("--reinstall-package python-xlib python-xlib==0.33")
+        else:
+            check.fix = _pip("--force-reinstall --no-deps python-xlib==0.33")
+        check.auto = True
+    return check
 
 
 def _structural_grounding() -> Check:
-    """The fast, exact way the eagle finds controls. Vision is the slow, and
-    much less accurate, fallback — measured at 5.8s and 650px off."""
+    """The fast, exact way the eagle finds controls; vision is the slow fallback."""
     plat = _plat()
     if plat == "linux":
         try:
@@ -91,17 +110,13 @@ def _structural_grounding() -> Check:
         except Exception as e:
             return Check(
                 "structural grounding (AT-SPI)", MISSING, str(e)[:70],
-                # The app runs in its own environment, which cannot see the
-                # system's python3-gi, and PyGObject ships no wheels: it is
-                # built from source against these headers.
+                # PyGObject ships no wheels and the app's environment cannot see
+                # python3-gi, so it builds from these headers.
                 fix=("sudo apt install gir1.2-atspi-2.0 libgirepository-2.0-dev "
                      "libcairo2-dev pkg-config python3-dev && "
                      + _pip("PyGObject")))
-        # The binding importing is necessary but not sufficient. GNOME's own
-        # toggle gates whether ANY app publishes to the bus at all — found
-        # live: the bus and both its daemons were running, this import
-        # succeeded, and every screen_click still failed, because only this
-        # one setting was off.
+        # The binding importing is not enough: GNOME's toolkit-accessibility toggle
+        # gates whether any app publishes to the bus.
         try:
             out = subprocess.run(
                 ["gsettings", "get", "org.gnome.desktop.interface",
@@ -115,9 +130,8 @@ def _structural_grounding() -> Check:
                     fix="gsettings set org.gnome.desktop.interface "
                         "toolkit-accessibility true", auto=True, system=True)
         except Exception:
-            pass   # not a GNOME desktop (no gsettings) — the import already
-                   # proved the binding works; do not fail a check this
-                   # function cannot honestly evaluate here
+            pass
+                   # Not a GNOME desktop: the import already proved the binding works.
         return Check("structural grounding (AT-SPI)", OK)
     if plat == "windows":
         try:
@@ -140,14 +154,14 @@ def _os_permission() -> Check:
     """The one gate no installer can pass for you."""
     plat = _plat()
     if plat != "macos":
-        # Wayland restricts synthetic input the same way, and is worth saying
-        # out loud rather than discovering through a mouse that never moves.
+        # Measured on GNOME (Ubuntu 26.04): typing and clicking are held until the
+        # user allows "remote interaction"; screenshots ask once, separately.
         if plat == "linux" and os.environ.get("WAYLAND_DISPLAY"):
             return Check(
                 "input permission", MANUAL,
-                "Wayland blocks synthetic mouse/keyboard for ordinary apps",
-                fix="log in with an X11/Xorg session, or expect keyboard and "
-                    "mouse control to be refused by the compositor")
+                "Wayland asks first: the eagle's typing and clicking wait until you allow them",
+                fix="click Allow when the desktop asks about remote interaction "
+                    "and about screenshots")
         return Check("input permission", OK, f"{plat}: not gated")
     try:
         from ApplicationServices import AXIsProcessTrusted
@@ -164,13 +178,9 @@ def _os_permission() -> Check:
 
 
 def _hidden_display() -> Check:
-    """Whether the browser can be headed without being seen.
-
-    Headless is what sites fingerprint — measured on makerworld.com, headless
-    got a Cloudflare interstitial every time and the identical browser headed
-    loaded the page. Xvfb gives a display nobody is looking at, so the browser
-    can be accepted AND invisible. Without it the eagle still works; it just
-    loses to the sites that check.
+    """Whether the browser can be headed without being seen (Xvfb). Sites reject
+    headless browsers; without Xvfb the eagle still works but loses to those
+    sites.
     """
     from core import virtual_display
     if virtual_display.available():
@@ -221,8 +231,7 @@ def _api_key() -> Check:
                          fix="start the eagle and finish setup")
     except Exception as e:
         return Check("API key", UNKNOWN, str(e)[:70])
-    # Present is not the same as accepted: a key that Google refuses looks
-    # exactly like a saved one until the eagle tries to connect.
+    # A saved key is not an accepted one until Google says so.
     from core import gemini_key
     ok, why = gemini_key.check(key)
     if ok:
@@ -260,18 +269,9 @@ def _audio() -> Check:
 
 
 def _echo_cancel() -> Check:
-    """Whether the microphone is deaf to the speakers.
-
-    Silent by design — there is no toggle for this anywhere in the product, so
-    the preflight is the only place it is ever spoken about. Asking is
-    read-only: `state()` inspects the two audio defaults and restarts nothing,
-    because this runs on a machine somebody is using.
-
-    Note the split. `supported=False` on Windows and macOS is OK, because the
-    OS already does it and the eagle is not broken there. `supported=False` on
-    Linux is UNKNOWN, because we could not tell — and it never becomes MISSING
-    with a fix attached, since `--install` on a box with no wpctl is a command
-    that is guaranteed to fail.
+    """Whether the microphone is deaf to the speakers. Read-only: restarts nothing.
+    supported=False is OK on Windows and macOS (the OS does it) and UNKNOWN on
+    Linux, never MISSING with a fix that cannot work.
     """
     plat = _plat()
     try:
@@ -297,13 +297,8 @@ def _trash() -> Check:
 
 
 def _domain_modules() -> Check:
-    """Which sovereign domain modules are plugged into the bus.
-
-    Never MISSING. Having no modules is the ordinary case — Space-Eagle is a
-    complete assistant with zero of them, and the preflight already has enough
-    to say without inventing a problem out of a machine that simply does not
-    print in three dimensions. Absent-but-declared is worth a line, though: a
-    manifest exists because someone meant to install that CLI.
+    """Which domain modules are plugged in. Never MISSING: zero modules is normal. A
+    declared but absent module is worth a line.
     """
     try:
         from core.module_bus import ModuleBus
@@ -338,7 +333,7 @@ def run_checks() -> list[Check]:
         _audio(),
         _echo_cancel(),
         _module("mss", "mss", "screen capture"),
-        _module("pyautogui", "pyautogui", "mouse and keyboard"),
+        _mouse_and_keyboard(),
         _module("google.genai", "google-genai", "the brain"),
         _module("PyQt6.QtWebEngineWidgets", "PyQt6 PyQt6-WebEngine",
                 "the window"),
@@ -349,7 +344,7 @@ def run_checks() -> list[Check]:
 
 def apply_fixes(checks: list[Check], run=subprocess.run,
                 ask=None) -> list[Check]:
-    """Run the fixes that are safe unattended, then RE-CHECK."""
+    """Run the fixes that are safe unattended, then re-check."""
     if ask is None:
         def ask(question: str) -> bool:
             if not sys.stdin.isatty():
@@ -388,7 +383,7 @@ def report(checks: list[Check]) -> str:
         lines.append(f"  {len(broken)} need attention on {_plat()}"
                      + (f"; {auto} can be fixed automatically with --fix."
                         if auto else "."))
-    return "\n".join(lines)
+    return "\n".join(lines).replace(str(Path.home()), "~")
 
 
 def main(argv=None) -> int:

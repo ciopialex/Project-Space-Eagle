@@ -1,53 +1,28 @@
-"""A live coding-agent session that is a protocol, not a terminal.
+"""A live coding-agent session spoken to in JSON instead of a terminal.
 
-`actions/pty_session.py` runs the agent's interactive TUI behind a pseudo-
-terminal. Everything downstream then exists to undo that: `AgentScreenWatcher`
-rebuilds the screen with `pyte` to work out what the agent is doing, and
-`_hud_pump` strips the spinner repaints back out with three stacked regexes.
-Both are reading a picture of a program instead of talking to it, and both
-break silently the day the vendor restyles something.
+`--input-format stream-json` keeps one process alive across many turns, and an
+interrupt is a message with an acknowledgement:
 
-None of it is necessary. Measured against `claude` 2.1.235 on 2026-08-19:
+    ->
+{"type":"control_request","request_id":"req_1","request":{"subtype":"interrupt"}}
+    <- {"type":"control_response","response":{"subtype":"success","request_id":"re
+q_1",…}}
 
-  * `--input-format stream-json` keeps ONE process alive across many turns.
-    Two messages, two results, one session id, process still running — which
-    is the whole reason `PtySession` existed.
-  * An interrupt is a message, not a signal:
+Permissions
+-----------
+`--permission-prompt-tool stdio` makes Claude ask over the stream before anything
+its rules do not already allow, and wait:
 
-        -> {"type":"control_request","request_id":"req_1",
-            "request":{"subtype":"interrupt"}}
-        <- {"type":"control_response",
-            "response":{"subtype":"success","request_id":"req_1",
-                        "response":{"still_queued":[]}}}
+    <- {"type":"control_request","request_id":…,
+        "request":{"subtype":"can_use_tool","tool_name":"Bash",
+                   "input":{"command":…},"description":…}}
+    -> {"type":"control_response","response":{"subtype":"success",
+        "request_id":…,"response":{"behavior":"allow","updatedInput":…}}}
 
-    The process stays alive and the next user message is accepted and
-    answered. That is `interject_agent`'s Ctrl-C-then-redirect flow, with an
-    acknowledgement it never had — `session.interrupt()` on a PTY writes 0x03
-    and hopes.
-
-What this changes about permissions, deliberately stated
--------------------------------------------------------
-The PTY path let `core/prompt_reflex.py` adjudicate each approval prompt as it
-appeared on screen: auto-answer the recognised-safe ones, escalate the rest to
-a human and let the agent block. That model depended on the prompt being
-*rendered*, and it cannot be reproduced here — this CLI has no
-`--permission-prompt-tool`, so it never asks over the stream. It decides from
-`--permission-mode`, `--allowed-tools` and its settings.
-
-So the headless path is coarser by construction, and the response is to make it
-coarser in the SAFE direction:
-
-  * the default mode is `acceptEdits`, never `bypassPermissions`. A swarm agent
-    exists to edit files in its own worktree; it does not need blanket
-    approval, and `--dangerously-skip-permissions` is refused outright rather
-    than left as an option someone reaches for at 2am.
-  * whatever is refused comes back as structured `permission_denials` on the
-    result, which the caller routes to `core/escalations.py`.
-
-The behavioural difference worth knowing: an agent no longer BLOCKS waiting for
-a human to approve something. It proceeds without that tool and the denial is
-reported afterwards. That is a real change of shape — visible and recoverable
-rather than silent, but not the same as stopping.
+Measured on claude 2.1.316. A danger pattern (core/prompt_reflex.py) or a file
+outside the project is held for the user (core/escalations.py) while the agent
+waits; anything else is allowed and logged. The mode is `default` so every change
+comes here: acceptEdits lets Claude delete inside the project on its own.
 """
 from __future__ import annotations
 
@@ -59,42 +34,85 @@ import threading
 import time
 from itertools import count
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable, Sequence
 
 from core.agent_stream import AgentEvent, RESULT, STREAM_PARSERS, THINKING
 
-#: Permission modes this module will hand to an agent. `bypassPermissions` and
-#: the `--dangerously-skip-permissions` flags are deliberately absent: the
-#: headless path must not become more permissive than the screen-watched path
-#: it replaces merely because nobody is looking at a screen any more.
+# Permission modes offered. bypassPermissions and --dangerously-skip-permissions are
+# absent on purpose.
 ALLOWED_PERMISSION_MODES = ("acceptEdits", "manual", "plan", "default")
 
-#: Agents with a verified streaming-session protocol. Same rule as
-#: `agent_stream.HEADLESS_AGENTS`: membership requires a real capture, not a
-#: promising line in `--help`.
-BUILD_TOOLS = (
-    "Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)", "Bash(git diff:*)",
-    "Bash(git log:*)", "Bash(git mv:*)", "Bash(git rm:*)", "Bash(git restore:*)",
-    "Bash(ls:*)", "Bash(cat:*)", "Bash(mkdir:*)", "Bash(touch:*)", "Bash(cp:*)",
-    "Bash(mv:*)", "Bash(pwd)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)",
-    "Bash(npm install:*)", "Bash(npm ci:*)", "Bash(npm run:*)", "Bash(npm test:*)",
-    "Bash(pnpm install:*)", "Bash(pnpm run:*)", "Bash(pnpm test:*)",
-    "Bash(yarn install:*)", "Bash(yarn run:*)", "Bash(yarn test:*)",
-    "Bash(pip install:*)", "Bash(python3 -m venv:*)", "Bash(python3 -m pip install:*)",
-    "Bash(python3 -m pytest:*)", "Bash(pytest:*)", "Bash(python3 -m py_compile:*)",
-    "Bash(cargo build:*)", "Bash(cargo test:*)", "Bash(go build:*)", "Bash(go test:*)",
-    "Bash(make:*)",
-)
+#: How long a held request waits for the user before it is refused.
+HOLD_S = 600.0
+# A finished session quiet this long is closed; the next request in that project resumes
+# the same conversation. Idle, one holds about 230 MB.
+IDLE_CLOSE_S = 1800.0
+_UUID = __import__("re").compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_saved_lock = threading.Lock()
+
+
+def _saved_path() -> Path:
+    from core import user_paths
+    return user_paths.config_dir() / "agent_sessions.json"
+
+
+def _saved() -> dict:
+    try:
+        return json.loads(_saved_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _transcript_exists(session_id: str) -> bool:
+    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+    return any(base.glob(f"*/{session_id}.jsonl"))
+
+
+def saved_conversation(agent_key: str, project_dir: Path | str) -> str:
+    """The conversation to resume in this project, if Claude still has it."""
+    if PROTOCOLS.get(agent_key) != "claude":
+        return ""
+    sid = str(_saved().get(f"{agent_key}@{Path(project_dir).resolve()}") or "")
+    return sid if _UUID.fullmatch(sid) and _transcript_exists(sid) else ""
+
+
+def remember_conversation(agent_key: str, project_dir: Path | str, session_id: str) -> None:
+    if not _UUID.fullmatch(session_id or ""):
+        return
+    with _saved_lock:
+        d = _saved()
+        d.pop(key := f"{agent_key}@{Path(project_dir).resolve()}", None)
+        d[key] = session_id
+        d = dict(list(d.items())[-50:])
+        try:
+            _saved_path().parent.mkdir(parents=True, exist_ok=True)
+            _saved_path().write_text(json.dumps(d, indent=1), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def close_idle(sessions, idle_s: float = IDLE_CLOSE_S) -> list:
+    """Close finished headless sessions quiet for `idle_s`. Returns the closed."""
+    closed = []
+    for sess in list(sessions):
+        if (isinstance(sess, HeadlessSession) and sess.is_alive() and not sess.turn_open
+                and not sess.waiting_for_user()
+                and sess.seconds_since_activity() >= idle_s):
+            sess.close()
+            closed.append(sess)
+    return closed
 
 SESSION_AGENTS = {"claude_code": "claude", "antigravity_cli": "agy"}
 PROTOCOLS = {"claude_code": "claude", "antigravity_cli": "agy"}
 
 
 def session_argv(agent_key: str, *, cwd: Path | str,
-                 permission_mode: str = "acceptEdits",
+                 permission_mode: str = "default",
                  model: str = "",
                  allowed_tools: Sequence[str] = (),
-                 disallowed_tools: Sequence[str] = ()) -> list[str]:
+                 disallowed_tools: Sequence[str] = (),
+                 resume: str = "") -> list[str]:
     """argv for a persistent streaming session."""
     binary = SESSION_AGENTS.get(agent_key)
     if binary is None:
@@ -119,11 +137,12 @@ def session_argv(agent_key: str, *, cwd: Path | str,
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
-            "--permission-mode", permission_mode]
-    if not allowed_tools and permission_mode == "acceptEdits":
-        allowed_tools = BUILD_TOOLS
+            "--permission-mode", permission_mode,
+            "--permission-prompt-tool", "stdio"]
     if model:
         argv += ["--model", model]
+    if resume:
+        argv += ["--resume", resume]
     if allowed_tools:
         argv += ["--allowed-tools", ",".join(allowed_tools)]
     if disallowed_tools:
@@ -132,13 +151,8 @@ def session_argv(agent_key: str, *, cwd: Path | str,
 
 
 class HeadlessSession:
-    """One long-lived agent process, spoken to in JSON.
-
-    Deliberately API-compatible with `PtySession` where `agent_delegation`
-    touches it — `send_line`, `interrupt`, `is_alive`, `close`, `log_path`,
-    `snapshot_tail`, `created_at`, `player`, `watcher`, `add_feed_hook` — so
-    the two can live behind one pool and one call site while agents that have
-    no headless protocol keep the terminal.
+    """One long-lived agent process, spoken to in JSON. API-compatible with
+    PtySession where agent_delegation touches it, so both live behind one pool.
     """
 
     def __init__(self, agent_key: str, agent_name: str,
@@ -146,19 +160,16 @@ class HeadlessSession:
                  argv: Sequence[str] | None = None,
                  on_event: Callable[[AgentEvent], None] | None = None,
                  on_line: Callable[[str], None] | None = None,
-                 permission_mode: str = "acceptEdits",
-                 model: str = "") -> None:
+                 permission_mode: str = "default",
+                 model: str = "",
+                 resume: str = "") -> None:
         self.agent_key = agent_key
         self.agent_name = agent_name
         self.project_dir = Path(project_dir)
         self.created_at = time.time()
         self.player = None
         self.watcher = None                 # no screen to watch. Kept for shape.
-        #: Set by `swarm_orchestrator._wire_thoughts` to feed the blackboard.
-        #: The PTY path sourced this from `AgentScreenWatcher.on_thought`,
-        #: which read <thinking> blocks and status lines off a reconstructed
-        #: screen. Here the same signal is already a typed event, so without
-        #: this hook a headless agent's row on the board would simply go blank.
+        # Set by swarm_orchestrator._wire_thoughts to feed the blackboard.
         self.on_thought = None
 
         self._on_event = on_event
@@ -167,6 +178,10 @@ class HeadlessSession:
         self._parser = STREAM_PARSERS[self.protocol]()
         self.last_activity = time.time()
         self.turn_open = False
+        self.last_text = ""
+        self.last_result: AgentEvent | None = None
+        self.last_result_at = 0.0
+        self._held: list[str] = []
         self._denied: set[str] = set()
         self._hooks: list[Callable[[str], None]] = []
         if on_line is not None:
@@ -187,12 +202,10 @@ class HeadlessSession:
 
         self._argv = list(argv) if argv is not None else session_argv(
             agent_key, cwd=self.project_dir,
-            permission_mode=permission_mode, model=model)
+            permission_mode=permission_mode, model=model, resume=resume)
+        self.session_id = resume
 
-        # Raises OSError when the binary is missing. Callers must fail
-        # honestly rather than report a session that was never started —
-        # `agent_delegation` already carries that scar ("exited immediately
-        # after launch").
+        # Raises OSError when the binary is missing; callers report it.
         self._err = open(self.log_path.with_suffix(".err"), "a", encoding="utf-8")
         self._proc = subprocess.Popen(
             self._argv,
@@ -207,7 +220,6 @@ class HeadlessSession:
             target=self._read_loop, name=f"agent-{agent_key}", daemon=True)
         self._reader.start()
 
-    # ------------------------------------------------------------- plumbing
 
     def _make_log_path(self) -> Path:
         safe = self.project_dir.name.replace(os.sep, "_") or "root"
@@ -233,48 +245,130 @@ class HeadlessSession:
             return
         self.last_activity = time.time()
 
-        # control_response is protocol, not conversation: it acknowledges an
-        # interrupt and is not something the operator needs narrated.
+        # control_response acknowledges an interrupt; not narrated.
         try:
             obj = json.loads(raw)
         except ValueError:
             obj = None
         if isinstance(obj, dict) and obj.get("type") == "control_response":
             return
+        if (isinstance(obj, dict) and obj.get("type") == "control_request"
+                and (obj.get("request") or {}).get("subtype") == "can_use_tool"):
+            self._ask(obj)
+            return
 
         for event in self._parser.feed(raw):
-            # Reasoning is private and voluminous. It was the single biggest
-            # source of HUD noise on the PTY path; here it simply never leaves.
+            # Reasoning is private and never leaves.
             if event.kind == THINKING:
                 continue
             self._emit(event)
 
-    def _emit(self, event: AgentEvent) -> None:
-        text = self._render(event)
 
-        # The terminal `result` repeats the final assistant message verbatim,
-        # so a plain reply was written to the transcript twice — measured
-        # against the real binary as "alpha\nalpha\nbeta\nbeta". Dropping an
-        # exact repeat of the line just emitted is enough. Note what this is
-        # NOT: `_hud_pump` deduped by normalising spinner glyphs and guessing
-        # from line length, because it could not tell a repaint from new work.
-        # Here the events are already distinct and the comparison is equality.
+    def _judge(self, tool: str, inp: dict) -> tuple[str, tuple[str, str] | None]:
+        """(what it wants to do, why it must be held or None)."""
+        from core.prompt_reflex import find_danger
+        path = str(inp.get("file_path") or inp.get("notebook_path") or inp.get("path") or "")
+        if tool == "Bash":
+            what = str(inp.get("command") or "")
+        elif path:
+            what = f"{tool} {path}"
+        elif inp.get("url"):
+            what = f"{tool} {inp.get('url')}"
+        else:
+            what = f"{tool} {json.dumps(inp, default=str)[:200]}"
+        what = " ".join(what.split())[:300]
+        danger = find_danger(what)
+        if danger:
+            return what, danger
+        if path:
+            target = Path(path).expanduser()
+            if not target.is_absolute():
+                target = self.project_dir / target
+            root = self.project_dir.resolve()
+            target = target.resolve()
+            if target != root and root not in target.parents:
+                return what, ("OUTSIDE_PROJECT", "it touches a file outside the project folder")
+        return what, None
+
+    def _ask(self, obj: dict) -> None:
+        req = obj.get("request") or {}
+        rid = str(obj.get("request_id") or "")
+        tool = str(req.get("tool_name") or "")
+        inp = req.get("input") if isinstance(req.get("input"), dict) else {}
+        what, held = self._judge(tool, inp)
+        if held is None:
+            self._answer(rid, "allow", inp)
+            self._say(f"· allowed: {what}")
+            return
+
+        from core import escalations
+        said = " ".join(str(req.get("description") or inp.get("description") or "").split())
+        answered = threading.Event()
+
+        def on_resolve(verdict: str) -> None:
+            answered.set()
+            if verdict != "allow":
+                self._denied.add(what)
+            self._answer(rid, verdict, inp)
+            self._say(f"· {'allowed' if verdict == 'allow' else 'refused'}: {what}")
+
+        esc = escalations.raise_escalation(
+            self.agent_name, SimpleNamespace(rule_id=held[0], reason=held[1]),
+            f"{said}\n{what}" if said else what, player=self.player,
+            on_resolve=on_resolve)
+        self._held.append(esc.id)
+
+        def expire() -> None:
+            if not answered.wait(HOLD_S):
+                escalations.resolve(esc.id, "deny", by="timeout")
+        threading.Thread(target=expire, daemon=True, name="agent-hold").start()
+
+    def _answer(self, request_id: str, verdict: str, inp: dict) -> bool:
+        if verdict == "allow":
+            response = {"behavior": "allow", "updatedInput": inp}
+        else:
+            response = {"behavior": "deny", "message": (
+                "The user did not allow this. Do not try it again. Carry on "
+                "without it, or stop and say what you need.")}
+        return self._write({"type": "control_response",
+                            "response": {"subtype": "success",
+                                         "request_id": request_id,
+                                         "response": response}})
+
+    def _say(self, text: str) -> None:
+        try:
+            self._log.write(text + "\n")
+            self._log.flush()
+        except (OSError, ValueError):
+            pass
+        for hook in list(self._hooks):
+            try:
+                hook(text)
+            except Exception:
+                pass
+
+    def waiting_for_user(self) -> bool:
+        from core import escalations
+        return any(e.id in self._held for e in escalations.pending())
+
+    def _emit(self, event: AgentEvent) -> None:
+        sid = str((event.data or {}).get("session_id") or "")
+        if event.kind in ("init", RESULT) and sid and sid != self.session_id:
+            self.session_id = sid
+            remember_conversation(self.agent_key, self.project_dir, sid)
+        text = self._render(event)
+        if event.kind == "text" and event.text.strip():
+            self.last_text = event.text.strip()
+
+        # The terminal `result` repeats the final assistant message: drop an exact
+        # repeat of the last line.
         if text and text == self._last_line:
             text = ""
         elif text:
             self._last_line = text
 
         if text:
-            try:
-                self._log.write(text + "\n")
-                self._log.flush()
-            except (OSError, ValueError):
-                pass
-            for hook in list(self._hooks):
-                try:
-                    hook(text)
-                except Exception:
-                    pass
+            self._say(text)
         if self.on_thought is not None and event.kind in ("text", "tool_use"):
             try:
                 self.on_thought(self.agent_name,
@@ -285,6 +379,8 @@ class HeadlessSession:
 
         if event.kind == RESULT:
             self.turn_open = False
+            self.last_result = event
+            self.last_result_at = time.time()
             self._report_denials(event.data.get("permission_denials") or [])
             if self.on_result is not None:
                 try:
@@ -317,12 +413,7 @@ class HeadlessSession:
 
     @staticmethod
     def _render(event: AgentEvent) -> str:
-        """One line a human would want to read.
-
-        This is the replacement for `_hud_pump`'s three heuristics, and it is
-        four cases instead of sixty lines, because the stream already says
-        which is which.
-        """
+        """One line a human would want to read."""
         if event.kind == "text":
             return event.text
         if event.kind == "tool_use":
@@ -335,7 +426,6 @@ class HeadlessSession:
             return f"FAILED: {event.text}"
         return ""
 
-    # -------------------------------------------------------------- speaking
 
     def _write(self, payload: dict) -> bool:
         if self._closed or not self.is_alive():
@@ -352,12 +442,8 @@ class HeadlessSession:
             return False
 
     def send_line(self, text: str) -> bool:
-        """One user message.
-
-        JSON-encoded, so the content is data. The PTY path interpolated the
-        prompt into `claude '{prompt}'` and hand-escaped quotes; an apostrophe
-        made it a shell syntax error and a semicolon made it a second command.
-        A newline here stays inside one message rather than becoming two turns.
+        """One user message, JSON-encoded: the content is data, and a newline stays
+        inside one message.
         """
         if self.protocol == "agy":
             payload = {"event": "user",
@@ -373,12 +459,7 @@ class HeadlessSession:
         return sent
 
     def interrupt(self) -> bool:
-        """Stop what the agent is doing, and know that it heard.
-
-        `PtySession.interrupt` writes 0x03 into a terminal and returns True if
-        the write succeeded — which says the pipe is open, not that anything
-        stopped. This asks, with an id, and the agent answers.
-        """
+        """Stop what the agent is doing, and get an acknowledgement."""
         if self.protocol != "claude":
             return False
         request_id = f"aethelark_{next(self._ids)}"
@@ -390,14 +471,14 @@ class HeadlessSession:
     def add_feed_hook(self, hook: Callable[[str], None]) -> None:
         self._hooks.append(hook)
 
-    # ------------------------------------------------------------- lifecycle
 
     def is_alive(self) -> bool:
         return not self._closed and self._proc.poll() is None
 
     def snapshot_tail(self, max_bytes: int = 8192) -> bytes:
-        """Bytes, matching `PtySession`. `agent_delegation` calls `.decode()`
-        on this, on the failure path, where a TypeError is least welcome."""
+        """Bytes, matching PtySession: agent_delegation decodes it on the failure
+        path.
+        """
         try:
             data = self.log_path.read_bytes()
         except OSError:
@@ -408,6 +489,10 @@ class HeadlessSession:
         if self._closed:
             return
         self._closed = True
+        if self._held:
+            from core import escalations
+            for esc_id in self._held:
+                escalations.resolve(esc_id, "deny", by="session closed")
         for pipe in (self._proc.stdin,):
             try:
                 if pipe is not None:

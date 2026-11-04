@@ -1,39 +1,15 @@
-"""Reflex layer — deterministic classification of agent terminal prompts.
+"""Deterministic classification of coding-agent prompts and requested commands. Regex
+only: microseconds, no tokens.
 
-The swarm's coding agents block on interactive confirmations ("Run this
-command? [y/N]", "1. Yes  2. No"). Answering them is what lets a mission run
-unattended. Answering them BLINDLY is what makes running unattended unsafe:
-`Delete production database? [y/N]` and `Create file? [y/N]` are the same
-string to a naive matcher.
+Authority is asymmetric: it may say STOP on its own, and may say GO only for
+shapes on a tested list.
 
-This module is the fast, model-free tier of the decision path. It is regex-
-only by design — a match costs about a microsecond, roughly six orders of
-magnitude less than an inference call, so the common case never burns tokens.
+    1. ALARM   danger patterns, checked first, never allow.
+    2. REFLEX  a recognised approval shape with no alarm: answer it.
+    3. default anything unmatched: escalate. Unknown never means allowed.
 
-AUTHORITY IS DELIBERATELY ASYMMETRIC
-------------------------------------
-    The reflex may say STOP on its own authority.
-    It may only say GO for shapes on an explicit, tested, proven-safe list.
-
-Blocking is cheap and reversible (worst case: the human is asked something
-they would have waved through). Allowing is neither. So the tiers are not a
-ladder — they are a veto followed by a whitelist:
-
-    1. ALARM    danger patterns. Checked FIRST, wins every tie, never allows.
-    2. REFLEX   a recognised approval shape AND no alarm  ->  auto-answer.
-    3. default  anything unmatched  ->  ESCALATE. Unknown never means allowed.
-
-WHAT THIS TIER DOES NOT DO
---------------------------
-It does not understand the prompt. It recognises *shapes*. Coverage is a long
-tail that never fully closes, and pattern matching is structurally weakest on
-exactly the rare, novel prompts that matter most — which is why the default is
-ESCALATE rather than ALLOW.
-
-Every rule in DANGER_RULES carries a stable `rule_id` for the audit ledger, and
-every rule is required to have both a positive test (it catches the bad case)
-and a negative test (it spares an ordinary one). Rules added without the
-negative test accumulate into scar tissue that quietly paralyses the swarm.
+It recognises shapes, not meaning, so the default is escalate. Every DANGER_RULES
+entry has a stable rule_id and needs both a positive and a negative test.
 """
 from __future__ import annotations
 
@@ -41,7 +17,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
-# Ink/Rich-style highlighted menu marker (e.g. "❯ 1. Yes")
+# Highlighted menu marker ("❯ 1. Yes").
 SELECTOR_MARK = "❯"
 
 
@@ -67,23 +43,18 @@ class Decision:
         return self.verdict is Verdict.ALLOW
 
 
-# --------------------------------------------------------------- tier 1: alarm
+# Tier 1: irreversible, privilege-escalating, secret-touching or beyond-the-worktree
+# operations, without tripping on ordinary development (a venv pip install is fine; npm
+# install -g and curl | sh are not).
 #
-# Irreversible, privilege-escalating, secret-touching, or blast-radius-beyond-
-# the-worktree operations. Tuned to catch genuinely dangerous work WITHOUT
-# tripping on ordinary development: `pip install` inside a project venv is
-# routine and reversible, so it is absent here, while `npm install -g` (system
-# wide) and `curl | sh` (executing unverified remote code) are present.
-#
-# (rule_id, pattern, human-readable reason)
+# (rule_id, pattern, reason)
 DANGER_RULES: list[tuple[str, re.Pattern[str], str]] = [
-    # --- destructive filesystem -------------------------------------------
+    # Destructive filesystem
     ("FS_RM_RECURSIVE", re.compile(r"\brm\s+(?:-\w*\s+)*-\w*[rR]\w*[fF]|\brm\s+(?:-\w*\s+)*-\w*[fF]\w*[rR]", re.I),
      "recursive force delete"),
     ("FS_SHRED", re.compile(r"\b(?:shred|mkfs(?:\.\w+)?)\b", re.I), "unrecoverable erase / format"),
     ("FS_DD_RAW", re.compile(r"\bdd\s+if=", re.I), "raw block write"),
-    # The system path is usually the *destination*, so it can sit several
-    # arguments after the verb ("cp nginx.conf /etc/nginx/").
+    # The system path is usually the destination, several arguments after the verb.
     ("FS_SYSTEM_PATH", re.compile(
         r"\b(?:rm|mv|cp|chmod|chown|tee|install|ln)\b[^\n]*?\s/(?:etc|usr|bin|sbin|boot|sys|proc|var/lib)/"
         r"|(?:>|>>)\s*/(?:etc|usr|bin|sbin|boot|sys|proc|var/lib)/", re.I),
@@ -91,13 +62,12 @@ DANGER_RULES: list[tuple[str, re.Pattern[str], str]] = [
     ("FS_SHELL_RC", re.compile(r"~/\.(?:bashrc|zshrc|profile|bash_profile)\b", re.I),
      "modifies the user's shell startup files"),
 
-    # --- destructive / history-rewriting git --------------------------------
+    # Destructive or history-rewriting git
     ("GIT_FORCE_PUSH", re.compile(r"\bpush\b(?:.*\s)?(?:--force\b|--force-with-lease\b|-f\b)", re.I),
      "force push rewrites published history"),
     ("GIT_HARD_RESET", re.compile(r"\breset\s+--hard\b", re.I), "discards uncommitted work"),
     ("GIT_CLEAN", re.compile(r"\bgit\s+clean\s+(?:-\w*\s*)*-\w*[fdx]", re.I), "deletes untracked files"),
-    # Case-SENSITIVE on purpose: git's `-d` refuses to delete unmerged work and
-    # is routine; `-D` forces it. re.I here would block every ordinary cleanup.
+    # Case-sensitive: git's -d refuses unmerged work and is routine; -D forces it.
     ("GIT_BRANCH_DELETE", re.compile(r"\bbranch\b[^\n]*\s-\w*D\b"),
      "force-deletes an unmerged branch"),
     ("GIT_HISTORY_REWRITE", re.compile(r"\b(?:filter-branch|filter-repo)\b|\brebase\b.*\s--root\b", re.I),
@@ -105,12 +75,12 @@ DANGER_RULES: list[tuple[str, re.Pattern[str], str]] = [
     ("GIT_GLOBAL_CONFIG", re.compile(r"\bgit\s+config\s+--global\b", re.I),
      "changes git configuration outside the project"),
 
-    # --- privilege ----------------------------------------------------------
+    # Privilege
     ("PRIV_SUDO", re.compile(r"(?:^|\s)(?:sudo|doas)\s", re.I), "privilege escalation"),
     ("PRIV_SU", re.compile(r"(?:^|\s)su\s+-", re.I), "switches user"),
     ("PRIV_CHMOD_WORLD", re.compile(r"\bchmod\s+(?:-\w+\s+)*777\b"), "world-writable permissions"),
 
-    # --- secrets and credentials -------------------------------------------
+    # Secrets and credentials
     ("SEC_DOTENV", re.compile(r"\.env(?:\.\w+)?\b"), "touches an environment/secret file"),
     ("SEC_KEY_MATERIAL", re.compile(r"\b(?:id_rsa|id_ed25519)\b|\.pem\b|\.p12\b|\bprivate[_-]?key\b", re.I),
      "touches private key material"),
@@ -119,16 +89,14 @@ DANGER_RULES: list[tuple[str, re.Pattern[str], str]] = [
     ("SEC_TOKEN_ASSIGN", re.compile(r"\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|password)\s*[:=]\s*\S", re.I),
      "assigns a credential value"),
 
-    # --- database -----------------------------------------------------------
+    # Database
     ("DB_DROP", re.compile(r"\bdrop\s+(?:table|database|schema)\b", re.I), "drops a database object"),
     ("DB_TRUNCATE", re.compile(r"\btruncate\s+(?:table\b|\w)", re.I), "empties a table"),
     ("DB_MIGRATE", re.compile(r"\b(?:alembic\s+(?:upgrade|downgrade)|migrate\s+(?:up|down|deploy)|db:migrate)\b", re.I),
      "runs a schema migration"),
 
-    # --- deployment and external effects ------------------------------------
-    # Deliberately NOT a bare /production/: every frontend build prints
-    # "building for production", and a rule that fires on that would stall the
-    # swarm constantly. Match production *operations*, not the word.
+    # Deployment and external effects. Not a bare /production/: every build prints
+    # "building for production".
     ("EXT_PRODUCTION", re.compile(
         r"\b(?:deploy|push|release|migrate|drop|delete|restart|rollback|wipe)\b[^\n]{0,40}\bprod(?:uction)?\b"
         r"|\bprod(?:uction)?\b[^\n]{0,40}\b(?:database|db|server|cluster|deploy|bucket)\b", re.I),
@@ -142,7 +110,7 @@ DANGER_RULES: list[tuple[str, re.Pattern[str], str]] = [
     ("EXT_GLOBAL_INSTALL", re.compile(r"\b(?:npm|yarn|pnpm)\s+(?:install|add)\b[^\n]*\s-g\b|\bnpm\s+i\s+-g\b", re.I),
      "installs a package system-wide"),
 
-    # --- host control -------------------------------------------------------
+    # Host control
     ("HOST_POWER", re.compile(r"\b(?:reboot|shutdown|poweroff|halt)\b", re.I), "power state change"),
     ("HOST_SERVICE", re.compile(r"\bsystemctl\s+(?:start|stop|restart|disable|enable|mask)\b", re.I),
      "changes system services"),
@@ -150,11 +118,8 @@ DANGER_RULES: list[tuple[str, re.Pattern[str], str]] = [
 ]
 
 
-# -------------------------------------------------------------- tier 2: reflex
-#
-# Recognised approval shapes. These describe the *form* of the prompt, never
-# its meaning — which is precisely why an ALARM hit anywhere in the same region
-# vetoes them.
+# Tier 2: recognised approval shapes, describing the prompt's form, never its meaning.
+# An alarm anywhere in the region vetoes them.
 #
 # (rule_id, pattern, reply-kind)
 PROMPT_SHAPES: list[tuple[str, re.Pattern[str], str]] = [
@@ -172,11 +137,8 @@ NO_PROMPT = Decision(Verdict.NO_PROMPT, None, "NONE", "no prompt awaiting input"
 
 
 def find_danger(region: str) -> tuple[str, str] | None:
-    """First matching danger rule as (rule_id, reason), else None.
-
-    Scans the WHOLE region rather than just the prompt line: the confirmation
-    itself ("Proceed? [y/N]") is never the dangerous part — the command printed
-    above it is.
+    """First matching danger rule as (rule_id, reason), else None. Scans the whole
+    region: the dangerous part is the command above the question.
     """
     for rule_id, pattern, reason in DANGER_RULES:
         if pattern.search(region):
@@ -185,19 +147,15 @@ def find_danger(region: str) -> tuple[str, str] | None:
 
 
 def classify(region: str) -> Decision:
-    """Classify a stable terminal region into a typed, auditable Decision.
-
-    Pure and side-effect free, so it is cheap to unit test exhaustively —
-    which is the point of keeping this tier free of both I/O and inference.
+    """Classify a stable terminal region into a Decision. Pure, so it can be tested
+    exhaustively.
     """
     if not region or not region.strip():
         return NO_PROMPT
 
-    # --- tier 1: alarm has veto power and is checked first ------------------
     danger = find_danger(region)
 
-    # --- tier 2: is anything actually waiting on input? ---------------------
-    # Several prompts can be visible at once; the bottom-most is the live one.
+    # The bottom-most visible prompt is the live one.
     best: tuple[int, str, str] | None = None
     for rule_id, pattern, kind in PROMPT_SHAPES:
         matches = list(pattern.finditer(region))
@@ -205,9 +163,8 @@ def classify(region: str) -> Decision:
             best = (matches[-1].start(), rule_id, kind)
 
     if best is None:
-        # Nothing recognisable is blocking. If a danger pattern is on screen
-        # it is output, not a question — report it so the caller can log, but
-        # there is nothing to answer.
+        # Nothing is waiting: a danger pattern on screen is output, reported for logging
+        # only.
         if danger:
             return Decision(Verdict.ESCALATE, None, danger[0],
                             f"dangerous content on screen ({danger[1]})")
@@ -216,8 +173,7 @@ def classify(region: str) -> Decision:
     _, shape_id, kind = best
 
     if danger:
-        # A recognised prompt, but the surrounding context is dangerous.
-        # This is the case the old blind matcher got wrong.
+        # A recognised prompt in a dangerous context: escalate.
         return Decision(Verdict.ESCALATE, None, danger[0],
                         f"{danger[1]} — needs explicit authorization")
 

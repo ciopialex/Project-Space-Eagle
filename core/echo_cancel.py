@@ -1,42 +1,18 @@
-"""The microphone stops hearing the speakers, on every machine.
+"""Echo cancellation, so the microphone stops hearing the speakers.
 
-WHY THIS EXISTS
----------------
-The eagle streams raw microphone audio to Gemini, and Gemini's server-side VAD
-decides where a turn ends. So anything coming out of the speakers is, to the
-eagle, someone talking: it interrupts itself, and it answers the podcast. That
-is not a cosmetic fault — talking to it while your hands and ears are busy is
-the product.
+Gemini's server-side VAD treats anything from the speakers as speech, so without
+this the eagle interrupts itself and answers the podcast. PipeWire's WebRTC echo-
+cancel module, made the default source and sink, takes the playback tone from +59
+dB to below silence, with no application change: sd.InputStream() opens the system
+default.
 
-Measured on the first machine this was tried on: a playback tone arrived at the
-microphone at +59.4 dB over the silent floor. With WebRTC AEC in front of it and
-converged, −12.7 dB — quieter than silence — while ambient speech kept 56 dB of
-range. About 81 dB of suppression, and no application code changed at all,
-because `sd.InputStream()` is opened with no `device=` and therefore takes
-whatever the system default is.
+It reports the defaults, never just that the module is loaded, and requires both
+defaults (the canceller needs the playback signal). Linux only: Windows (WASAPI
+communications endpoint) and macOS (VoiceProcessingIO) already apply it, so they
+get supported=False.
 
-So this is not a DSP project. It is a setup step. The only thing missing was
-that a human had to type the commands.
-
-WHAT IT REFUSES TO DO
----------------------
-**It never reports the module, only the default.** "libpipewire-module-echo-
-cancel is loaded" is not "the eagle's microphone is cancelled" — the module can
-be loaded and the defaults still pointed at the bare hardware, which is the
-"reported before verifying" failure this codebase keeps paying for.
-
-**Both defaults, or none.** AEC subtracts the playback signal from the capture
-signal, so it must be handed the playback signal. A machine whose default
-source is the cancelled node while its default sink is the hardware cancels
-nothing at all, and checking only the microphone would call that a success.
-
-**It does not act off Linux.** Windows applies AEC at the WASAPI communications
-endpoint and macOS at CoreAudio's VoiceProcessingIO; there is nothing here to
-install and pretending otherwise would be a fake success. Those platforms get
-an honest `supported=False` naming the mechanism that already applies.
-
-There is no user-facing surface for any of this. No toggle, no settings pane. A
-switch for echo cancellation is a confession that it might not work.
+Offered in setup, never applied unasked: it changes the default microphone and
+speakers for every app.
 """
 from __future__ import annotations
 
@@ -49,19 +25,17 @@ from typing import Callable, Sequence
 
 from actions.cli.base import CommandMixin
 
-#: The virtual nodes the module below creates. These names — not the module,
-#: not the description — are what `state()` compares the defaults against.
+# The virtual nodes the module creates; state() compares the defaults against these
+# names.
 SOURCE_NODE = "effect_source.echo-cancel"
 SINK_NODE = "effect_sink.echo-cancel"
 
-#: PipeWire reads every `.conf` in this drop-in directory, so adding one file
-#: needs no edit to any file PipeWire ships and survives its upgrades.
+# PipeWire reads every .conf in this drop-in directory, so one file needs no edit to
+# anything PipeWire ships.
 CONFIG_PATH = (Path.home() / ".config" / "pipewire" / "pipewire.conf.d"
                / "99-echo-cancel.conf")
 
-#: Exactly what was measured working. Written verbatim rather than generated,
-#: because "the config we tested" and "the config we emit" being the same
-#: string is the whole reason the measurement above transfers to other machines.
+# Exactly the configuration measured working, written verbatim.
 CONFIG_BODY = """context.modules = [
     {   name = libpipewire-module-echo-cancel
         args = {
@@ -84,16 +58,11 @@ CONFIG_BODY = """context.modules = [
 
 _SERVICES = ("pipewire.service", "pipewire-pulse.service", "wireplumber.service")
 
-#: How long the nodes get to appear after the restart, and how often we look.
-#: Bounded and polled, never slept: systemd returns before WirePlumber has
-#: re-read the config and published the nodes, and how long that takes is a
-#: property of the machine, not a number anyone can pick correctly. A fixed
-#: delay standing in for a measurement is a recurring defect shape here.
+# How long the nodes get to appear after the restart, polled, never slept.
 POLL_TIMEOUT_S = 5.0
 POLL_INTERVAL_S = 0.25
 
-#: Long enough for three systemd units to come back on a slow box, short enough
-#: that a wedged restart surfaces as an error instead of hanging first run.
+# Long enough for three systemd units on a slow machine.
 RESTART_TIMEOUT_S = 30.0
 QUERY_TIMEOUT_S = 5.0
 
@@ -109,12 +78,8 @@ _OS_DETAIL = {
 
 @dataclass(frozen=True)
 class State:
-    """What is true right now.
-
-    `supported` and `active` answer different questions and must not be
-    collapsed: "this machine is not cancelled" invites a fix, "this machine
-    cannot be asked" does not, and offering a fix that cannot work is how a
-    preflight turns a missing tool into a confident wrong instruction.
+    """What is true now. `supported` and `active` stay separate: "not cancelled"
+    invites a fix, "cannot be asked" does not.
     """
     supported: bool
     active: bool
@@ -130,20 +95,11 @@ def _plat() -> str:
 
 
 class _Wpctl(CommandMixin):
-    """The injected-runner seam from `actions/cli/base`, reused rather than
-    reinvented, so this module can be exercised in full on a machine that has
-    no PipeWire — and so the developer's audio is never a test fixture."""
+    """The injected-runner seam from actions/cli/base, so tests need no PipeWire."""
 
     def run(self, argv: Sequence[str], timeout: float = QUERY_TIMEOUT_S):
-        """`(returncode, stdout)`, or None when the program is not installed.
-
-        The None is the point: `run_cmd` raises `FileNotFoundError` for a
-        missing binary, and "wpctl is absent" has to stay distinguishable from
-        "wpctl ran and answered no". Every other failure — a timeout, a dead
-        daemon — is a non-zero return, which is what it is.
-
-        `text=True` is load-bearing: `core.run_cmd.run_cmd` is a Popen wrapper
-        with no text default, so without it every regex below meets bytes.
+        """(returncode, stdout), or None when the program is not installed. text=True
+        is required.
         """
         try:
             proc = self._run(list(argv), capture_output=True, timeout=timeout,
@@ -156,11 +112,8 @@ class _Wpctl(CommandMixin):
 
 
 def _node_name(text: str) -> str | None:
-    """The `node.name` property out of `wpctl inspect`, and nothing else.
-
-    Anchored on the property name because the same output carries
-    `media.name`, `node.description` and `library.name`, any of which a looser
-    pattern happily returns instead.
+    """The `node.name` property from wpctl inspect, anchored so media.name and
+    node.description do not match.
     """
     m = re.search(r'^\s*\*?\s*node\.name\s*=\s*"([^"]*)"\s*$', text, re.M)
     return m.group(1) if m else None
@@ -173,13 +126,8 @@ _ROW = re.compile(r"(\d+)\.\s+\S")
 
 
 def _audio_node_ids(status: str) -> list[int]:
-    """Ids of the audio sinks and sources listed by `wpctl status`.
-
-    `wpctl status` prints descriptions, never node names, and `wpctl inspect`
-    takes only a numeric id — so finding a node by name genuinely costs a
-    status plus an inspect per candidate. Video devices and clients are skipped
-    because their ids share the same numbering and inspecting them is pure
-    waste.
+    """Ids of audio sinks and sources from wpctl status, which prints descriptions,
+    never names; finding a node by name takes an inspect per candidate.
     """
     ids: list[int] = []
     audio = False
@@ -230,11 +178,8 @@ def _default_node(wp: _Wpctl, target: str):
 
 
 def state(run: Callable | None = None, *, platform: str | None = None) -> State:
-    """What the eagle's microphone is actually attached to.
-
-    Reads only. The doctor calls this on a machine somebody is using, so it
-    must never restart a service or move a default as a side effect of being
-    asked a question.
+    """What the eagle's microphone is attached to. Read-only: never restarts or moves
+    a default.
     """
     plat = platform or _plat()
     if plat != "linux":
@@ -278,11 +223,8 @@ def install(run: Callable | None = None, *, platform: str | None = None,
             config_path: Path | None = None,
             sleep: Callable[[float], None] = time.sleep,
             now: Callable[[], float] = time.monotonic) -> tuple[bool, str]:
-    """Make it true, then check whether it is — and report the check.
-
-    Returns `(ok, what happened)`. `ok` is the re-read state, never the fact
-    that the commands exited zero: a machine can accept every one of them and
-    still leave the defaults where they were.
+    """Make it true, then report the re-read state: (ok, what happened). Commands
+    exiting zero is not ok.
     """
     plat = platform or _plat()
     if plat != "linux":
@@ -291,18 +233,13 @@ def install(run: Callable | None = None, *, platform: str | None = None,
     wp = _Wpctl(run)
     before = state(run, platform=plat)
     if not before.supported:
-        # Refusing whole beats acting half: no config dropped for a stack that
-        # cannot use it, and no restart of an audio server we then cannot
-        # verify the result of.
+        # Refuse whole rather than act half.
         return False, before.detail
     if before.active:
         return True, "already active — " + before.detail
 
-    # The canceller can already be running with one default pointing past it:
-    # found on the first machine this shipped to, source cancelled and sink
-    # the bare hardware. Two defaults fix that. Restarting the audio server to
-    # reload a config it already has would cut every sound playing on the
-    # machine for nothing.
+    # The canceller may already run with one default pointing past it: fix the defaults
+    # without restarting the audio server.
     nodes = _find_nodes(wp)
     if len(nodes) < 2:
         path = Path(config_path) if config_path is not None else CONFIG_PATH

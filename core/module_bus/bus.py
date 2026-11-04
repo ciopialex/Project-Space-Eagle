@@ -1,11 +1,6 @@
-"""Discovery and invocation. Nothing here may raise into the turn loop.
-
-`ModuleBus.invoke()` is called from the same `ThreadPoolExecutor` that runs the
-eagle's own tools, next to the voice loop. Every failure it can have — no
-binary, bad arguments, a crash, a hang, output that is not what the manifest
-promised — comes back as a `ToolResult` with `ok=False` and a `guidance` line
-saying what to do about it. There is no path out of `invoke()` that propagates
-an exception.
+"""Discovery and invocation of module tools. invoke() never raises: every failure (no
+binary, bad arguments, a crash, a hang, output the manifest did not promise) is a
+ToolResult with guidance.
 """
 from __future__ import annotations
 
@@ -24,23 +19,16 @@ from core.tool_result import ToolResult
 from .manifest import (CONFIRM_PARAM, ModuleManifest, ModuleTool,
                        build_argv, load_manifests)
 
-#: How much module output the model is allowed to see. `a3d search` can print a
-#: long table and a module is free to be chatty; the context is not.
+# How much module output the model sees.
 MAX_OUTPUT_CHARS = 16000
 
-#: Default per-call ceiling. Slicing a model is genuinely slow, so this is
-#: generous — but finite, because the thread it holds is shared with the voice
-#: loop.
+# Default per-call ceiling: generous, but the thread is shared with the voice loop.
 DEFAULT_TIMEOUT_S = 120.0
 
 
 def module_bin_dir() -> Path:
-    """Where `eagle install` links the executables of modules it installed.
-
-    Searched before PATH. The eagle is often started from a desktop icon, and a
-    desktop session's PATH is whatever the login shell happened to export --
-    ~/.local/bin is on it on some systems and not on others. A module the eagle
-    installed itself must not depend on that.
+    """Where `eagle install` links module executables. Searched before PATH, which a
+    desktop session may not set.
     """
     return Path(os.path.expanduser("~/.aethelark/bin"))
 
@@ -58,15 +46,8 @@ def which_module(name: str) -> str | None:
 
 
 def default_manifest_dirs() -> list[Path]:
-    """Where installed modules register themselves.
-
-    One directory, owned by the user: `<module> register` copies a module's
-    manifest and island assets into `<dir>/<key>/`. The harness ships no module
-    configuration of its own -- a copy it carried used to be synced over the
-    module's own on every launch, silently reverting module updates.
-
-    AETHELARK_MODULES_DIR overrides it, which is how tests and a second,
-    isolated install point the bus somewhere else.
+    """Where installed modules register: `<module> register` copies its manifest and
+    island files into `<dir>/<key>/`. AETHELARK_MODULES_DIR overrides it.
     """
     override = os.environ.get("AETHELARK_MODULES_DIR")
     return [Path(override).expanduser() if override
@@ -74,12 +55,8 @@ def default_manifest_dirs() -> list[Path]:
 
 
 def island_dirs(source: Path | None, key: str) -> list[Path]:
-    """Where a module's card files live, relative to its manifest.
-
-    Two layouts. Installed: `<key>/manifest.toml` beside `<key>/island/`.
-    Flat: `manifests/<key>.toml` with the cards in a sibling
-    `island/<key>/` -- the layout a directory holding several modules'
-    manifests uses.
+    """Where a module's card files live: `<key>/island/` beside
+    `<key>/manifest.toml`, or `island/<key>/` beside `manifests/<key>.toml`.
     """
     if source is None:
         return []
@@ -91,24 +68,8 @@ _UNEXPLAINED = "Read the message — it comes from the module itself."
 
 
 def _module_failure(stdout: str, stderr: str, returncode: int) -> tuple[str, str]:
-    """What a failing module said, preferring its own words to its raw output.
-
-    A module that fails well already writes what a small model needs. a3d, asked
-    about a printer nobody configured, returns
-
-        {"error": "There is no printer called 'NOTAPRINTER'.",
-         "guidance": "The printers set up here are: CC1, CC2, ..."}
-
-    -- the problem, and the valid options. Flattening that into
-    `module tool failed: {"error": ...}` handed the model raw JSON inside a
-    sentence, and replaced the one field written to help it choose again with an
-    instruction to read what it was already reading.
-
-    The harness runs Gemini 2.5 Flash. Unwrapping this costs nothing and is the
-    difference between a model that corrects itself and one that guesses.
-
-    A module with nothing useful to say keeps the old behaviour: its raw output
-    is still better than silence.
+    """What a failing module said: its own `error` and `guidance` when it gave them,
+    else its raw output.
     """
     for blob in (stdout, stderr):
         if not blob:
@@ -125,12 +86,8 @@ def _module_failure(stdout: str, stderr: str, returncode: int) -> tuple[str, str
 
 
 def _failure_signals(stdout: str) -> dict[str, Any]:
-    """The machine-readable part of a module's failure, for the host.
-
-    `error` and `guidance` are for the model and are unwrapped above. A
-    `needs_account` names a site the module needs a sign-in for; the host acts
-    on it (core/module_bus/accounts.py) instead of leaving the model to
-    explain a login it cannot perform.
+    """The machine-readable part of a failure: `needs_account` names a site the host
+    should lend a sign-in for (accounts.py).
     """
     try:
         parsed = json.loads(stdout) if stdout else None
@@ -143,21 +100,9 @@ def _failure_signals(stdout: str) -> dict[str, Any]:
 
 
 def model_view(value):
-    """The same payload with `_`-prefixed keys removed, at any depth.
-
-    A module sends the island things the model must not read. A browse carries
-    five preview meshes at roughly 12.3 KB of base64 each — about 15k tokens of
-    quantised triangles the model cannot use, and enough to overrun the message
-    ceiling so that what it does receive is truncated mid-blob with the title
-    and dimensions cut off the end.
-
-    Marking them with a leading underscore keeps the rule at the point the
-    payload is written. The alternative — a manifest field listing which paths
-    are UI-only — drifts from the payload it describes, and nothing catches it
-    when it does.
-
-    Returns a new structure; the caller's copy is left alone, because the
-    island reads that one.
+    """The payload with `_`-prefixed keys removed at any depth: UI-only data (preview
+    meshes) the model must not read. Returns a new structure; the island reads the
+    original.
     """
     if isinstance(value, dict):
         return {k: model_view(v) for k, v in value.items()
@@ -189,15 +134,9 @@ class ModuleBus:
         self._gate = Gate()
         self._confirmations = self._gate.records
 
-    # ------------------------------------------------------------ discovery
 
     def discover(self) -> "ModuleBus":
-        """Read every manifest and check which binaries actually resolve.
-
-        Cheap and side-effect free: it reads TOML and looks at PATH. Nothing is
-        executed, so booting the eagle never starts a module the user did not
-        ask for — the same rule `capability/agents.discover_gui_apps` follows.
-        """
+        """Read every manifest and check which binaries resolve. Runs nothing."""
         self._manifests = load_manifests(
             self._dirs,
             on_error=lambda path, err: self._log(
@@ -214,19 +153,9 @@ class ModuleBus:
         return self
 
     def _resolve_binary(self, manifest: ModuleManifest) -> str | None:
-        """Where this module's executable actually is, or None.
-
-        A bare name ("atrade") is a PATH lookup, which is how every manifest
-        shipped in this repo names its binary.
-
-        A name with a separator ("bin/atrade") is the AMS-1 bundle layout: the
-        executable ships *inside* the module directory, beside the manifest
-        that declares it, and a `.aem` unpacks to exactly that shape. It is
-        resolved against the manifest's own directory and PATH is never
-        consulted — falling back to PATH would let a bundle that forgot to
-        ship its binary silently run a same-named program that happens to be
-        installed on this machine, which is a different program than the one
-        the manifest describes.
+        """Where this module's executable is, or None. A bare name is a PATH lookup;
+        a path ("bin/atrade", the bundle layout) resolves against the manifest's
+        directory only, never PATH.
         """
         declared = manifest.binary
         if not _is_bundled_path(declared):
@@ -250,28 +179,14 @@ class ModuleBus:
         return [m for m in self._manifests if m.key in self._resolved]
 
     def absent(self) -> list[ModuleManifest]:
-        """Declared but not installed.
-
-        Kept and reported rather than dropped. A user who has the Law module's
-        repo but never ran `pip install -e .` should be told that, not left
-        wondering why the eagle has no opinion about Romanian VAT.
-        """
+        """Declared but not installed: reported, not dropped."""
         return [m for m in self._manifests if m.key not in self._resolved]
 
-    # ------------------------------------------------------------ the schema
 
     def tool_declarations(self) -> list[dict[str, Any]]:
-        """Function declarations for every tool of every *available* module.
-
-        Appended to `main.TOOL_DECLARATIONS` at connect time. Only available
-        modules contribute: telling the model it can slice an STL on a machine
-        with no slicer produces a confident call and a failure, and the model
-        has no way to know the difference in advance.
-
-        Internal tools are left out. They are invokable by name — the harness
-        calls them — but a tool the model can see is a choice it has to get
-        right, and it should not be choosing between a safe path and the raw
-        one underneath it.
+        """Function declarations for every tool of every available module, appended
+        at connect time. Internal tools are invokable by the harness but never
+        offered.
         """
         return [tool.declaration()
                 for manifest in self.available()
@@ -279,11 +194,7 @@ class ModuleBus:
                 if not tool.internal]
 
     def instructions(self) -> str:
-        """What each installed module wants the voice model to know.
-
-        Only available modules speak here: instructions about a module whose
-        binary is missing would send the model to tools it was never given.
-        """
+        """What each available module wants the voice model to know."""
         parts = []
         for manifest in self.available():
             if manifest.instructions:
@@ -293,30 +204,19 @@ class ModuleBus:
         return "\n\n".join(parts)
 
     def owns(self, tool_name: str) -> bool:
-        """True when `tool_name` is a module tool — available or not.
-
-        Deliberately includes absent modules. Once discovery has seen a
-        manifest, the bus answers for that name; otherwise an absent module's
-        tool would fall through to the core dispatcher and be reported as an
-        unknown tool rather than as an uninstalled module.
+        """True when `tool_name` is a module tool, available or not, so an
+        uninstalled module's tool is reported as such.
         """
         return self._find(tool_name) is not None
 
     def module_of(self, tool_name: str) -> str | None:
-        """The key of the module that owns this tool, or None.
-
-        The host used to take everything before the first underscore of the
-        tool's name, which is a different module for any key that has an
-        underscore in it.
-        """
+        """The key of the module that owns this tool, or None."""
         found = self._find(tool_name)
         return found[0].key if found else None
 
     def depth_tools(self, module_key: str) -> tuple[str, ...]:
-        """What to fetch, in order, so this module's deeper cards open on data.
-
-        Declared by the module as `prefetch` on its cards. The host used to
-        carry the answer for one module, by name, in a table of its own.
+        """What to fetch, in order, so this module's deeper cards open on data:
+        `prefetch` on its cards.
         """
         for manifest in self.available():
             if manifest.key != module_key or manifest.island is None:
@@ -331,12 +231,9 @@ class ModuleBus:
         return ()
 
     def live_media(self, module_key: str, subject: str, on: bool) -> str:
-        """Start or stop a module's live media for one subject; the URL it
-        streams at, or "" when there is none.
-
-        Declared in the module's `[island]`: `live` names the tool and
-        `live_param` the argument that receives the subject; the tool also
-        receives `state` = on | off and answers with a `url`.
+        """Start or stop a module's live media for one subject; the URL it streams
+        at, or "". Declared in [island]: `live` names the tool, `live_param` the
+        subject argument; it also gets `state` = on | off.
         """
         for manifest in self.available():
             if manifest.key != module_key:
@@ -361,14 +258,8 @@ class ModuleBus:
         return bool(found and found[1].internal)
 
     def island_face(self, tool_name: str):
-        """The screen this tool's module declared, or None if it declared none.
-
-        The host asks this to find out whether an answer is something the
-        module's own cards can draw, without knowing whose answer it is. A
-        module that declares no `[island]` section returns None here, and every
-        caller is required to treat that as "carry on as before" rather than as
-        "draw nothing" -- declaring no screen is not the same as declaring an
-        empty one.
+        """The screen this tool's module declared, or None. None means carry on as
+        before, not draw nothing.
         """
         found = self._find(tool_name)
         return found[0].island if found else None
@@ -391,27 +282,9 @@ class ModuleBus:
         return (tool.qualified_name, manifest.deck) if tool else None
 
     def island_fields(self, tool_name: str) -> frozenset[str]:
-        """Every placeholder this module's card template asks for.
-
-        The companion to `island_face`, for a module that ships a card and
-        declares no face. Such a module makes no statement about what its cards
-        draw, so `island_face` returns None and the host has nothing to ask —
-        and every answer it produces reaches the screen, including the ones its
-        template cannot fill a single row of.
-
-        The template is the only declaration a faceless module makes, so the
-        host asks it instead. Read here rather than in the caller for the same
-        reason `island_face` is: the host learns no module's name to do it. The
-        installed island wins over the vendored copy, matching the rule
-        everywhere else.
-
-        An empty set means the module ships no template at all, which is not
-        the same as a template that draws nothing — the caller is required to
-        treat it as "carry on as before", exactly as with a None face.
-
-        The measurement that prompted this, and the payloads it was taken
-        from, are in
-        tests/test_a_module_that_declares_no_face_still_earns_the_screen.py.
+        """Every placeholder this module's card template asks for, for a module with
+        a card and no face. Installed island wins over a vendored copy. An empty
+        set means no template: carry on as before.
         """
         found = self._find(tool_name)
         if not found:
@@ -435,7 +308,6 @@ class ModuleBus:
                 return manifest, tool
         return None
 
-    # ---------------------------------------------------------- invocation
 
     def invoke(self, tool_name: str, args: dict[str, Any] | None = None,
                timeout_s: float = DEFAULT_TIMEOUT_S) -> ToolResult:
@@ -452,14 +324,10 @@ class ModuleBus:
 
         binary = self._resolved.get(manifest.key)
         if binary is None:
-            # A bundle declares its executable by path, so "put it on PATH" is
-            # advice for a fix that does not apply: the file is meant to be
-            # inside the module directory, and the real fault is a bundle that
-            # arrived incomplete.
+            # A bundle's executable belongs inside its folder: the bundle arrived
+            # incomplete.
             if manifest.binary.startswith(".venv") or "/.venv/" in manifest.binary:
-                # The module is installed; it just has no environment yet.
-                # Saying "re-install" would send the user back to a download
-                # they already have.
+                # Installed, with no environment yet.
                 guidance = (f"The {manifest.key} module is installed but its "
                             f"setup did not finish, so what it needs is not "
                             f"there yet. Tell the user to install it again the "
@@ -485,8 +353,7 @@ class ModuleBus:
         try:
             argv = build_argv(manifest, tool, args)
         except ValueError as e:
-            # Checked BEFORE the gate on purpose: never ask a human to approve
-            # a call that could not have run anyway.
+            # Before the gate: never ask approval for a call that could not run.
             return ToolResult.failure(
                 str(e),
                 guidance="Call it again with that argument filled in.",
@@ -559,22 +426,16 @@ class ModuleBus:
             try:
                 parsed = json.loads(stdout) if stdout else None
             except ValueError as e:
-                # The manifest promised JSON. Handing the model a Rich table
-                # under a `result` key would be the invented structure this
-                # whole design refuses.
+                # The manifest promised JSON.
                 return ToolResult.failure(
                     f"{manifest.key} {tool.name} declares JSON output but did "
                     f"not emit valid JSON ({e}).",
                     guidance=f"Its manifest says output = \"json\"; either the "
                              f"module changed or the manifest is wrong.",
                     module=manifest.key, raw=_clip(stdout, 800))
-            # What the model hears is the payload minus its UI-only fields;
-            # what the island gets is `result`, whole. Re-serialised rather
-            # than passing raw stdout through, because the two now differ.
-            # ensure_ascii=False because the default escapes every non-ASCII
-            # character to \uXXXX: alaw answers Romanian tax questions and its
-            # payloads inflate by a third or more, which can push a payload
-            # that fitted the ceiling past it and truncate the model's copy.
+            # The model gets the payload minus UI-only fields; the island gets `result`
+            # whole. ensure_ascii=False so non-ASCII text does not inflate past the
+            # ceiling.
             spoken = (json.dumps(model_view(parsed), ensure_ascii=False)
                       if parsed is not None else stdout)
             self._warn_if_clipped(tool, spoken)
@@ -589,17 +450,8 @@ class ModuleBus:
 
     @staticmethod
     def _warn_if_clipped(tool: ModuleTool, text: str) -> None:
-        """Say out loud when a module's answer did not fit.
-
-        Overflow used to be silent. `_clip` cut the model's copy mid-structure,
-        appended a character count, and nobody found out until a person got a
-        confidently incomplete answer — measured on a real insider ledger:
-        47,586 characters against this ceiling, 121 of 182 filings dropped, and
-        the model answered from the 61 it could see without hedging.
-
-        The module author is the only one who can fix that, and they are not
-        reading the harness's source. This line is how they find out. It costs
-        one comparison on a path that has already serialised the payload.
+        """Log when a module's answer did not fit the ceiling, so its author can find
+        out.
         """
         if len(text) <= MAX_OUTPUT_CHARS:
             return
@@ -609,12 +461,12 @@ class ModuleBus:
               f"summarise, rank, or mark bulk data with a leading underscore "
               f"(docs/MODULE_CONTRACT.md).")
 
-    # --------------------------------------------------------- confirmation
 
     @staticmethod
     def _as_asked(tool: ModuleTool, args: dict[str, Any]) -> dict[str, Any]:
-        """The request with empty arguments and stated defaults left out, so a
-        yes survives the model spelling out what it had left implicit."""
+        """The request with empty arguments and stated defaults left out, so a yes
+        survives the model spelling out a default.
+        """
         defaults = {p.name: p.default for p in tool.params if p.default is not None}
 
         def same(a, b) -> bool:
@@ -625,11 +477,8 @@ class ModuleBus:
 
     def _check_confirmation(self, tool: ModuleTool, args: dict[str, Any],
                             token: str, had_token: bool = False) -> ToolResult | None:
-        """None to proceed; a ToolResult to stop and ask.
-
-        The token is the mechanism that stops the model answering its own
-        question. It cannot invent one, so a confirmed call always has a first
-        call behind it — and that first call is what the user heard.
+        """None to proceed; a ToolResult to stop and ask. The model cannot invent a
+        token, so a confirmed call always has a question behind it.
         """
         args = self._as_asked(tool, args)
         cleared, refused, lead = self._gate.check(
@@ -637,45 +486,20 @@ class ModuleBus:
         if cleared:
             return None
 
-        # A refused token still gets the real question, in the same answer.
-        # Measured live on 2026-09-23: the voice model filled confirm_token on
-        # its FIRST call to a gated tool. Refusing without asking made the user
-        # say yes twice -- once to the model's own question, once to the one a
-        # second call finally fetched. Nothing runs either way; this only
-        # saves the round trip.
+        # A refused token still gets the real question in the same answer.
         new_token = self._gate.issue(tool.qualified_name, args)
 
-        # Fill what the call DID supply, whatever it left out.
-        #
-        # This was `.format(**args)` with the raw prompt as the fallback, so a
-        # single missing key discarded every substitution -- including the ones
-        # that would have worked. `a3d_print`'s prompt names {query_or_id} and
-        # {printer}; `printer` is optional, so "print the benchy" reached the
-        # user as
-        #
-        #     This will start a real print of '{query_or_id}' on printer {printer}.
-        #
-        # Template variables, read out loud, in the confirmation for the one
-        # action this codebase calls irreversible: a print burns filament and
-        # hours and cannot be stopped remotely. The `Requested:` line beneath
-        # it had the real value the whole time.
-        #
-        # `format_map` with a __missing__ substitutes per key, so an omitted
-        # optional costs that phrase and nothing else. A module that omits a
-        # REQUIRED argument never gets here -- build_argv above rejects it
-        # first, deliberately, so nobody is asked to approve a call that could
-        # not have run.
+        # Fill what the call supplied: format_map substitutes per key, so an omitted
+        # optional costs only its phrase. A missing required argument never gets here.
         class _Filled(dict):
             def __missing__(self, key: str) -> str:
-                # "on the default printer", not "on the default": the model
-                # says this sentence to a person, word for word.
+                # Read to a person word for word.
                 return "the default " + key.replace("_", " ")
 
         try:
             consequence = tool.confirm_prompt.format_map(_Filled(args))
         except (IndexError, ValueError):
-            # Positional or malformed braces in a hand-written prompt. The
-            # question still has to be askable.
+            # Malformed braces in a hand-written prompt: ask it as written.
             consequence = tool.confirm_prompt
 
         detail = ", ".join(f"{k}={v}" for k, v in sorted(args.items()) if v != "")
@@ -692,7 +516,6 @@ class ModuleBus:
             module=tool.module_key, needs_confirmation=True,
             confirm_token=new_token)
 
-    # ------------------------------------------------------------ reporting
 
     def summary(self) -> str:
         """One line per declared module. Read by the doctor and the HUD."""
@@ -711,10 +534,8 @@ class ModuleBus:
 
 
 def _is_bundled_path(declared: str) -> bool:
-    """True when a manifest names its executable by path rather than by name.
-
-    "atrade" is a PATH lookup. "bin/atrade" is the AMS-1 bundle layout, where
-    the executable ships inside the module folder beside its manifest.
+    """True when a manifest names its executable by path (the bundle layout) rather
+    than by name.
     """
     separators = {os.sep, os.altsep} - {None}
     return any(sep in declared for sep in separators)
@@ -727,8 +548,7 @@ def _clip(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     return text[:limit] + f"\n… [{len(text) - limit} more characters truncated]"
 
 
-#: Process-wide bus. Discovery is cheap but not free (a glob and a few PATH
-#: lookups), and the answer only changes when the user installs something.
+# Process-wide bus; discovery changes only when the user installs something.
 _BUS: ModuleBus | None = None
 
 

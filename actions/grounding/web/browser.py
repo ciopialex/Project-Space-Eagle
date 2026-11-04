@@ -1,15 +1,8 @@
-"""One browser the eagle owns, kept warm, running in its own thread.
+"""One browser the eagle owns, kept warm, on its own thread.
 
-Two facts shape this file.
-
-Playwright's sync API must be used from the thread that created it, and cannot
-be used at all from a thread running an asyncio loop. Tools are dispatched onto
-an executor whose threads are not stable between calls. So the browser owns one
-long-lived thread and every call is marshalled onto it.
-
-The `Grounder` protocol is synchronous. Keeping the sync API here is what lets
-`WebGrounder.find` stay a plain function instead of infecting the whole
-grounding stack with async.
+Playwright's sync API must stay on the thread that created it and cannot run on an
+asyncio thread, so every call is marshalled onto one long-lived thread. Sync keeps
+WebGrounder.find a plain function.
 """
 from __future__ import annotations
 
@@ -27,51 +20,17 @@ from core import user_paths
 
 # A page that has not settled in this long is not going to.
 _NAV_TIMEOUT_MS = 30_000
-# Strictly greater than _NAV_TIMEOUT_MS. If the two race on the same clock, a
-# slow Playwright action can time out _submit() at the same moment Playwright
-# itself would have timed out the action - and _submit()'s caller is told the
-# call failed while the job is still sitting in, or running from, the queue.
-# The outer deadline must lose that race, the same margin goto() already uses
-# (45s outer vs. 30s inner).
+# Strictly greater than _NAV_TIMEOUT_MS, so Playwright's own timeout fires first.
 _CALL_TIMEOUT = 45.0
 
-# A ref names an element by a `data-ae-ref` attribute COLLECT_JS stamped
-# during the snapshot that found it — and COLLECT_JS strips and renumbers
-# every such attribute from scratch at the start of the *next* collect (see
-# page.py), navigation or not. A ref is only ever good until the next
-# `collect()` call, full stop — an earlier version of this comment claimed
-# it "outlives exactly one navigation and no more," which is false: any
-# `collect()` invalidates it, including the ones `wait_for` issues on every
-# poll while waiting for a control to become actionable. Worse than merely
-# going stale: because the numbering is positional ('e' + n, restarting from
-# 0 every time), an old ref string can silently be reassigned to a
-# DIFFERENT live element in the new snapshot rather than matching nothing at
-# all — see `_act_with_reresolve` in actions/web_agency.py for the bug that
-# caused and the fix (re-resolve and re-gate immediately before every
-# actuation, never trust a ref resolved earlier).
-#
-# `context.set_default_timeout` above sizes Playwright's default per-call
-# wait for navigation, not for discovering a selector matches nothing: a ref
-# gone stale between being resolved and being used (an async redirect, an
-# SPA route change, or simply another `collect()` running first) would
-# otherwise block a click or fill for the full 30s before failing. Ref-based
-# actuation gets its own, much shorter timeout instead, so a stale ref is
-# reported fast enough for the caller to re-resolve and retry within the same
-# tool call — see `_act_with_reresolve` in actions/web_agency.py, the seam
-# that owns the retry because it is the one place that still has the
-# description a fresh resolve needs.
+# A ref is good only until the next collect(), which renumbers every data-ae-ref and can
+# hand an old ref to a different element (see _act_with_reresolve in web_agency.py). Ref
+# actions get a short timeout so a stale ref fails fast enough to re-resolve within the
+# same call.
 _REF_TIMEOUT_MS = 4_000
 
-# How long close() waits, per teardown step, before it stops trying to
-# confirm the step finished and moves on. Unlike _CALL_TIMEOUT, this number
-# has no correctness weight: teardown jobs are submitted with
-# cancellable=False, so a caller giving up here never causes the job to be
-# dropped (see _submit). It only trades "how promptly close() can return"
-# against "how often it can synchronously confirm a normal-speed teardown
-# actually finished" - a modest window, well under _CALL_TIMEOUT, since
-# there's no safety reason for close() to sit for tens of seconds on a
-# wedged browser just to find out what cancellable=False already guarantees:
-# the teardown will still run once the thread is free.
+# How long close() waits per teardown step before moving on. Teardown jobs are not
+# cancellable, so they still run.
 _TEARDOWN_TIMEOUT = 5.0
 
 
@@ -80,13 +39,9 @@ def _default_playwright():
     return sync_playwright().start()
 
 
-#: A profile records which browser wrote it, and is opened with that browser
-#: forever after. On Linux the cookie store is encrypted with a key held in
-#: the system keyring under an entry named for the browser — "Chrome Safe
-#: Storage" vs "Chromium Safe Storage". Open a Chrome-written profile with
-#: Chromium and every cookie decrypts to garbage: no error, no warning, just a
-#: browser that appears signed out of everything. So the choice is made once,
-#: when the profile is created, and never revisited.
+# A profile is always opened with the browser that created it: on Linux the cookie key
+# lives in the keyring under the browser's name, and the wrong browser silently reads
+# every cookie as garbage.
 _CHANNEL_MARKER = ".aethelark-browser-channel"
 
 
@@ -107,62 +62,28 @@ def _remember_channel(profile: Path, channel: str | None) -> None:
         pass          # best-effort; a missing marker just means "chromium"
 
 
-#: Fighting the window manager does not work. `--window-position=-32000,-32000`
-#: was measured at 25 sightings of a Chrome window at (50,22) over 2.5s on
-#: GNOME, and moving it afterwards with xdotool gave 44 sightings across
-#: 2583ms because the compositor put it back. A private display sidesteps the
-#: argument entirely — see core/virtual_display.py.
+# Moving the window off-screen does not work: the compositor puts it back. A private
+# display does (core/virtual_display.py).
 _WINDOW = ["--window-size=1440,900"]
 
 
 def _default_launcher(playwright, profile: Path, headless: bool):
     """A persistent context, so logins survive between sessions.
 
-    HEADLESS IS THE THING SITES REJECT. Measured on makerworld.com: headless
-    got a Cloudflare interstitial every time, and the identical browser run
-    HEADED loaded the page — 259 controls, then 165 with two inputs when
-    parked off-screen. Nothing else changed.
-
-    That mattered far beyond one site. When the wall blocked the eagle's own
-    browser the ladder fell back to `browser_control`, which opens the USER's
-    visible Chrome — so the work stopped being invisible, took over the
-    screen, and left the user unable to do anything else. The promise was that
-    the eagle works while you work.
-
-    So "headless" now means headed on a PRIVATE DISPLAY: it defeats the
-    detection that headless triggers, and the window is somewhere nobody is
-    looking. Verified: makerworld loaded with 160 controls and two inputs, and
-    zero Chrome windows appeared on the user's display for the whole run.
-
-    Without Xvfb it falls back to genuinely headless, which works everywhere
-    except the sites that fingerprint it. `--doctor` reports that rather than
-    leaving it to be discovered through a page that will not load.
-
-    `AETHELARK_BROWSER_HEADLESS=0` still means a window you can actually see,
-    which is what finishing a sign-in needs.
+    Sites reject headless browsers (makerworld.com served a Cloudflare wall every
+    time), so "headless" means headed on a private display when Xvfb exists, and
+    truly headless otherwise; --doctor reports which. AETHELARK_BROWSER_HEADLESS=0
+    shows a real window.
     """
     channel = profile_channel(profile)
     launch_kwargs = {"channel": channel} if channel and channel != "chromium" else {}
 
-    # Chrome on Linux encrypts cookie values with a key from the system
-    # keyring (scheme "v11"). Playwright launches Chrome with
-    # --password-store=basic to avoid keyring prompts, and basic cannot
-    # decrypt v11 - so Chrome silently DISCARDED every cookie the import had
-    # just brought across and wrote fresh empty ones in their place. Measured
-    # on the real profile: 0 cookies visible under basic, 61 under
-    # gnome-libsecret, including SID/SAPISID/__Secure-1PSID.
-    #
-    # Nothing errored anywhere. The import reported success, the database was
-    # correct, and the eagle simply appeared signed out - which is exactly
-    # what the user kept reporting.
-    #
-    # Only for a Chrome-channel profile: the bundled chromium has nothing
-    # encrypted to read, and demanding a keyring it may not have can only cost
-    # a prompt or a failed launch.
+    # A Chrome-channel profile needs the system keyring: with --password-store=basic,
+    # Chrome cannot decrypt v11 cookies and silently discards them.
     if channel == "chrome" and sys.platform.startswith("linux"):
         launch_kwargs["ignore_default_args"] = ["--password-store=basic"]
-    # A private display when one is available, so the browser can be headed
-    # (and therefore accepted) without appearing on the user's screen.
+    # A private display when available, so the browser can be headed without appearing
+    # on screen.
     from core import virtual_display
     hidden = virtual_display.display() if headless else None
     if hidden:
@@ -170,14 +91,11 @@ def _default_launcher(playwright, profile: Path, headless: bool):
 
     context = playwright.chromium.launch_persistent_context(
         str(profile),
-        # Headed whenever we have somewhere private to put it; genuinely
-        # headless only as the fallback, where the trade-off is bot walls.
+        # Headless only as the fallback.
         headless=bool(headless and not hidden),
         **launch_kwargs,
         viewport={"width": 1440, "height": 900},
-        # Without this Playwright CANCELS every download, so a click on a
-        # Download button succeeded from the DOM's point of view and no file
-        # ever arrived. See PagePort.download.
+        # Without this Playwright cancels every download (PagePort.download).
         accept_downloads=True,
         args=(["--disable-blink-features=AutomationControlled"]
               + (_WINDOW if headless else [])
@@ -187,22 +105,12 @@ def _default_launcher(playwright, profile: Path, headless: bool):
     context.set_default_timeout(_NAV_TIMEOUT_MS)
     _remember_channel(profile, channel)
     pages = context.pages
-    # A persistent context already opens a tab. Adopt it rather than adding a
-    # second, empty one.
+    # Adopt the tab the persistent context opens.
     return pages[0] if pages else context.new_page()
 
 
-
-#: What the eagle may write to disk from a web page. An ALLOW-list, so a new
-#: executable format is refused by default rather than permitted until someone
-#: notices - the page chooses this filename, and a voice request about a 3D
-#: model must not be able to land `setup.exe` in Downloads.
-#:
-#: Every component is checked, not just the last one: "laptop_stand.stl.exe"
-#: is the oldest trick there is, and it reads as the file you asked for.
-#:
-#: Nothing in this codebase executes a downloaded file, and nothing should be
-#: added that does. This list is about what arrives, not what runs.
+# What the eagle may write to disk from a web page. An allow-list, checked on every
+# extension component ("stand.stl.exe"). Nothing here executes a downloaded file.
 _DOWNLOAD_ALLOWED = frozenset({
     # documents
     "pdf", "txt", "md", "rtf", "odt", "doc", "docx", "ods", "xls", "xlsx",
@@ -210,7 +118,7 @@ _DOWNLOAD_ALLOWED = frozenset({
     # images / media
     "jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "tiff", "heic",
     "mp3", "wav", "flac", "ogg", "m4a", "mp4", "webm", "mov", "mkv",
-    # 3D printing and CAD - the whole point of the MakerWorld case
+    # 3D printing and CAD
     "stl", "3mf", "obj", "step", "stp", "gcode", "bgcode", "amf", "ply",
     "f3d", "dxf", "svg",
     # archives (inert until opened, and nothing here opens them)
@@ -219,7 +127,7 @@ _DOWNLOAD_ALLOWED = frozenset({
     "sqlite", "db", "parquet", "ttf", "otf", "woff", "woff2", "epub",
 })
 
-#: Extensions that are refused wherever they appear in the name.
+# Refused wherever they appear in the name.
 _DOWNLOAD_NEVER = frozenset({
     "exe", "msi", "bat", "cmd", "com", "scr", "pif", "cpl", "jar",
     "sh", "bash", "zsh", "run", "bin", "deb", "rpm", "appimage", "dmg", "pkg",
@@ -244,32 +152,10 @@ def download_name_ok(name: str) -> tuple[bool, str]:
 
 
 class _MarshaledEventCtx:
-    """A Playwright `expect_download`/`expect_popup` context manager,
-    marshaled onto the browser thread call by call rather than all at once.
-
-    `outcome.py`'s `click_with_outcome` — the caller this exists for — uses
-    this from whatever thread called `_click`, not the browser's own thread,
-    and puts real work (the click itself) INSIDE the `with` body, between
-    `__enter__` and `__exit__`:
-
-        with page.expect_download(timeout=ms) as info:
-            click_fn(ref)
-        download = info.value
-
-    Wrapping the whole block in one `self._call(...)` is not an option — the
-    click in the middle is a SEPARATE marshaled call (`PagePort.click`) that
-    must run between this context manager's `__enter__` and `__exit__`, not
-    inside a lambda closed over before either has happened. So each of
-    `__enter__`, `__exit__`, and reading `.value` is its OWN call, submitted
-    to the same worker thread and queue as everything else — the ordering a
-    single-threaded Playwright script would see falls out of the queue being
-    FIFO and the caller blocking between submissions, not from anything this
-    class does itself. Without this, `page.expect_download` does not exist
-    on `PagePort` at all, `click_with_outcome` raises `AttributeError`
-    fetching it, that is swallowed by its own `except Exception: pass`, and
-    `click_fn` — the actual click — never runs. Every candidate then reports
-    no outcome, and `resolve_and_click` looks exhausted when nothing was
-    ever attempted.
+    """An expect_download / expect_popup context manager marshalled onto the browser
+    thread one step at a time, because the click inside the `with` body is its own
+    marshalled call. __enter__, __exit__ and .value each run on the browser thread
+    in order.
     """
 
     def __init__(self, call: Callable[[Callable[[], Any]], Any],
@@ -290,14 +176,9 @@ class _MarshaledEventCtx:
         try:
             self._call(lambda: self._raw_cm.__exit__(*exc))
         except (Exception, asyncio.CancelledError):
-            # Playwright's own `__exit__` raises the expectation's
-            # `TimeoutError` when the event never fired, which is this
-            # path's ordinary outcome, not an error. It also CANCELS the
-            # expectation when an exception is already active in the block
-            # (a raising click), and a cancelled expectation surfaces as
-            # `asyncio.CancelledError` — a `BaseException` that `except
-            # Exception` lets straight through. See `_EXPECTATION_FAILED`
-            # in outcome.py for what that cost.
+            # Playwright's __exit__ raises TimeoutError when the event never fired (the
+            # normal outcome here) and CancelledError (a BaseException) when the block
+            # raised; outcome.py handles both (_EXPECTATION_FAILED).
             pass
         return False
 
@@ -307,10 +188,8 @@ class _MarshaledEventCtx:
 
 
 class PagePort:
-    """A Playwright `Page` as the `PageLike` the grounder wants.
-
-    `call` marshals onto the browser thread. The tests pass `lambda fn: fn()`
-    to run inline.
+    """A Playwright Page as the PageLike the grounder wants. `call` marshals onto the
+    browser thread; tests pass `lambda fn: fn()`.
     """
 
     def __init__(self, page: Any,
@@ -326,12 +205,8 @@ class PagePort:
             lambda: self._page.evaluate(HIT_TEST_JS, [int(x), int(y)]))
 
     def dom_signature(self) -> str:
-        """One number for "what the page currently is" — the DOM half of
-        `click_with_outcome`'s `"url_or_dom_changed"` signal (outcome.py).
-
-        Read-only, and deliberately not a `collect()`: collecting re-stamps
-        every `data-ae-ref`, which would invalidate the ref of every
-        tied candidate not yet tried. See `DOM_SIGNATURE_JS` (page.py).
+        """One number for what the page is now, the DOM half of url_or_dom_changed.
+        Not a collect(): that would re-stamp every ref.
         """
         return str(self._call(lambda: self._page.evaluate(DOM_SIGNATURE_JS))
                    or "")
@@ -340,30 +215,17 @@ class PagePort:
         # From the compositor, not the display: works on a background tab.
         return self._call(lambda: self._page.screenshot(type="png"))
 
-    #: Put the element in the MIDDLE of the viewport, not merely inside it.
-    #: Playwright already scrolls before clicking, but "in view" can still mean
-    #: "underneath the site's sticky header" - and it then waits out the whole
-    #: timeout on a hit test that will never pass. Measured live on
-    #: eu.store.bambulab.com: the right element was found and the click failed
-    #: for 5009ms across 76 tries, covered by the shop's own navigation bar.
+    # Scroll the element to the middle of the viewport, so it is not under a sticky
+    # header.
     _CENTRE_JS = "el => el.scrollIntoView({block: 'center', inline: 'center'})"
 
-    #: Last resort: dispatch the click on the element itself. This skips real
-    #: hit-testing, so it is deliberately NOT the normal path - but it is the
-    #: SAME element already resolved and already passed through the consent
-    #: gate, so the fallback changes how a click is delivered, never what is
-    #: clicked.
+    # Last resort: dispatch the click on the same, already-gated element without hit-
+    # testing. Changes how the click is delivered, never what is clicked.
     _DIRECT_JS = "el => el.click()"
 
     def centre(self, ref: str) -> None:
-        """Scroll `ref` to the middle of the viewport. Best effort.
-
-        Called BEFORE the actionability poll, not only before the click. The
-        poll hit-tests the element's centre point, and an element sitting
-        under a sticky header fails that test forever - measured live at
-        5009ms across 76 tries on a page where the control had been resolved
-        correctly. Centring first makes the hit test pass on the first try,
-        so the normal click path works instead of being waited out.
+        """Scroll `ref` to the middle of the viewport, before the actionability poll.
+        Best effort.
         """
         selector = f'[data-ae-ref="{ref}"]'
         try:
@@ -371,10 +233,7 @@ class PagePort:
         except Exception:
             pass
 
-    #: A leftover modal backdrop. Live on youtube.com and olx.ro these sat
-    #: over the whole page and every click was refused as "covered by
-    #: something else" - correctly, but a person presses Escape without
-    #: thinking and carries on.
+    # A leftover modal backdrop covering the page.
     _BACKDROP_JS = """(() => {
       const el = [...document.querySelectorAll('*')].find(e => {
         const s = getComputedStyle(e), r = e.getBoundingClientRect();
@@ -387,12 +246,8 @@ class PagePort:
     })()"""
 
     def dismiss_overlay(self) -> bool:
-        """Press Escape if a full-page backdrop is covering things.
-
-        Called BEFORE the actionability poll, not inside the click - the poll
-        hit-tests first and refuses, so anything done later never runs. Escape
-        only: it is the universal "close this" and cannot submit, buy or
-        delete, unlike clicking whatever is on top.
+        """Press Escape if a full-page backdrop covers things, before the
+        actionability poll. Escape cannot submit, buy or delete.
         """
         try:
             if not self._call(lambda: self._page.evaluate(self._BACKDROP_JS)):
@@ -404,25 +259,19 @@ class PagePort:
             return False
 
     def mouse_click(self, x: int, y: int) -> None:
-        """Click a raw page coordinate — the vision fallback's only lever.
-
-        Used when structural matching (`collect()`) found nothing at all to
-        put a `data-ae-ref` on, so there is no selector to click through.
-        Same thread-marshaling pattern as `click(ref)` above.
+        """Click a raw page coordinate: the vision fallback, for when collect() found
+        nothing.
         """
         self._call(lambda: self._page.mouse.click(int(x), int(y)))
 
     def expect_download(self, timeout: int | None = None) -> _MarshaledEventCtx:
-        """`click_with_outcome`'s (outcome.py) real-signal detection needs
-        this to exist on the live page, not only on test fakes — see
-        `_MarshaledEventCtx` for why a plain proxy is not enough."""
+        """Needed on the live page by click_with_outcome (_MarshaledEventCtx)."""
         tms = 30_000 if timeout is None else timeout
         return _MarshaledEventCtx(
             self._call, lambda: self._page.expect_download(timeout=tms))
 
     def expect_popup(self, timeout: int | None = None) -> _MarshaledEventCtx:
-        """The "a new tab opened" half of `click_with_outcome`'s detection —
-        see `expect_download` just above and `_MarshaledEventCtx`."""
+        """The new-tab half of click_with_outcome's detection."""
         tms = 30_000 if timeout is None else timeout
         return _MarshaledEventCtx(
             self._call, lambda: self._page.expect_popup(timeout=tms))
@@ -441,12 +290,8 @@ class PagePort:
             except Exception:
                 pass
 
-            # Still intercepted after centring. Usually a modal backdrop left
-            # over from a drawer - live on youtube.com the Home link was under
-            # TP-YT-IRON-OVERLAY-BACKDROP. A person presses Escape without
-            # thinking and carries on, so do that: it is the universal "close
-            # this" gesture and it cannot submit, buy or delete anything,
-            # unlike clicking at whatever happens to be on top.
+            # Still intercepted after centring, usually a leftover backdrop: press
+            # Escape.
             try:
                 self._page.keyboard.press("Escape")
                 self._page.click(selector, timeout=_REF_TIMEOUT_MS)
@@ -454,27 +299,16 @@ class PagePort:
             except Exception:
                 pass
 
-            # Nothing moved. Deliver the click to the element itself rather
-            # than failing on a control we located and centred.
+            # Nothing moved: dispatch the click on the element.
             self._page.eval_on_selector(selector, self._DIRECT_JS)
 
         self._call(_do)
 
     def download(self, ref: str, to_dir=None, timeout_ms: int = 60_000):
-        """Click `ref` and keep the file. The saved path, or None.
-
-        Clicking a Download button and RECEIVING a file are different events,
-        and only the second one is what the user asked for. Without this the
-        eagle clicked, the DOM reported a successful click, and the file went
-        nowhere — the exact shape of "reported success it never verified".
-
-        None means no file arrived: a sign-in wall behind the button, a
-        paywall, or a control that simply does nothing. The caller must not
-        describe that as a download.
-
-        `suggested_filename` is chosen by the SITE, so it is untrusted: it is
-        reduced to a bare name and the result is proved to sit inside the
-        target directory before anything is written.
+        """Click `ref` and keep the file. The saved path, or None when no file
+        arrived, which the caller must not call a download. The site chooses the
+        filename, so it is reduced to a bare name and proved to land inside the
+        target directory.
         """
         from pathlib import Path as _Path
 
@@ -498,9 +332,8 @@ class PagePort:
                 if name in (".", ".."):
                     name = "download"
 
-                # The PAGE chose this name. Refuse anything that is not a
-                # document or media file, checking every extension component:
-                # "laptop_stand.stl.exe" reads as the model you asked for.
+                # The page chose this name: only documents and media, checked on every
+                # extension.
                 ok, why = download_name_ok(name)
                 if not ok:
                     print(f"[Web] ⛔ refused download {name!r}: {why}")
@@ -508,14 +341,13 @@ class PagePort:
 
                 target.mkdir(parents=True, exist_ok=True)
                 dest = target / name
-                # Never clobber something already there.
+                # Never overwrite.
                 stem, suffix, n = dest.stem, dest.suffix, 1
                 while dest.exists():
                     dest = target / f"{stem} ({n}){suffix}"
                     n += 1
 
-                # Containment, proved rather than assumed — the name came
-                # from the page.
+                # Prove the path is inside the directory.
                 if not dest.resolve().is_relative_to(target.resolve()):
                     return None
 
@@ -527,15 +359,9 @@ class PagePort:
         return self._call(_do)
 
     def upload(self, ref: str, path: str, timeout_ms: int = 60_000) -> bool:
-        """Hand `path` to `ref`. True if the control accepted it.
-
-        Two shapes cover real forms. Most, including this codebase's own test
-        rig, are a plain `<input type=file>` — `set_input_files` writes to it
-        directly, hidden or not. Some sites style that input away and open it
-        from a button instead; clicking that button spawns a NATIVE OS file
-        dialog, which `expect_file_chooser` intercepts before it ever opens —
-        the chooser resolves as a Playwright object we can hand the path to
-        directly, so this never touches the desktop or `computer_control`.
+        """Hand `path` to `ref`. True if the control accepted it. A plain <input
+        type=file> gets set_input_files; a styled button's native dialog is
+        intercepted with expect_file_chooser.
         """
         from pathlib import Path as _Path
         if not _Path(path).is_file():
@@ -559,13 +385,8 @@ class PagePort:
         return bool(self._call(_do))
 
     def type_into_focused(self, text: str) -> str:
-        """Type into whatever the PAGE has focused. "" if nothing editable is.
-
-        A step that says "Type motherboard" names no control, because a person
-        does not name one — they have just clicked the field. Asking the
-        grounder for a control called "Type motherboard" finds nothing, and
-        the ladder then fell through to the OS keyboard, which is how that
-        word ended up in the user's terminal.
+        """Type into whatever the page has focused. "" if nothing editable is, so the
+        text never falls through to the OS keyboard.
         """
         def _do():
             what = self._page.evaluate(
@@ -588,11 +409,7 @@ class PagePort:
                                            timeout=_REF_TIMEOUT_MS))
 
     def url(self) -> str:
-        # Every other method here marshals onto the browser thread and lets
-        # failure raise. This one used to read `self._page.url` inline on the
-        # caller's thread and swallow any exception into "" - a stale or
-        # closed page would silently report the empty string as "the current
-        # URL" instead of surfacing that the read failed.
+        # Marshalled and allowed to raise, like every other method here.
         return self._call(lambda: str(self._page.url))
 
 
@@ -605,17 +422,9 @@ class EagleBrowser:
                  launcher: Callable[[Any, Path, bool], Any] | None = None,
                  playwright_fn: Callable[[], Any] | None = None) -> None:
         if headless is None:
-            # Default headless. `main.py` declares web_agency non-exclusive
-            # ("touches neither the user's screen nor their browser" — see
-            # its TOOL_SPECS comment) specifically so it can run while the
-            # user is doing something else; that guarantee only holds if the
-            # browser it drives never puts a window on screen unasked. A
-            # human occasionally does need to see this browser — finishing a
-            # login is the main case — but there is no surfacing mechanism
-            # for that yet (see `_NO_HANDOFF_WINDOW` in web_agency.py, which
-            # says so honestly rather than pretending a handoff path exists).
-            # `AETHELARK_BROWSER_HEADLESS=0`/`false`/`no` opts back into a
-            # visible window for local debugging in the meantime.
+            # Headless by default (a private display): web_agency is non-exclusive, so
+            # this browser never shows a window unasked. surface(True) shows it for a
+            # sign-in. AETHELARK_BROWSER_HEADLESS=0 for debugging.
             raw = os.environ.get("AETHELARK_BROWSER_HEADLESS", "").strip().lower()
             headless = raw not in ("0", "false", "no")
         self.headless = bool(headless)
@@ -629,14 +438,9 @@ class EagleBrowser:
         self._page: Any = None
         self._playwright: Any = None
         self.last_error: str = ""
-        # Guards start()/close() only (see each method) — not every call,
-        # per the fix's own "keep it simple, do not restructure the thread
-        # model" instruction. `RLock` because start() can call close() on
-        # itself (the page-less-thread retry path below), from the same
-        # thread, while already holding the lock.
+        # Guards start() and close(). An RLock: start() can call close().
         self._lifecycle_lock = threading.RLock()
 
-    # ── lifecycle ───────────────────────────────────────────────────────────
 
     @property
     def running(self) -> bool:
@@ -644,34 +448,16 @@ class EagleBrowser:
                                                and self._thread.is_alive())
 
     def start(self) -> None:
-        """Launch the browser, or confirm it is already up.
-
-        Locked end to end: `main.py` declares `web_agency` non-exclusive, so
-        two tool calls in the same model turn can both reach this method
-        concurrently. Without the lock, both would see `self._thread` as
-        None or dead at the same instant and each spawn its own browser
-        thread — two `launch_persistent_context()` calls racing on the SAME
-        profile directory (measured 5/5 in the reproduction: one run left
-        two orphaned `EagleBrowser` threads sharing a single `_jobs` queue
-        that `close()` only ever posts one sentinel to, so one looped
-        forever). The lock makes the second caller's `start()` simply
-        observe "already up and serving" once the first one has finished,
-        instead of launching a second time.
+        """Launch the browser, or confirm it is up. Locked: two concurrent calls must
+        not launch two browsers on one profile.
         """
         with self._lifecycle_lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._page is not None:
                     return  # already up and serving
-                # The thread is alive but page-less: a previous launch failed,
-                # and _serve deliberately kept the thread looping so close() had
-                # somewhere to send its teardown jobs. That is correct for
-                # close(), but left alone it also means a transient failure - a
-                # stale profile lock from a crash, chromium mid-install - bricks
-                # this object for the rest of the process. Since default_browser()
-                # is a process-wide singleton, that bricks web grounding entirely.
-                # Tear the dead thread down and retry. Safe to call while
-                # holding `_lifecycle_lock`: it is an `RLock`, and close()
-                # takes the same lock (see there).
+                # The thread is alive but has no page: a previous launch failed. Tear it
+                # down and retry, or one failure disables web grounding for the whole
+                # process.
                 self.close()
             self.last_error = ""
             self._ready.clear()
@@ -698,74 +484,33 @@ class EagleBrowser:
                 return
             fn, box, done, cancelled = job
             if cancelled.is_set():
-                # The caller's _submit() already gave up and raised
-                # TimeoutError - nobody is waiting on `done` any more. This
-                # job never started, so skipping it is free: no click has
-                # fired, no fill has happened. A job already in flight is a
-                # different story (see _submit) - this check only ever stops
-                # one that is still waiting in line.
+                # The caller already gave up; this job never started, so drop it.
                 continue
             try:
                 box.append(("ok", fn()))
             except BaseException as e:      # noqa: BLE001 — see below
-                # `BaseException`, deliberately, and only here. This is the
-                # boundary where one job's failure must never become every
-                # later call's failure: an escape from this loop ends the
-                # thread, and the thread is process-wide, so the whole eagle
-                # loses its browser for good — every subsequent call fails
-                # with "browser thread is not running", including the
-                # `close()`/`start()` recovery path.
-                #
-                # It was not hypothetical. `click_with_outcome` (outcome.py)
-                # reads `.value` off a Playwright event expectation that a
-                # raising click has caused Playwright to CANCEL, and reading
-                # a cancelled future raises `asyncio.CancelledError` — a
-                # `BaseException`, which `except Exception` does not catch.
-                # An ordinary stale ref therefore killed the browser for the
-                # rest of the process. outcome.py no longer lets that one
-                # out (see `_EXPECTATION_FAILED` there); this makes the
-                # class of bug impossible rather than that one instance of
-                # it. The exception is still handed back to the caller
-                # intact — nothing is swallowed, only kept off the loop.
-                #
-                # A worker thread never receives `KeyboardInterrupt` (the
-                # signal goes to the main thread), so the usual objection to
-                # catching `BaseException` does not apply at this boundary.
+                # BaseException, only here: an escape ends the thread, and the thread is
+                # the whole eagle's browser. A cancelled Playwright expectation raises
+                # CancelledError. The exception still goes back to the caller. Worker
+                # threads never get KeyboardInterrupt.
                 box.append(("err", e))
             finally:
                 done.set()
 
     def close(self) -> None:
-        """Tear the browser down, or confirm there is nothing to tear down.
-
-        Locked with the same `_lifecycle_lock` `start()` uses (see there for
-        why): the two must never run concurrently, or a `start()` racing a
-        `close()` could observe a half-torn-down browser as "already up" and
-        skip launching, or a `close()` could tear down a browser a
-        concurrent `start()` just finished launching.
+        """Tear the browser down, or confirm there is nothing to tear down. Same lock
+        as start().
         """
         with self._lifecycle_lock:
             if self._thread is None:
                 return
             page, self._page = self._page, None
 
-            # Each step gets its own try/except. A context.close() that times out
-            # must not stop playwright.stop() from being attempted - they are two
-            # separate leaks (a chromium process, and the playwright driver
-            # process), and a failure in the first used to swallow the second
-            # entirely. Both are submitted with cancellable=False: close() giving
-            # up on waiting for a result must not mean the teardown never
-            # happens, or the browser leaks along with the profile lock it holds
-            # - which is exactly the state a later start() would retry into.
+            # Each step separately, and not cancellable: the context and the Playwright
+            # driver are two separate leaks, and a skipped teardown keeps the profile
+            # lock.
 
-            # Playwright pages expose their own context; the fakes do not.
-            context = getattr(page, "context", None)
-            if context is not None and hasattr(context, "close"):
-                try:
-                    self._submit(lambda: context.close(), _TEARDOWN_TIMEOUT,
-                                 cancellable=False)
-                except Exception:
-                    pass
+            self._release(page)
 
             playwright = self._playwright
             if playwright is not None and hasattr(playwright, "stop"):
@@ -780,20 +525,21 @@ class EagleBrowser:
             self._thread = None
             self._playwright = None
 
-    # ── work ────────────────────────────────────────────────────────────────
+    def _release(self, page: Any) -> None:
+        """Let go of what `_launcher` returned. Ours, so the whole context goes."""
+        context = getattr(page, "context", None)
+        if context is not None and hasattr(context, "close"):
+            try:
+                self._submit(lambda: context.close(), _TEARDOWN_TIMEOUT,
+                             cancellable=False)
+            except Exception:
+                pass
+
 
     def _submit(self, fn: Callable[[], Any], timeout: float,
                cancellable: bool = True) -> Any:
-        """Run `fn` on the browser thread and wait up to `timeout` for it.
-
-        `cancellable` distinguishes "the caller gave up waiting" from "the
-        job should not happen." They are the same thing for an ordinary
-        click or fill - the caller no longer wants a result it will never
-        see, so the job must not fire. They are not the same thing for
-        teardown: close() giving up on waiting for context.close() to
-        confirm is not a reason to skip closing the context - that is
-        exactly what leaks the browser and its profile lock. close() passes
-        cancellable=False for that reason.
+        """Run `fn` on the browser thread and wait up to `timeout`. cancellable=False
+        means the job runs even if the caller stops waiting (teardown).
         """
         if self._thread is None or not self._thread.is_alive():
             raise RuntimeError("browser thread is not running")
@@ -803,23 +549,12 @@ class EagleBrowser:
         self._jobs.put((fn, box, done, cancelled))
         if not done.wait(timeout):
             if cancellable:
-                # Setting `cancelled` here is the only thing that can still
-                # stop this job. If `_serve` has not reached it yet, it will
-                # see the flag and drop it - the caller has been told the
-                # call failed, so it must not go on to fire anyway. If
-                # `_serve` has already started running it, the flag is
-                # checked too late to matter and the job runs to completion,
-                # because a click already dispatched cannot be un-clicked;
-                # only its result is lost, not its effect.
+                # Mark it cancelled: a job not yet started is dropped; one already
+                # running completes (a dispatched click cannot be undone).
                 cancelled.set()
             raise TimeoutError(f"browser call exceeded {timeout}s")
         if not box:
-            # `done` was set but nothing was ever put in the box, which
-            # `_serve` only leaves possible if the job neither completed nor
-            # failed — the loop's `finally: done.set()` ran while the thread
-            # was on its way out from under it. A bare `box[0]` here raised
-            # `IndexError: list index out of range` from the middle of a
-            # click, which says nothing about what happened; this says it.
+            # `done` set with no result: the thread exited mid-job.
             raise RuntimeError(
                 "the browser thread died while this call was running")
         kind, payload = box[0]
@@ -843,24 +578,12 @@ class EagleBrowser:
                         call=lambda fn: self._submit(fn, _CALL_TIMEOUT))
 
     def surface(self, visible: bool) -> bool:
-        """Show or hide the eagle's browser, keeping its profile and logins.
-
-        Playwright fixes headless-vs-visible at launch, so there is no way to
-        toggle a running context — the browser has to come down and go back up.
-        That is fine here precisely because the profile lives on disk: cookies,
-        and therefore every session the user has granted, survive the restart.
-        It is the one moment the eagle's browser is allowed on screen, and it
-        exists so a human can do the thing only a human can — sign in.
-
-        Returns True if the browser is now in the requested state.
+        """Show or hide the eagle's browser, keeping its profile. Restarts the
+        browser, since Playwright fixes headless at launch; logins survive on
+        disk. Returns True if it is now in the requested state.
         """
         with self._lifecycle_lock:
-            # `headless == (not visible)` is the "already correct" test.
-            # This once read `headless == bool(visible)`, which is true exactly
-            # when the browser is hidden and the caller asked for it visible -
-            # the case that needs work. So surface() no-opped and returned
-            # success whenever the browser was already running, which in the
-            # sign-in flow it always is, and the window never opened.
+            # Already in the requested state when headless == (not visible).
             if self.running and self.headless == (not bool(visible)):
                 return True
             self.close()
@@ -879,49 +602,26 @@ class EagleBrowser:
         return self.call(_go, timeout=45.0)
 
 
-
-#: How long to let a page keep rendering after `domcontentloaded` before
-#: reading it. Single-page apps have almost nothing in the DOM at that point:
-#: measured live, youtube.com yielded **6 controls** because the collector ran
-#: while React was still mounting. Waiting for `networkidle` instead is not an
-#: option — YouTube polls continuously and never goes idle, so it would burn
-#: the whole timeout on every navigation.
+# Rendering time after domcontentloaded. networkidle is not an option: YouTube never
+# goes idle.
 _SETTLE_MS = 1200
 
-#: How long to keep waiting for a DOM that is still growing. Slightly above the
-#: old fixed wait: a page that genuinely needs the time now gets a little more
-#: of it, and one that does not stops paying for it entirely.
+# Upper bound on waiting for a DOM that is still growing.
 _SETTLE_MAX_MS = 1500
 
-#: Gap between size readings. Each is one `evaluate` round trip — measured at
-#: ~1-3ms, so the polling costs far less than the waiting it replaces.
+# Gap between size readings (one evaluate, about 1-3 ms).
 _SETTLE_POLL_MS = 100
 
-#: Consecutive identical readings required before calling a page settled. Two,
-#: not one: a single match happens constantly between mutations.
+# Identical readings required before a page counts as settled.
 _SETTLE_STABLE_POLLS = 2
 
 _SETTLE_SIZE_JS = "document.getElementsByTagName('*').length"
 
 
 def _settle(page) -> None:
-    """Wait until the page stops changing, not for a fixed length of time.
-
-    The fixed wait this replaces cost 1200ms on every navigation. Measured on
-    a local fixture, a page that was complete the instant it parsed still took
-    1239ms to be declared ready, while snapshotting it took 7ms — so the wait
-    was ~99% of the cost of looking at a page, and most pages needed none of it.
-
-    Waiting is still the right thing to do for the pages it was written for:
-    youtube.com once read as **6 controls** because the collector ran while
-    React was mounting, and a fast wrong answer about what is on a page is the
-    worst outcome available here. So this watches the DOM's element count and
-    leaves only once it has held still, which ends early on a finished page
-    and waits longer than the old constant on a slow one.
-
-    Best-effort throughout. `evaluate` runs script in a page the eagle does not
-    control; a page that throws, or a port with no `evaluate` at all, falls
-    back to the old fixed wait rather than skipping the settle entirely.
+    """Wait until the page stops changing, by watching the DOM's element count. A
+    finished page is ready at once; a slow single-page app gets the full budget.
+    If the page cannot be measured, wait the full budget.
     """
     try:
         page.wait_for_selector("body", timeout=_SETTLE_MAX_MS)
@@ -943,8 +643,7 @@ def _settle(page) -> None:
         try:
             size = evaluate(_SETTLE_SIZE_JS)
         except Exception:
-            # Cannot measure this page. Fall back to waiting out the rest of
-            # the budget — an unreadable page is not a settled one.
+            # Cannot measure: wait out the budget.
             try:
                 page.wait_for_timeout(_SETTLE_MAX_MS - waited)
             except Exception:
@@ -966,14 +665,9 @@ def _settle(page) -> None:
         waited += _SETTLE_POLL_MS
 
 
-
 _DEFAULT: EagleBrowser | None = None
-# Guards the check-then-create below. `web_agency` is non-exclusive (see
-# main.py's TOOL_SPECS), so two tool calls in the same model turn can both
-# reach `default_browser()` for the first time concurrently — without this,
-# both could see `_DEFAULT is None` and each construct their own
-# `EagleBrowser`, and whichever object callers end up scattered across would
-# no longer share one browser, one profile, one job queue.
+# Guards the check-then-create: web_agency is non-exclusive, so two calls can reach
+# default_browser() at once.
 _DEFAULT_LOCK = threading.Lock()
 
 

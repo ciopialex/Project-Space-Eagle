@@ -1,42 +1,15 @@
-"""Drive a coding-agent CLI as a typed event stream instead of a repainting TUI.
+"""Drive a coding-agent CLI as a typed event stream instead of scraping a terminal
+UI.
 
-`agent_delegation.py` runs `claude '{prompt}'` — the *interactive* application —
-through a pseudo-terminal, and then spends sixty lines undoing the consequences.
-A full-screen TUI repaints its status line continuously, the PTY reports every
-repaint as another line, and `_hud_pump` filters them back out with three
-heuristics stacked on each other:
-
-    Gen / Gene / Gener / Generating…          -> "progressive redraw"
-    1thinking / ✱still thinking / ✻thinking   -> a regex over nine keywords
-    Deliberating… (42s · 880 tokens)          -> a length cap and a "/" check
-
-That is screen-scraping, and it fails the way screen-scraping always fails: the
-vendor restyles a spinner, the parser silently starts lying, and nothing in the
-system knows. The comment "real work lines name a file, status lines never do"
-is a heuristic about someone else's UI, held only by hope.
-
-There is no need for any of it. `claude -p --output-format stream-json` emits
-one JSON object per line, and the objects say what the heuristics were guessing:
+`claude -p --output-format stream-json` emits one JSON object per line:
 
     {"type":"system","subtype":"init","model":…,"session_id":…,"cwd":…}
-    {"type":"system","subtype":"thinking_tokens","estimated_tokens":12,…}
-    {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read",…}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read",…}]}}
     {"type":"user","message":{"content":[{"type":"tool_result","content":…}]}}
     {"type":"result","subtype":"success","is_error":false,"result":"pong",…}
 
-Progress stops being a string to pattern-match and becomes a monotonically
-rising token count. "Which tool is it running" stops being inferred from
-whether a line contains a slash and becomes `.name`. Success stops being the
-absence of scary words and becomes `is_error`.
-
-Scope, deliberately narrow: this parses and drives. It does not decide which
-agent to use (`core/capability/agents.py`) or where work happens
-(`swarm_orchestrator.py`). The PTY path stays exactly as it is for agents with
-no headless JSON mode, and for the interject/Ctrl-C flow, which needs a live
-terminal by nature.
-
-Verified against `claude` 2.1.235 on 2026-08-19; the captures that verified it
-are checked in under `tests/fixtures/agent_stream/`.
+This parses and drives; which agent and where work happens are decided elsewhere.
+Captures of the format are in tests/fixtures/agent_stream/.
 """
 from __future__ import annotations
 
@@ -49,8 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Sequence
 
-#: Event kinds. Deliberately fewer than the wire has: the caller cares about
-#: what happened, not which of three `system` subtypes carried it.
+# Event kinds: what happened, not which wire subtype carried it.
 INIT = "init"                 # session opened; model, cwd and session id known
 THINKING = "thinking"         # private reasoning. Never show this to a user.
 TEXT = "text"                 # prose the agent addressed to whoever asked
@@ -63,12 +35,8 @@ RESULT = "result"             # terminal. Exactly one per run, always emitted.
 
 @dataclass(frozen=True)
 class AgentEvent:
-    """One thing that happened, already decided.
-
-    `ok` is tri-state on purpose. `None` means "this kind of event carries no
-    verdict" — the same reason `ToolResult.to_response()` omits `ok` for tools
-    that never migrated. A progress tick that claimed success would be a lie
-    with teeth, and this codebase has already paid for one of those.
+    """One thing that happened. `ok` is tri-state: None means this kind of event
+    carries no verdict.
     """
     kind: str
     text: str = ""
@@ -81,14 +49,9 @@ class AgentEvent:
         return self.kind == RESULT
 
 
-# --------------------------------------------------------------------- parsing
-
 def _blocks(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """The content blocks of an assistant/user envelope, defensively.
-
-    The envelope has been `{"message": {"content": [...]}}` since the format
-    shipped, but a `content` that arrives as a bare string (some providers do
-    this) must degrade to one text block rather than raise mid-mission.
+    """The content blocks of an envelope. A bare-string `content` becomes one text
+    block.
     """
     content = (payload.get("message") or {}).get("content")
     if isinstance(content, str):
@@ -97,19 +60,8 @@ def _blocks(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _result_event(obj: dict[str, Any]) -> AgentEvent:
-    """The terminal verdict.
-
-    `is_error` is the authority, and `subtype` is a decoy. Measured against the
-    real binary on 2026-08-19: a request for a model that does not exist comes
-    back as
-
-        {"is_error": true, "subtype": "success", "api_error_status": 404,
-         "terminal_reason": "api_error", "result": "There's an issue with …"}
-
-    — `subtype: "success"` on a hard 404. Anything that decided success by
-    reading `subtype`, or by looking for scary words in `result`, would call
-    that a passing run. This is the same shape as the failure `ToolResult` was
-    built for: prose that reads like success over a state that is not.
+    """The terminal verdict. `is_error` is the authority; `subtype` can say "success"
+    on a hard 404.
     """
     usage = obj.get("usage") or {}
     return AgentEvent(
@@ -124,14 +76,11 @@ def _result_event(obj: dict[str, Any]) -> AgentEvent:
             "cost_usd": obj.get("total_cost_usd") or 0.0,
             "input_tokens": usage.get("input_tokens") or 0,
             "output_tokens": usage.get("output_tokens") or 0,
-            # An empty list is meaningfully different from a missing key: the
-            # headless path has no way to show an approval prompt, so a run that
-            # did nothing because it was denied must be distinguishable from a
-            # run that did nothing because there was nothing to do.
+            # An empty list differs from a missing key: a run that did nothing because
+            # it was refused must be distinguishable from one with nothing to do.
             "permission_denials": obj.get("permission_denials") or [],
-            # Why it ended, in the CLI's own words. `api_error_status` carries
-            # the HTTP code when the provider refused, which is the difference
-            # between "retry this" and "your config is wrong".
+            # Why it ended. api_error_status separates "retry" from "your config is
+            # wrong".
             "terminal_reason": obj.get("terminal_reason") or "",
             "api_error_status": obj.get("api_error_status"),
         },
@@ -139,24 +88,17 @@ def _result_event(obj: dict[str, Any]) -> AgentEvent:
 
 
 def parse_line(line: str) -> AgentEvent | None:
-    """One line of the stream, or None if it carries nothing we model.
-
-    None for four separate reasons, all of them normal: the line was blank, it
-    was not JSON at all (agent CLIs print npm warnings to stdout), it was an
-    event type this version does not know, or it was an envelope whose blocks
-    all resolved to nothing. Returning None rather than raising is the whole
-    robustness story — a stray warning on stdout must not end a mission.
-
-    Multi-block assistant envelopes yield only their first interesting block;
-    use `parse_lines` to see all of them.
+    """One line of the stream, or None for a blank line, non-JSON (CLIs print
+    warnings to stdout), an unknown event type, or an envelope with nothing in it.
+    Never raises. Multi-block envelopes yield their first interesting block; use
+    parse_lines for all.
     """
     events = list(parse_lines([line]))
     return events[0] if events else None
 
 
 def parse_lines(lines: Iterable[str]) -> Iterator[AgentEvent]:
-    """Every event in a stream, in order. One line may yield several events —
-    an assistant turn can carry thinking and a tool call in one envelope."""
+    """Every event in a stream, in order; one line may yield several."""
     for line in lines:
         line = (line or "").strip()
         if not line:
@@ -226,28 +168,21 @@ def parse_lines(lines: Iterable[str]) -> Iterator[AgentEvent]:
                 )
 
 
-# ------------------------------------------------------------------ which argv
-
 @dataclass(frozen=True)
 class HeadlessSpec:
-    """How one agent is asked for a machine-readable stream.
-
-    Membership of `HEADLESS_AGENTS` is a factual claim — that this binary emits
-    newline-delimited JSON this module can parse — and the evidence for it is a
-    checked-in capture. An agent is added here after a capture exists, never
-    because its `--help` mentions JSON.
+    """How one agent is asked for a machine-readable stream. An agent is added only
+    after a capture of its output exists.
     """
     binary: str
-    #: argv around the prompt. `None` marks where the prompt itself goes, so it
-    #: stays a separate element and never passes through a shell.
+    # argv around the prompt. None marks the prompt's slot, so it stays one element and
+    # never passes through a shell.
     template: tuple[str | None, ...]
 
     def argv(self, prompt: str) -> list[str]:
         return [prompt if p is None else p for p in self.template]
 
 
-#: Verified against `claude` 2.1.235, 2026-08-19. `--verbose` is not optional:
-#: the CLI refuses `--output-format stream-json` in print mode without it.
+# `--verbose` is required: the CLI refuses stream-json in print mode without it.
 HEADLESS_AGENTS: dict[str, HeadlessSpec] = {
     "claude_code": HeadlessSpec(
         binary="claude",
@@ -264,11 +199,8 @@ def supports_headless(agent_key: str) -> bool:
 
 def headless_argv(agent_key: str, prompt: str, *,
                   model: str = "", allowed_tools: Sequence[str] = ()) -> list[str]:
-    """argv for a headless run. The prompt is one element, never interpolated.
-
-    The PTY path built `claude '{prompt}'` as a string. A prompt containing an
-    apostrophe — "don't touch the parser" — became a shell syntax error, and a
-    prompt containing a semicolon became a second command.
+    """argv for a headless run. The prompt is one element, never interpolated into a
+    shell string.
     """
     spec = HEADLESS_AGENTS.get(agent_key)
     if spec is None:
@@ -284,13 +216,10 @@ def headless_argv(agent_key: str, prompt: str, *,
 
 
 def headless_available(agent_key: str) -> bool:
-    """Headless mode AND a binary on PATH. Presence is not availability —
-    the same distinction `capability/agents.py` draws, for the same reason."""
+    """Headless mode and a binary on PATH."""
     spec = HEADLESS_AGENTS.get(agent_key)
     return bool(spec and shutil.which(spec.binary))
 
-
-# ------------------------------------------------------------------- the driver
 
 def stream_events(argv: Sequence[str], *, cwd: Path | str | None = None,
                   timeout_s: float = 1800.0,
@@ -299,23 +228,13 @@ def stream_events(argv: Sequence[str], *, cwd: Path | str | None = None,
                   ) -> Iterator[AgentEvent]:
     """Run an agent and yield its events as they arrive.
 
-    Guarantees the callers rely on, in order of how much they cost to learn:
+    1. It always terminates: a wedged agent is killed at timeout_s.
+    2. A terminal RESULT is always yielded, even for a missing binary, a kill, or
+    a silent non-zero exit.
+    3. The agent's own result outranks the exit code.
+    4. It streams.
 
-    1. **It always terminates.** A wedged agent is killed at `timeout_s`. The
-       swarm holds a git worktree per agent; a process that never exits holds
-       that worktree forever.
-    2. **A terminal RESULT is always yielded** — including when the binary is
-       missing, the process is killed, or it exits non-zero having said
-       nothing. Silence plus a bad exit code previously read as "finished".
-    3. **The agent's own verdict outranks the shell's.** If a `result` line was
-       emitted, that is the answer even if the exit code disagrees; the CLI
-       knows why it stopped and `$?` does not.
-    4. **It streams.** Events are yielded as lines arrive, not collected first,
-       so a HUD has something to show for the length of a mission.
-
-    stderr is captured separately and only used to explain a failure — mixing
-    it into stdout would corrupt the JSON stream with the exact kind of noise
-    this module exists to stop parsing.
+    stderr is captured separately, only to explain a failure.
     """
     try:
         proc = subprocess.Popen(
@@ -332,9 +251,7 @@ def stream_events(argv: Sequence[str], *, cwd: Path | str | None = None,
     if _spawned is not None:
         _spawned(proc)
 
-    # stderr is drained on a thread. A CLI that writes more than a pipe buffer
-    # of warnings would otherwise block forever on a write nobody is reading,
-    # and present as a hang rather than as the chatty binary it is.
+    # stderr is drained on a thread, or a chatty CLI blocks on a full pipe.
     stderr_chunks: list[str] = []
 
     def _drain() -> None:
@@ -347,13 +264,8 @@ def stream_events(argv: Sequence[str], *, cwd: Path | str | None = None,
     drainer = threading.Thread(target=_drain, name="agent-stderr", daemon=True)
     drainer.start()
 
-    # The timeout has to be enforced by a watchdog, not by checking the clock
-    # inside the read loop. `for line in proc.stdout` blocks in readline until a
-    # line arrives, so an agent that wedges *without printing* — the exact
-    # failure the timeout exists for — never reaches a check placed after the
-    # read. Measured: a 30s sleeper against a 1s timeout ran the full 30s and
-    # yielded no events at all. Killing the process from a timer instead makes
-    # the blocked read return EOF, which unblocks the loop from outside.
+    # A watchdog kills the process on timeout: the read loop blocks in readline, so a
+    # check inside it never runs for an agent that wedges silently.
     timed_out = threading.Event()
 
     def _watchdog() -> None:
@@ -416,8 +328,9 @@ def stream_events(argv: Sequence[str], *, cwd: Path | str | None = None,
 
 
 class AgyStream:
-    """Antigravity CLI (`agy --output-format stream-json`), verified against
-    agy 1.2.11. Text arrives as deltas per step, so it is assembled here."""
+    """Antigravity CLI (`agy --output-format stream-json`). Text arrives as per-step
+    deltas and is assembled here.
+    """
 
     def __init__(self) -> None:
         self._text: dict[int, str] = {}

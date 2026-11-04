@@ -1,15 +1,8 @@
-"""Self-healing sentinel: stall detection, nudges, and fallback re-delegation.
-
-Watches every live swarm session's virtual screen activity (Phase 2's
-seconds_since_activity signal). A swarm agent whose screen freezes is
-first nudged to continue; if it stays frozen it is treated as stuck —
-the session is terminated, the blackboard records the failure, and its
-task is re-delegated to the next available agent CLI in the SAME
-worktree so no work context is lost.
-
-Only swarm sessions (running under <project>/.space_eagle/worktrees/)
-are ever auto-healed: an idle single-agent developer_mode session is
-normal (it waits for the user), an idle swarm agent is not.
+"""Self-healing for swarm agents: a session whose activity stops is nudged once; if
+it stays quiet, it is stopped, the board records the failure, and its task is re-
+delegated to the next agent CLI in the same worktree. Only swarm sessions (under
+<project>/.space_eagle/worktrees/): an idle developer_mode session is waiting for
+the user.
 """
 
 import asyncio
@@ -27,27 +20,18 @@ from core.agent_catalog import PREFERENCE as FALLBACK_ORDER
 
 TURN_ENDED_GRACE_S = 30.0
 
-# A workstream in one of these states is FINISHED. It must never be nudged or
-# re-delegated, however quiet its terminal goes.
-#
-# This is the bug that burned an hour of quota: _scan() judged liveness purely
-# by seconds_since_activity, so an agent that had finished — written its files,
-# committed, recorded status "completed" on the blackboard, and gone quiet —
-# was indistinguishable from one that had hung. The sentinel re-delegated it,
-# the replacement found the work already done, reported "no new commit needed",
-# went quiet itself, and was re-delegated in turn. Forever, spawning a window
-# each time. Done and stuck produce exactly the same amount of output: none.
+# Finished states: never nudged or re-delegated, however quiet. Done and stuck produce
+# the same output: none.
 TERMINAL_STATUSES = {"completed", "merged", "stopped", "review_blocked"}
 
-# How many times one workstream may be re-delegated before the sentinel gives
-# up and asks a human. Without a ceiling, a genuinely un-completable task
-# recruits every installed CLI in an endless relay.
+# Re-delegations allowed per workstream before asking a human.
 MAX_FAILOVERS_PER_WORKSTREAM = 2
 
 
 def swarm_root_of(path) -> Path | None:
-    """If path is a swarm worktree (…/<root>/.space_eagle/worktrees/<agent>),
-    return <root>, else None."""
+    """If `path` is a swarm worktree (…/<root>/.space_eagle/worktrees/<agent>),
+    return <root>, else None.
+    """
     parts = Path(path).resolve().parts
     for i in range(len(parts) - 2):
         if parts[i] == ".space_eagle" and parts[i + 1] == "worktrees":
@@ -113,9 +97,8 @@ class SwarmSentinel:
                 print(f"[swarm_sentinel.py] Non-fatal error at line 63: {_e}")
 
     def _scan(self):
-        # The nudge's own echo resets screen activity, so escalation is a
-        # two-stage state machine: nudge once, then fail if the agent goes
-        # idle AGAIN within the grace window; clear only if it stays busy.
+        # The nudge's echo resets activity, so: nudge once, then fail if it goes idle
+        # again within the grace window.
         grace = max(FAIL_AFTER_S - NUDGE_AFTER_S, POLL_S)
         now = time.time()
         for (agent_key, sdir), sess in POOL.all_sessions().items():
@@ -135,9 +118,8 @@ class SwarmSentinel:
             idle = idle_seconds(sess)
             if idle is None:
                 continue
-            # Ask the blackboard whether this workstream is actually finished
-            # BEFORE reading anything into its silence. Quiet is ambiguous;
-            # the board is not.
+            # Ask the board whether the workstream is finished before reading anything
+            # into its silence.
             if self._is_finished(root, sdir, agent_key):
                 self._nudge_ts.pop((agent_key, sdir), None)
                 self._maybe_finish_mission(root)
@@ -155,7 +137,6 @@ class SwarmSentinel:
             elif nudged_at is not None and now - nudged_at >= grace:
                 self._nudge_ts.pop(tag, None)  # recovered — stayed active
 
-    # ------------------------------------------------------------- actions
 
     def _hud(self, sess, msg):
         player = getattr(sess, "player", None)
@@ -164,15 +145,8 @@ class SwarmSentinel:
         print(msg)
 
     def _maybe_finish_mission(self, root) -> None:
-        """When every workstream is done, review and merge — automatically.
-
-        A mission built a complete site and a working API, both
-        agents reported "completed", and `main` stayed empty because nothing
-        ever called review. From the user's side that is indistinguishable from
-        total failure: they open the project folder and it is bare.
-
-        Finishing is the only step that matters to them, so it cannot be the
-        one step that waits to be asked for.
+        """When every workstream is done, review and merge automatically: finishing
+        is the step the user cares about.
         """
         root = str(root)
         if root in self._merged:
@@ -183,8 +157,7 @@ class SwarmSentinel:
             agents = orch.board.read().get("agents", {})
             if not agents:
                 return
-            # Only workstreams from the executing plan count; sentinel
-            # re-delegation artefacts would otherwise block completion forever.
+            # Only the executing plan's workstreams count.
             real = {k: v for k, v in agents.items()
                     if v.get("branch") and v.get("worktree")}
             if not real:
@@ -215,9 +188,7 @@ class SwarmSentinel:
         if "MERGED" not in result:
             return          # nothing shipped — don't open a browser at nothing
 
-        # The mission is only really over when the user can SEE it. Handing
-        # back a folder path is where this fell down before: they asked for a
-        # website and got a directory.
+        # Show the user the result, not a folder path.
         try:
             from core import preview
             from core.trace import banner, trace
@@ -261,11 +232,8 @@ class SwarmSentinel:
         return True
 
     def _is_finished(self, root, sdir, agent_key) -> bool:
-        """Has this workstream already reported itself done?
-
-        Cheap board read on a 10s poll — far cheaper than the spawn it prevents.
-        Fails OPEN (returns False) if the board can't be read, so a corrupt
-        state file degrades to the old behaviour rather than disabling healing.
+        """Has this workstream reported itself done? Fails open if the board cannot
+        be read.
         """
         try:
             from actions.swarm_orchestrator import Blackboard
@@ -276,12 +244,8 @@ class SwarmSentinel:
 
     @staticmethod
     def _board_entry(board, sdir, fallback_key):
-        """Map a live session's worktree dir to its blackboard entry.
-
-        POOL keys sessions by pool_key (the agent registry key), but the board
-        keys by WORKSTREAM ID after execute_plan — so the worktree directory is
-        the only reliable join. Returns (board_key, info). Falls back to a
-        direct key lookup for the older launch() path where they coincide.
+        """Map a session's worktree to its board entry: the pool keys by agent, the
+        board by workstream id, so the directory is the join.
         """
         try:
             sdir_r = str(Path(sdir).resolve())
@@ -325,15 +289,11 @@ class SwarmSentinel:
         worktree = Path(info.get("worktree") or sess.project_dir)
         player = getattr(sess, "player", None)
 
-        # Last check before the expensive, irreversible part. The agent may
-        # have finished during the grace window — between the nudge and now —
-        # in which case killing it would destroy a completed workstream.
+        # Last check before killing: it may have finished during the grace window.
         if (info.get("status") or "") in TERMINAL_STATUSES:
             return
 
-        # Give up rather than relay the task around every installed CLI. An
-        # un-completable workstream would otherwise recruit them one by one,
-        # each spawning a session and a window, indefinitely.
+        # Give up rather than relay the task through every installed CLI.
         seen = self._failovers.get(board_key, 0)
         if seen >= MAX_FAILOVERS_PER_WORKSTREAM:
             self._hud(sess, f"SYS: ⛔ '{board_key}' has failed over {seen}x — "
@@ -363,8 +323,7 @@ class SwarmSentinel:
         sess.close()
         board.set_agent(board_key, status="failed")
 
-        # Turn the stall into a shared lesson so teammates surface blockers early
-        # instead of silently freezing.
+        # A stall becomes a shared lesson.
         try:
             from actions.swarm_orchestrator import SwarmOrchestrator
             SwarmOrchestrator(root, player=player).record_lesson(
@@ -401,8 +360,7 @@ class SwarmSentinel:
             result = f"fail-over error: {e}"
         from actions.agent_delegation import spawn_succeeded
         if spawn_succeeded(result):
-            # Revive the SAME workstream entry under the new agent — never orphan
-            # it as a new key, or the worktree would map to two board entries.
+            # Revive the same workstream entry under the new agent.
             board.register_agent(board_key, task, str(worktree), branch)
             board.set_agent(board_key, assignee=fallback)
             board.add_decision(

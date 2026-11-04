@@ -1,51 +1,13 @@
-"""A cache with a TTL, not a thread that never stops.
+"""System metrics behind a cache with a TTL: a process that never asks pays nothing,
+and callers get a reading at most SAMPLE_TTL old.
 
-The module this replaces started a daemon thread on first use that sampled
-every 0.5 s for the life of the process — cpu, ram, temperature, gpu, pid
-count, boot time — and both real consumers (the `system_status` tool and the
-10 s alert loop in main.py) only ever read whatever the thread last wrote.
-Measured on this machine, one sample cost ~17.6 ms of that 0.5 s window,
-almost all of it `psutil.sensors_temperatures()` walking every hwmon group
-on the box — nvme, coretemp, iwlwifi, dozens of temp* files — to hand back
-one float that was always going to come from coretemp.
+Temperature reads one /sys/class/hwmon/<N>/temp1_input, found once by matching
+hwmon*/name against known CPU drivers (numbering changes across boots); about 750x
+cheaper than sensors_temperatures(), which remains the fallback.
 
-Nobody needs an answer fresher than 10 s — that is the slower poller's own
-interval — so there is no reason to compute one faster than that, let alone
-twice a second forever whether or not anyone had asked. The design here is a
-plain cache behind a time-to-live: `get_system_status()` and
-`SystemMonitor.check()` both go through `_read_cached()`, which hands back
-the last `Reading` untouched if it is younger than `SAMPLE_TTL` and pays for
-a fresh `_sample()` otherwise. A process that never asks pays nothing at
-all — no thread, no timer, nothing running in the background.
+NVML is initialised once, lazily, and shut down at exit.
 
-Temperature reads `/sys/class/hwmon/<N>/temp1_input` directly, once the
-right `<N>` has been found by matching every `hwmon*/name` against a short
-list of known CPU-sensor driver names. That resolution runs once and is
-cached, because hwmon numbering is assigned by driver load order and is not
-stable across boots — hardcoding a path would break on the next kernel
-update. Measured here: ~23 us for the direct read against ~17.6 ms for
-`sensors_temperatures()` returning the identical value — about 750x,
-because the direct read touches one file instead of walking every sensor
-group on the machine for a number that was never going to come from
-anywhere else. `sensors_temperatures()`, restricted to the same known
-names, stays as the fallback for a machine whose driver isn't on the list;
-that machine is exactly as slow as before, never slower.
-
-GPU utilisation has the opposite shape of problem. A *warm* `nvmlInit()` is
-cheap (~1.4 us measured back-to-back) but the *first* one is not (~12.7 ms
-here), and it hands back a handle to a driver-side context that is supposed
-to be released with a matching `nvmlShutdown()`. The module this replaces
-called `nvmlInit()` on every sample and shut down never — a reference count
-that only ever grew for the life of the process. Here it runs once, lazily,
-guarded by a module-level cache of the working reader itself (or `False` if
-neither pynvml nor the raw NVML library loads), with `atexit.register` for
-the shutdown that was always supposed to happen.
-
-The `-1.0` "I don't know" sentinel from the old module is gone. `Reading`
-carries `temp: float | None` and `gpu: float | None`, and `None` means
-exactly what it says — this machine cannot tell me — all the way out to the
-public dict, instead of a number that looks real until it's compared
-against a threshold.
+temp and gpu are None when this machine cannot tell, never a sentinel number.
 """
 from __future__ import annotations
 
@@ -75,13 +37,7 @@ _CPU_STREAK = 3      # consecutive over-threshold checks CPU needs before it ale
 
 @dataclass(frozen=True)
 class Reading:
-    """One sample of every metric the status dict and the alerter need.
-
-    `temp` and `gpu` are `float | None` on purpose: `None` is the honest
-    answer on a machine with no readable CPU sensor or no NVIDIA GPU, and
-    unlike the old module's `-1.0` sentinel it can never be mistaken for a
-    real measurement by code that forgets to check for it.
-    """
+    """One sample of every metric. temp and gpu are None when unreadable."""
     cpu: float
     ram: float
     ram_used_gb: float
@@ -92,8 +48,6 @@ class Reading:
     process_count: int
 
 
-# ── temperature: the specific file, not the general-purpose walker ─────────
-
 _CPU_SENSOR_NAMES = frozenset(
     {"coretemp", "k10temp", "zenpower", "cpu_thermal", "acpitz"}
 )
@@ -103,13 +57,8 @@ _hwmon_temp_file: Path | None = None    # the resolved file, or None if none mat
 
 
 def _resolve_hwmon() -> Path | None:
-    """Find the one hwmon temp file worth reading, once.
-
-    hwmon directory numbers are handed out by driver load order and are not
-    stable across boots — hwmon3 today can be hwmon5 after a kernel update
-    changes what probes first. So this reads every `hwmon*/name` looking for
-    a driver on the known-CPU-sensor list, remembers the winning
-    `temp1_input` path, and never looks again for the life of the process.
+    """Find the one hwmon temp file worth reading, once: numbering follows driver
+    load order and changes across boots.
     """
     global _hwmon_checked, _hwmon_temp_file
     if _hwmon_checked:
@@ -128,13 +77,7 @@ def _resolve_hwmon() -> Path | None:
 
 
 def _cpu_temp() -> float | None:
-    """CPU package temperature in Celsius, or None if this machine won't say.
-
-    The direct hwmon read is ~750x cheaper than `sensors_temperatures()` for
-    the identical number, measured on this machine (~23 us vs ~17.6 ms) —
-    the gap between reading one file and walking nvme, coretemp and iwlwifi
-    to find the one entry that was always going to be coretemp.
-    """
+    """CPU package temperature in Celsius, or None."""
     path = _resolve_hwmon()
     if path is not None:
         try:
@@ -163,8 +106,6 @@ def _cpu_temp() -> float | None:
     return None
 
 
-# ── GPU: init once, shut down once, not twice a second forever ─────────────
-
 _gpu_backend = None  # None = untried · False = unavailable · callable = ready to read
 
 
@@ -185,15 +126,8 @@ def _load_nvml_ctypes():
 
 
 def _resolve_gpu_backend() -> None:
-    """Pick pynvml or the raw ctypes probe, initialise NVML exactly once, and
-    cache a zero-argument reader closure (or False) so nothing downstream of
-    this ever calls nvmlInit again.
-
-    The module this replaces called `nvmlInit()` on every sample and never
-    called `nvmlShutdown()` — a driver-side reference count that only grew,
-    forever, for the life of the process. Doing it lazily, on first real
-    need, also means a process that never asks about the GPU never pays the
-    ~12.7 ms a cold `nvmlInit()` costs on this machine at all.
+    """Pick pynvml or the raw ctypes probe, initialise NVML once, and cache a reader
+    (or False). A process that never asks never pays the cold nvmlInit().
     """
     global _gpu_backend
     if _gpu_backend is not None:
@@ -253,26 +187,15 @@ def _gpu_percent() -> float | None:
         return None
 
 
-# ── process count: /proc already has the answer psutil.pids() re-derives ───
-
 def _process_count() -> int:
-    """How many processes are running.
-
-    On Linux, every process is a numbered directory in /proc — counting them
-    is one listdir plus an isdigit check. psutil.pids() walks the same
-    directory and then also builds a list of ints just to be handed to
-    len(): measured on this machine at roughly 150 us against roughly 140 us
-    for counting directly — a real if modest difference, kept because there
-    is no reason to build a list nobody asked for just to measure its
-    length. psutil.pids() is the fallback anywhere /proc does not exist.
+    """How many processes are running: count numbered /proc entries; psutil.pids()
+    where /proc does not exist.
     """
     try:
         return sum(1 for entry in os.listdir("/proc") if entry.isdigit())
     except OSError:
         return len(psutil.pids())
 
-
-# ── the single place that touches psutil for a live sample ─────────────────
 
 def _sample() -> Reading:
     vm = psutil.virtual_memory()
@@ -288,8 +211,6 @@ def _sample() -> Reading:
     )
 
 
-# ── demand-driven cache: pay for a sample only when someone asks for one ───
-
 SAMPLE_TTL = 2.0  # seconds a Reading stays fresh enough to hand back as-is
 
 _cache: tuple[Reading, float] | None = None
@@ -297,12 +218,8 @@ _cache_lock = threading.Lock()
 
 
 def sample_reading() -> tuple[Reading, float]:
-    """Sample the machine, returning (reading, age_seconds).
-
-    Both real consumers in main.py poll at 10 s intervals; a 2 s TTL keeps
-    the answer well under that staleness bar while still letting a burst of
-    calls close together — a tool call landing right after an alert-loop
-    tick, say — share one sample instead of each paying for its own.
+    """Sample the machine, returning (reading, age_seconds). A 2 s TTL lets close
+    calls share one sample.
     """
     global _cache
     with _cache_lock:
@@ -321,11 +238,7 @@ _read_cached = sample_reading
 
 
 def reset_sampler() -> None:
-    """Drop the cached Reading so the next read is guaranteed fresh.
-
-    Test isolation only — production code never needs to force a resample,
-    since the TTL already bounds how stale an answer can be.
-    """
+    """Drop the cached Reading. Tests only."""
     global _cache
     with _cache_lock:
         _cache = None
@@ -339,11 +252,7 @@ def _format_uptime(boot_time: float) -> str:
 
 
 def get_system_status() -> dict:
-    """Snapshot for the `system_status` tool: the 11 keys main.py reads,
-    assembled here in exactly one place instead of the two branches
-    (cold-start vs already-sampled) the old module had to keep in sync by
-    hand every time either one changed.
-    """
+    """Snapshot for the system_status tool: the 11 keys main.py reads."""
     reading, age = _read_cached()
     return {
         "cpu_percent":    round(reading.cpu, 1),
@@ -359,8 +268,6 @@ def get_system_status() -> dict:
         "temp_available": reading.temp is not None,
     }
 
-
-# ── alerting ─────────────────────────────────────────────────────────────
 
 def _cpu_message(value: float) -> str:
     return (f"[SYSTEM_ALERT] CPU load has held at {value:.0f}% across three "
@@ -386,13 +293,8 @@ def _gpu_message(value: float) -> str:
 
 
 class SystemMonitor:
-    """Threshold watcher whose cooldown state outlives any one check.
-
-    `check()` is meant to be called on a timer — main.py does so every 10 s —
-    and returns one `[SYSTEM_ALERT]` string per breach, joined by a space,
-    for the caller to forward to the model verbatim; or None when nothing
-    crossed a threshold. `clock` is injectable so tests can move time
-    without a real sleep.
+    """Threshold watcher whose cooldowns outlive any one check. check() returns the
+    [SYSTEM_ALERT] strings joined by a space, or None. `clock` is injectable.
     """
 
     def __init__(self, thresholds: dict | None = None, *, clock=time.monotonic):
@@ -414,10 +316,7 @@ class SystemMonitor:
     def check(self) -> str | None:
         r = self._read()
 
-        # CPU is the one metric that has to stay hot across several checks
-        # before it counts — a single momentary spike is normal, not a
-        # symptom — so its "breached" bit folds in streak state the other
-        # three metrics don't need at all.
+        # CPU must stay hot across several checks before it alerts.
         cpu_hot = r.cpu >= self.thresholds["cpu"]
         self._cpu_streak = self._cpu_streak + 1 if cpu_hot else 0
 

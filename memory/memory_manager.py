@@ -1,39 +1,17 @@
-"""Long-term memory: the small store of what the eagle knows about its user.
+"""Long-term memory: what the eagle knows about its user.
 
-This file holds names, relationships, plans - the most personal data the
-application touches. Two properties follow from that and drive every decision
-below.
+It lives in the platform's user-data directory, never in the source tree: a data
+file in a checkout is one `git add -A` from public. Older in-repo stores are
+migrated once and removed.
 
-FIRST, IT DOES NOT LIVE IN THE SOURCE TREE.
-The store used to be written to <repo>/memory/long_term.json. install.sh
-git-clones into ~/.aethelark, so that put the user's private life inside a git
-checkout, and on 2026-07-30 exactly that happened: a long_term.bak was
-committed and published with real names in it. A data file inside a code
-directory is one `git add -A` away from being public, and no .gitignore rule
-survives contact with a user who does not know it is load-bearing. So the
-store now lives in the platform's user-data directory, where it cannot be
-swept into a commit by accident. Existing installs are migrated once, on
-first use, and the old copy is removed.
+Written 0600 from the first byte.
 
-SECOND, IT IS WRITTEN 0600.
-Nothing else on the machine has any business reading it. The file is created
-with owner-only permissions from the first byte rather than chmod'ed
-afterwards, because "create then chmod" leaves a window in which it is
-world-readable.
+Every save: write a temp file, fsync it, keep the current copy as a backup, rename
+over the target, fsync the directory (on POSIX the rename is a directory
+operation).
 
-DURABILITY
-Every save is: write a temp file -> fsync it -> preserve the current copy as a
-backup -> atomically rename the temp over the target -> fsync the directory.
-The last step is the one usually missed: on POSIX, fsync of a file does not
-guarantee the *rename* survives a power cut, because the rename is a directory
-operation. Without it, a save can be acknowledged and then vanish.
-
-CONCURRENCY
-The RLock below makes this safe across threads in one process, which is what
-the app needs - the tool layer and the proactive engine both write. It is
-deliberately NOT a cross-process lock: two Aethelark instances writing the same
-store would still race, and the honest fix for that is not to run two. The
-atomic rename means the worst case is a lost update, never a corrupt file.
+The RLock covers threads in one process, not two eagle processes; the atomic
+rename makes the worst case a lost update, never a corrupt file.
 """
 from __future__ import annotations
 
@@ -46,23 +24,18 @@ from datetime import datetime
 from pathlib import Path
 from threading import RLock
 
-# ── where the store lives ───────────────────────────────────────────────────
 
-# One definition of where user data lives, shared with the journal. Two
-# answers to that question is how a data path drifts back into the source
-# tree, which is the whole subject of Amendment I.
+# One definition of where user data lives, shared with the journal.
 from core.user_paths import ensure_private_dir, user_data_dir  # noqa: E402
 
 DATA_DIR = user_data_dir()
 MEMORY_PATH = DATA_DIR / "long_term.json"
 BACKUP_PATH = MEMORY_PATH.with_suffix(".bak")
 
-# Captured so migration can tell "the real store" from a test pointing the
-# module somewhere else. Without this, patching MEMORY_PATH would drag the
-# user's actual memory into a temp directory.
+# Captured so migration can tell the real store from a test's patched path.
 _DEFAULT_MEMORY_PATH = MEMORY_PATH
 
-# The pre-2026-07-31 location: inside the repository itself.
+# The old location, inside the repository.
 _LEGACY_PATH = Path(__file__).resolve().parent / "long_term.json"
 
 _lock = RLock()
@@ -74,7 +47,7 @@ MEMORY_MAX_CHARS = 2200
 CATEGORIES = ("identity", "preferences", "projects", "relationships",
               "wishes", "notes")
 
-# Owner-only. This file names the user's family.
+# Owner-only.
 _FILE_MODE = 0o600
 
 
@@ -82,22 +55,15 @@ def _empty_memory() -> dict:
     return {name: {} for name in CATEGORIES}
 
 
-# ── migration off the old in-repo location ──────────────────────────────────
-
 def _migrate_legacy_store() -> None:
-    """Move a pre-existing in-repo store to the user-data directory, once.
-
-    Best-effort by design: a failure here must never stop the app from
-    starting. The worst case is that the user's memory looks empty and the old
-    file is still on disk, which is recoverable; raising would not be.
+    """Move an old in-repo store to the user-data directory, once. Best-effort: never
+    stops the app starting.
     """
     global _migrated
     if _migrated:
         return
 
-    # Only ever touch the real store. A patched MEMORY_PATH means a test, and
-    # this must not consume the once-only flag on its way past - otherwise a
-    # test that runs first would disable migration for the whole process.
+    # Only the real store: a test must not consume the once-only flag.
     if MEMORY_PATH != _DEFAULT_MEMORY_PATH:
         return
 
@@ -110,7 +76,7 @@ def _migrate_legacy_store() -> None:
         shutil.copy2(_LEGACY_PATH, MEMORY_PATH)
         os.chmod(MEMORY_PATH, _FILE_MODE)
         print(f"[Memory] Moved store out of the source tree -> {MEMORY_PATH}")
-        # Remove the originals: leaving them is what made the leak possible.
+        # Remove the originals.
         for stale in (_LEGACY_PATH, _LEGACY_PATH.with_suffix(".bak")):
             try:
                 stale.unlink(missing_ok=True)
@@ -123,8 +89,6 @@ def _migrate_legacy_store() -> None:
 def _ensure_dir() -> None:
     ensure_private_dir(MEMORY_PATH.parent)
 
-
-# ── reading ─────────────────────────────────────────────────────────────────
 
 def _read_store(path: Path) -> dict | None:
     """Parse one store file, or None if it is missing, torn, or not a dict."""
@@ -142,7 +106,7 @@ def _read_store(path: Path) -> dict | None:
     if not isinstance(data, dict):
         return None
 
-    # Tolerate a store written by an older version that lacked a category.
+    # Tolerate older stores missing a category.
     for name in CATEGORIES:
         if not isinstance(data.get(name), dict):
             data[name] = {}
@@ -150,12 +114,7 @@ def _read_store(path: Path) -> dict | None:
 
 
 def load_memory() -> dict:
-    """Read the store, falling back to the backup before giving up.
-
-    A torn file used to mean a clean slate: the decode error was swallowed and
-    every fact the eagle knew was gone with no way back. The last known-good
-    copy removes that failure mode for the price of one extra file.
-    """
+    """Read the store, falling back to the backup before giving up."""
     with _lock:
         _migrate_legacy_store()
 
@@ -171,20 +130,13 @@ def load_memory() -> dict:
         return _empty_memory()
 
 
-# ── trimming ────────────────────────────────────────────────────────────────
-
 def _encoded_size(memory: dict) -> int:
     return len(json.dumps(memory, ensure_ascii=False))
 
 
 def _trim_to_limit(memory: dict) -> dict:
-    """Evict the oldest facts until the store fits the prompt budget.
-
-    Oldest-first, because a fact restated recently is one the user still lives
-    with. The previous implementation re-serialised the entire store on every
-    iteration, making a trim quadratic in the number of entries; here the cost
-    of each candidate is measured once and subtracted as it goes, so a trim is
-    one pass plus one confirming encode.
+    """Evict the oldest facts until the store fits the prompt budget. Each entry's
+    size is measured once, so a trim is one pass.
     """
     size = _encoded_size(memory)
     if size <= MEMORY_MAX_CHARS:
@@ -198,8 +150,7 @@ def _trim_to_limit(memory: dict) -> dict:
             cost = len(json.dumps({key: entry}, ensure_ascii=False))
             candidates.append((entry.get("updated", ""), category, key, cost))
 
-    # Oldest first; ties broken by name so a trim is deterministic and two
-    # machines with the same store converge on the same result.
+    # Oldest first, ties by name, so a trim is deterministic.
     candidates.sort(key=lambda c: (c[0], c[1], c[2]))
 
     for _, category, key, cost in candidates:
@@ -209,8 +160,7 @@ def _trim_to_limit(memory: dict) -> dict:
             size -= cost
             print(f"[Memory] Trimmed {category}/{key}")
 
-    # The running total is an estimate (separators, enclosing braces), so
-    # confirm once and fall back to exact accounting if it was optimistic.
+    # The running total is an estimate: confirm once, fall back to exact accounting.
     while _encoded_size(memory) > MEMORY_MAX_CHARS and candidates:
         _, category, key, _ = candidates.pop(0)
         memory.get(category, {}).pop(key, None)
@@ -218,15 +168,9 @@ def _trim_to_limit(memory: dict) -> dict:
     return memory
 
 
-# ── writing ─────────────────────────────────────────────────────────────────
-
 def _preserve_current_as_backup() -> None:
-    """Keep the outgoing version, atomically, so a torn read has a fallback.
-
-    A hard link is tried first: it publishes the backup in one rename with no
-    data copied, so the backup can never be observed half-written. Filesystems
-    that refuse links fall back to a copy staged under a temp name and renamed
-    into place, which costs an extra write but keeps the same guarantee.
+    """Keep the outgoing version atomically: a hard link first, else a copy renamed
+    into place.
     """
     if not MEMORY_PATH.exists():
         return
@@ -239,7 +183,7 @@ def _preserve_current_as_backup() -> None:
             shutil.copy2(MEMORY_PATH, staged)
         os.replace(staged, BACKUP_PATH)
     except OSError as e:
-        # A missing backup is a degraded state, not a failed save.
+        # A missing backup is degraded, not a failed save.
         print(f"[Memory] Backup failed (continuing): {e}")
         try:
             os.unlink(staged)
@@ -248,13 +192,7 @@ def _preserve_current_as_backup() -> None:
 
 
 def _fsync_dir(path: Path) -> None:
-    """Make the rename itself durable.
-
-    fsync on the file only promises its *contents*. The directory entry
-    created by the rename lives in the parent, so without this a save can be
-    acknowledged and then disappear across a power cut. Not available on
-    Windows, where the rename is already committed by the time it returns.
-    """
+    """Make the rename durable: fsync the parent directory. Not on Windows."""
     if sys.platform == "win32":
         return
     try:
@@ -270,13 +208,8 @@ def _fsync_dir(path: Path) -> None:
 
 
 def save_memory(memory: dict) -> None:
-    """Persist the store so that no crash can leave it empty or half-written.
-
-    `write_text` truncates the target before the new bytes land, so a crash in
-    that window destroyed the file outright. Here the new content is written
-    and fsynced to a temp file first, the current copy is preserved, and only
-    then does an atomic rename swap it in - a reader sees the whole old file or
-    the whole new one, never a torn one.
+    """Persist the store so no crash can leave it empty or half-written: a reader
+    sees the whole old file or the whole new one.
     """
     if not isinstance(memory, dict):
         return
@@ -287,8 +220,7 @@ def save_memory(memory: dict) -> None:
     with _lock:
         _ensure_dir()
 
-        # mkstemp creates 0600 and O_EXCL in one syscall: the file is never
-        # briefly world-readable, and two processes cannot collide on the name.
+        # mkstemp creates 0600 and O_EXCL in one call.
         fd, tmp_name = tempfile.mkstemp(
             dir=str(MEMORY_PATH.parent),
             prefix=f".{MEMORY_PATH.name}.",
@@ -306,15 +238,13 @@ def save_memory(memory: dict) -> None:
             os.replace(tmp, MEMORY_PATH)   # atomic on POSIX and Windows
             _fsync_dir(MEMORY_PATH.parent)
         except BaseException:
-            # Never leave litter for the next reader to trip over.
+            # Never leave temp files behind.
             try:
                 tmp.unlink(missing_ok=True)
             except OSError:
                 pass
             raise
 
-
-# ── updating ────────────────────────────────────────────────────────────────
 
 def _truncate_value(value: str) -> str:
     if isinstance(value, str) and len(value) > MAX_VALUE_LENGTH:
@@ -323,10 +253,8 @@ def _truncate_value(value: str) -> str:
 
 
 def _recursive_update(target: dict, updates: dict) -> bool:
-    """Merge `updates` into `target`; return whether anything actually changed.
-
-    Reporting "changed" honestly is what lets update_memory skip a disk write
-    when a model re-asserts a fact it already told us, which it does constantly.
+    """Merge `updates` into `target`; return whether anything changed, so a re-
+    asserted fact skips the disk write.
     """
     changed = False
 
@@ -336,7 +264,7 @@ def _recursive_update(target: dict, updates: dict) -> bool:
         if isinstance(value, str) and not value.strip():
             continue
 
-        # A dict without "value" is a nested category, not a leaf entry.
+        # A dict without "value" is a nested category.
         if isinstance(value, dict) and "value" not in value:
             branch = target.get(key)
             if not isinstance(branch, dict):
@@ -363,11 +291,8 @@ def _recursive_update(target: dict, updates: dict) -> bool:
 
 
 def update_memory(memory_update: dict) -> dict:
-    """Read-modify-write as ONE atomic unit.
-
-    The lock is held across load and save together, not inside each. Held only
-    inside, a tool and the proactive engine saving at the same moment both read
-    the same base and the second write silently discarded the first.
+    """Read-modify-write as one locked unit, so two concurrent writers cannot lose an
+    update.
     """
     if not isinstance(memory_update, dict) or not memory_update:
         return load_memory()
@@ -380,11 +305,7 @@ def update_memory(memory_update: dict) -> dict:
         return memory
 
 
-# ── rendering for the prompt ────────────────────────────────────────────────
-
-# (category, heading, how many entries are worth the prompt budget).
-# Identity is handled separately: it is rendered bare, with the fields people
-# actually get asked about first.
+# (category, heading, entries worth the prompt budget). Identity is rendered separately.
 _SECTIONS = (
     ("preferences",   "Preferences:",              15),
     ("projects",      "Active Projects / Goals:",   8),
@@ -417,19 +338,14 @@ _LANGUAGE_KEYS = {"language", "languages", "reply_language", "preferred_language
 
 
 def format_memory_for_prompt(memory: dict | None) -> str:
-    """Render the store as the block the model reads before answering.
-
-    The five non-identity categories differ only by heading and cap, so they
-    are driven from a table rather than written out one at a time - the old
-    copy-paste made it easy to fix a bug in four places and miss the fifth.
-    """
+    """Render the store as the block the model reads before answering."""
     if not memory:
         return ""
 
     lines: list[str] = []
 
     identity = memory.get("identity", {}) or {}
-    # Known fields first, in a stable order, then anything else learned later.
+    # Known fields first, then anything learned later.
     ordered = [k for k in _IDENTITY_ORDER if k in identity]
     ordered += [k for k in identity if k not in _IDENTITY_ORDER]
     for key in ordered:
@@ -450,7 +366,7 @@ def format_memory_for_prompt(memory: dict | None) -> str:
                 continue
             value = _value_of(entry)
             if value:
-                # Notes are free-form; a title-cased key would mangle them.
+                # Notes are free-form; do not title-case them.
                 label = key if category == "notes" else _titled(key)
                 rendered.append(f"  - {label}: {value}")
 
@@ -470,8 +386,6 @@ def format_memory_for_prompt(memory: dict | None) -> str:
     return result + "\n"
 
 
-# ── the tool-facing surface ─────────────────────────────────────────────────
-
 def remember(key: str, value: str, category: str = "notes") -> str:
     if category not in CATEGORIES:
         category = "notes"
@@ -490,5 +404,5 @@ def forget(key: str, category: str = "notes") -> str:
         return f"Forgotten: {category}/{key}"
 
 
-# Kept: callers and tools import this name.
+# Callers and tools import this name.
 forget_memory = forget

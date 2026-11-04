@@ -31,9 +31,7 @@ import tempfile
 from pathlib import Path, PurePath
 from typing import Any, Iterable
 
-#: Gemini's declared parameter types. Anything else in a manifest is a typo,
-#: and a typo that reached the model as a schema would be rejected at connect
-#: time — for the whole session, not just that tool.
+# Gemini's parameter types. Anything else would make the whole session fail to connect.
 VALID_TYPES = {"STRING", "INTEGER", "NUMBER", "BOOLEAN", "ARRAY", "OBJECT"}
 
 
@@ -43,33 +41,26 @@ class ModuleParam:
     type: str = "STRING"
     description: str = ""
     required: bool = False
-    #: What the module does when the argument is left out. A call that passes
-    #: it asks for the same thing as one that omits it.
+    # What the module does when the argument is left out.
     default: Any = None
 
     def schema(self) -> dict[str, Any]:
         return {"type": self.type, "description": self.description}
 
 
-#: What a module key may contain. Deliberately narrow: it has to survive being
-#: a directory name, a Gemini function name (`{key}_{tool}`), an HTML attribute
-#: value and a filename, and the intersection of those is an identifier.
+# A module key is an identifier: it becomes a directory, a Gemini function name, an HTML
+# attribute value and a filename.
 _KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$", re.IGNORECASE)
 
-#: Parameter name the confirmation handshake travels on. Reserved: a manifest
-#: cannot declare it, and it is stripped before argv is built.
+# Reserved for the confirmation handshake; stripped before argv is built.
 from core.confirm import PARAM as CONFIRM_PARAM  # noqa: E402
 
-#: How undoable a tool is, in the same three words `core/capabilities.py`
-#: already uses for the eagle's own actions. One vocabulary on both sides of
-#: the connector, so a module and the harness cannot describe the same risk
-#: differently.
+# How undoable a tool is, in core/capabilities.py's vocabulary.
 SAFE, UNDOABLE, PERMANENT = "safe", "undoable", "permanent"
 DANGERS = (SAFE, UNDOABLE, PERMANENT)
 
-#: What the scheduler knows how to arbitrate over. A module naming something
-#: outside this set would declare a hazard nothing checks, which is worse than
-#: declaring none — it reads as protected and is not.
+# Resources the scheduler arbitrates over. Anything else would read as protected and not
+# be.
 RESOURCES = frozenset({
     "net", "web", "file", "files", "printer", "desktop",
     "system", "memory", "camera", "island",
@@ -83,69 +74,37 @@ class ModuleTool:
     description: str
     argv: tuple[str, ...]
     params: tuple[ModuleParam, ...] = ()
-    #: How long this tool really takes, measured by the module rather than
-    #: guessed by the host. `atrade analyze` costs 34-35s against live SEC
-    #: filings; the host's 30s default killed it about four seconds before it
-    #: would have answered, every time, silently.
-    #:
-    #: None means undeclared. The harness then picks a conservative default —
-    #: undeclared must not mean unlimited, because the tools nobody has thought
-    #: about are exactly the ones with no measurement behind them.
+    # How long this tool really takes, measured by the module. None means undeclared:
+    # the host picks a conservative default, never unlimited.
     seconds: float | None = None
-    #: Unsafe to run twice CONCURRENTLY. Deliberately narrower than the
-    #: scheduler's `exclusive`, which stops everything else in the process:
-    #: two `a3d download` calls race each other and nothing else, so blocking
-    #: the whole tool pool for the duration is a bigger hammer than the hazard.
-    #: The module is the only thing that knows which of its own tools collide.
+    # Unsafe to run twice concurrently. Narrower than `exclusive`, which blocks the
+    # whole tool pool.
     one_at_a_time: bool | None = None
-    #: safe | undoable | permanent. `permanent` requires a confirm_prompt —
-    #: enforced in the validator, so the two cannot drift apart.
+    # safe | undoable | permanent. `permanent` requires a confirm_prompt (validator).
     danger: str = SAFE
-    #: Harness resources this tool looks at and changes: net, web, file, files,
-    #: printer, desktop, system, memory, camera, island. The scheduler runs two
-    #: tools at once only when neither writes what the other touches, so these
-    #: are how a module says "do not run me next to that".
-    #:
-    #: They were twelve hand-written entries in `main.py`, which is the harness
-    #: holding facts only the module knows.
+    # Harness resources this tool reads and writes: net, web, file, files, printer,
+    # desktop, system, memory, camera, island. Two tools run together only when neither
+    # writes what the other touches.
     reads: tuple[str, ...] = ()
     writes: tuple[str, ...] = ()
-    #: Nothing else in the whole process may run alongside this. A blunt
-    #: instrument, and arguably not a module's to declare — it freezes the
-    #: eagle's entire tool pool, not just the resource being fought over.
-    #:
-    #: Declared here only to reproduce today's behaviour exactly while the
-    #: hand-written table is deleted. The narrower replacement is already in
-    #: this file: `one_at_a_time` for a tool that races itself, `writes` for a
-    #: resource two tools share. Removing this is a separate, reviewable change.
+    # Nothing else in the process may run alongside this; it freezes the whole tool
+    # pool. Prefer one_at_a_time or writes.
     exclusive: bool = False
-    #: Argument names the HOST fills in, not the model. `_selection` carries
-    #: what the user has picked on the live card, so a module can act on the
-    #: screen without the model transcribing a JSON array back — and so the
-    #: confirmation digest covers the screen by construction.
+    # Arguments the host fills in, not the model: `_selection` is what the user picked
+    # on the live card, so the confirmation digest covers the screen.
     injects: tuple[str, ...] = ()
-    #: True when this tool does something to the physical world or is otherwise
-    #: not undoable, and a human must say yes before it runs.
+    # A human must say yes before it runs.
     confirm: bool = False
-    #: The consequence, in the words the eagle should SPEAK. `{placeholders}`
-    #: are filled from the call's arguments so the question names the real
-    #: printer and the real object rather than asking about "something".
+    # The consequence, in the words the eagle speaks. {placeholders} come from the
+    # call's arguments.
     confirm_prompt: str = ""
-    #: Invokable, but not offered to the model. For a tool that exists so the
-    #: harness can call it — one that takes a payload the harness builds and a
-    #: model would have to compose. Every tool declared is a choice the model
-    #: has to get right, and the model should not be choosing between a safe
-    #: path and the raw one underneath it.
+    # Invokable by the harness, never offered to the model.
     internal: bool = False
 
     @property
     def qualified_name(self) -> str:
-        """`a3d_search`, not `search`.
-
-        `main.py` holds 35 tool names in one flat namespace and the model picks
-        by name. A module whose command is called `search` or `status` — both
-        of which `a3d` has — would otherwise collide with a core tool, and the
-        loser would be whichever the dict happened to keep.
+        """`a3d_search`, not `search`, so module tools cannot collide with core tool
+        names.
         """
         return f"{self.module_key}_{self.name}"
 
@@ -159,17 +118,14 @@ class ModuleTool:
             "type": "OBJECT",
             "properties": {p.name: p.schema() for p in self.params},
         }
-        # Omitted entirely when nothing is required, rather than `[]`. Same
-        # instinct as `ToolResult.to_response()` leaving `ok` out: say nothing
-        # rather than say something empty and have it read as a claim.
+        # Omitted when nothing is required, rather than [].
         if self.required:
             parameters["required"] = self.required
 
         description = self.description
         if self.confirm:
-            # The model needs somewhere to put the token, and needs to know the
-            # first call is expected to come back with a question rather than a
-            # result — otherwise it reports the refusal as a failure.
+            # The model needs a slot for the token and to know the first call comes back
+            # with a question.
             parameters["properties"][CONFIRM_PARAM] = {
                 "type": "STRING",
                 "description": ("Leave EMPTY on the first call. This tool asks "
@@ -186,14 +142,8 @@ class ModuleTool:
 
 
 def island_event_dir() -> Path:
-    """Where a module's island events live: this user's alone.
-
-    /tmp is shared by every account on the machine, so any local process could
-    write an event file there and put a card on the island. On Linux the
-    per-user runtime directory ($XDG_RUNTIME_DIR, mode 0700) is used instead;
-    elsewhere the temp directory is already per-user. The host and every
-    module must compute this the same way -- the listener inherits the host's
-    environment, so they do.
+    """Where a module's island events live, private to this user: $XDG_RUNTIME_DIR on
+    Linux, else the temp directory. Host and modules compute it the same way.
     """
     import os
     runtime = os.environ.get("XDG_RUNTIME_DIR")
@@ -204,32 +154,22 @@ def island_event_dir() -> Path:
 
 @dataclass(frozen=True)
 class ModuleEvents:
-    """What a module says when nobody asked it anything.
-
-    MODULE_FACTORY_SPEC Pillar 4: a module writes its latest island event to
-    <island_event_dir()>/<key>_dynamic_island.json by atomic temp-file swap, and the host reads
-    the file. `listener` is the long-lived command that produces them — nothing
-    arrives until something runs it.
-
-    One slot, not a queue, and that is deliberate: the island shows one thing
-    and decays, so the newest important event is what belongs on screen rather
-    than a backlog of stale ones. Modules prioritise before writing.
+    """What a module says when nobody asked: it writes its latest event to
+    <island_event_dir()>/<key>_dynamic_island.json by atomic swap, and `listener`
+    is the command that produces them. One slot, not a queue: the island shows the
+    newest important event.
     """
 
     listener: str = ""
     island_file: Path = field(default_factory=Path)
-    #: event name -> how much it matters. Was a hard-coded table of printer
-    #: events in `core/ambient.py`; the module that raises an event is the one
-    #: that knows what it costs a human to ignore it. Higher wins. Bands are
-    #: the harness's (see PRIORITY_BANDS) — a module orders things inside a
-    #: band, it does not get to put itself in one.
+    # Event name -> priority, set by the module inside the harness's bands
+    # (PRIORITY_BANDS).
     priority: dict[str, int] = field(default_factory=dict)
 
 
-#: Where a number is allowed to sit, and what that band means. The harness owns
-#: these because otherwise every module declares itself the most important
-#: thing on the machine. A card is always ASKED: the user asked for it, which
-#: outranks routine telemetry and loses to hardware that needs a human.
+# Where a priority may sit. The harness owns the bands so no module ranks itself above
+# everything. A card the user asked for outranks telemetry and loses to hardware that
+# needs a human.
 PRIORITY_BANDS = {
     "fault":   (90, 100),   # go and look at the machine
     "warning": (70, 89),
@@ -247,8 +187,7 @@ class IslandCard:
     name: str
     width: int
     height: int
-    #: Which payload fields this card draws. Doubles as what the eagle is told
-    #: it is looking at, so a field left out of here is invisible to the model
+    # Payload fields this card draws; also what the model is told it is looking at.
     shows: tuple[str, ...] = ()
     prefetch: tuple[str, ...] = ()
 
@@ -257,27 +196,15 @@ class IslandCard:
 class IslandFace:
     """Everything a module says about the screen."""
 
-    #: The payload field that makes two answers the SAME card. `ticker` for
-    #: atrade, a printer key for a3d. Decides whether a new answer updates the
-    #: card in place or replaces it, and whether two payloads merge.
+    # The payload field that makes two answers the same card (ticker, printer key):
+    # decides update-in-place vs replace, and merging.
     about: str
     #: Card entered when this module first takes the screen.
     first: str
     css: str = ""
     cards: tuple[IslandCard, ...] = ()
-    #: Seconds a stored answer stays worth reusing. 0 means "no bound" and is
-    #: the default, because most facts do not rot.
-    #:
-    #: NOT the dwell. How long a card holds the screen while someone reads it
-    #: is the island's own clock, about attention. This is about the
-    #: truth of the numbers on it: a share price is worthless a minute later
-    #: and a proxy filing is good for months, and neither of those has anything
-    #: to do with how long the user looked. The card store keeps answers
-    #: between turns and hands them back on a click, so without this it can
-    #: serve a price fetched minutes ago as though it just arrived.
-    #:
-    #: Declared by the module because only the module knows how fast its own
-    #: subject changes.
+    # Seconds a stored answer stays worth reusing; 0 means no bound (the default). Not
+    # the dwell: this is about how fast the subject's numbers go stale.
     fresh_for: float = 0.0
 
     def card(self, name: str) -> IslandCard | None:
@@ -293,12 +220,9 @@ class IslandFace:
 
 @dataclass(frozen=True)
 class ModuleAccount:
-    """A web account a module needs, borrowed from the eagle's own browser.
-
-    The user signs in once, in the eagle's browser (Settings -> Modules ->
-    Sign in). The module never reads that browser: the host hands it the
-    cookies for this one site, on the module's stdin, through `receive`.
-    Nothing from any other site leaves the browser.
+    """A web account a module needs. The user signs in once, in their Chrome or the
+    eagle's browser; the host hands the module this one site's cookies on stdin
+    through `receive`. Nothing from any other site leaves.
     """
     site: str                   # "makerworld.com" -- what the user signs in to
     proof: str                  # a cookie that exists only when signed in
@@ -308,14 +232,8 @@ class ModuleAccount:
 
 @dataclass(frozen=True)
 class ModuleDeck:
-    """How a module refines the candidates of a deck, one card at a time.
-
-    A tool whose answer carries `candidates` puts a deck on the island. A
-    module that can say more about one candidate than its search could --
-    by downloading it, to get the real part and its measured size -- names
-    that tool here, and the host calls it for each candidate in the
-    background and merges the answer into that card. The host learns only
-    these three names, never what the module does with them.
+    """How a module refines a deck's candidates one at a time: the host calls this
+    tool per candidate in the background and merges the answer into that card.
     """
     refine: str         # tool name, unqualified ("download")
     param: str          # the parameter it is called with
@@ -336,22 +254,15 @@ class ModuleManifest:
     events: ModuleEvents | None = None
     deck: ModuleDeck | None = None
     accounts: tuple[ModuleAccount, ...] = ()
-    #: Python packages this module needs from the index. A bundle carries
-    #: source rather than a packed interpreter, so what it depends on has to
-    #: be declared somewhere the installer can read it.
+    # Python packages from the index: a bundle carries source, not an interpreter.
     requirements: tuple[str, ...] = ()
-    #: `package.module:callable` to run inside the module's own environment.
-    #: `pip install <deps>` installs dependencies, not the module, so nothing
-    #: would otherwise create the console script the manifest points `binary`
-    #: at.
+    # `package.module:callable` run inside the module's environment, which creates the
+    # command `binary` points at.
     entrypoint: str = ""
-    #: What the voice model should know about this module beyond each tool's
-    #: own description: when to reach for it, which tool wins between two
-    #: close ones. Added to the system prompt only while the module is
-    #: installed, so the harness prompt never names a module it may not have.
+    # What the voice model should know about this module beyond each tool's description.
+    # In the system prompt only while it is installed.
     instructions: str = ""
-    #: A few things a person could say to use this module, shown as
-    #: suggestions in the dashboard. The module knows its own best examples.
+    # Things a person could say to use this module, shown as dashboard suggestions.
     examples: tuple[str, ...] = ()
 
     @property
@@ -398,11 +309,8 @@ def _parse_tool(module_key: str, raw: dict[str, Any]) -> ModuleTool:
             f"{module_key}.{name}: {CONFIRM_PARAM!r} is reserved for the "
             f"confirmation handshake and cannot be declared as a parameter")
 
-    # `guarded` is what MODULE_STANDARD.md tells a module author to write;
-    # `confirm` is what the shipped manifests already use. They are one flag
-    # under two names, and reading only one of them meant a tool authored to
-    # the published standard loaded with its gate off — a safety mechanism
-    # failing open because its two halves disagreed about its own name.
+    # `guarded` (the published standard) and `confirm` (the shipped manifests) are one
+    # flag.
     confirm = bool(raw.get("confirm") or raw.get("guarded"))
     internal = bool(raw.get("internal"))
     confirm_prompt = str(raw.get("confirm_prompt") or "")
@@ -473,8 +381,9 @@ def _parse_tool(module_key: str, raw: dict[str, Any]) -> ModuleTool:
 
 
 def _file_name(value, default: str) -> str:
-    """A declared file name as a bare name: a manifest names a file beside
-    itself, not a path out of its own directory."""
+    """A declared file name as a bare name: never a path out of the manifest's
+    directory.
+    """
     return PurePath(str(value or default)).name or default
 
 
@@ -486,11 +395,8 @@ def _names(value) -> tuple[str, ...]:
 
 
 def _parse_island(module_key: str, raw: dict[str, Any]) -> IslandFace | None:
-    """The `[island]` section, or None when a module draws nothing.
-
-    A module with tools and no cards is legal and normal — it contributes
-    commands and never takes the screen. Only a HALF-declared island is an
-    error, and the validator says which half is missing.
+    """The [island] section, or None when a module draws nothing. Only a half-
+    declared island is an error.
     """
     cards_raw = raw.get("cards")
     if not isinstance(cards_raw, dict) or not cards_raw:
@@ -542,9 +448,7 @@ def _parse_island(module_key: str, raw: dict[str, Any]) -> IslandFace | None:
 
 
 def load_manifest(path: Path | str) -> ModuleManifest:
-    """One manifest, or ValueError. Raises so `load_manifests` can log which
-    file was wrong — a manifest that silently became no-tools is worse than a
-    loud one, because the module simply stops existing with no explanation."""
+    """One manifest, or ValueError, so load_manifests can log which file was wrong."""
     path = Path(path)
     with open(path, "rb") as fh:
         raw = tomllib.load(fh)
@@ -553,25 +457,8 @@ def load_manifest(path: Path | str) -> ModuleManifest:
     key = str(raw.get("key") or mod_table.get("name") or mod_table.get("key") or "").strip()
     if not key:
         raise ValueError(f"{path.name}: no 'key'")
-    # A key is an IDENTIFIER, and it is used as one in four places: the
-    # directory a module is installed into, the `{key}_{tool}` name the model
-    # calls, the `[data-module="..."]` selector its card is styled by, and the
-    # filename of its manifest. Nothing validated it.
-    #
-    # The directory is what makes that dangerous. `ModuleManager.install_bundle`
-    # computes `self.root / manifest.key` and calls `shutil.rmtree` on it to
-    # replace an existing install, and `remove()` does the same. Path join has
-    # no opinion about what it is given:
-    #
-    #     key = "/etc"    ->  rmtree("/etc")
-    #     key = ".."      ->  rmtree("~/.aethelark")
-    #     key = "../.."   ->  rmtree("~")
-    #
-    # Install is signature-gated, so this needs a bundle signed by the root key
-    # or the --allow-unsigned developer flag -- but a signature proves who made
-    # a bundle, not that its manifest is sane, and a typo like "a3d/v2" is a
-    # silent wrong install rather than an error. Refused here, once, where
-    # every path that reads a manifest goes.
+    # The key becomes an install directory that is rmtree'd on replace: ".." or "/etc"
+    # would delete the wrong tree. Refused here, where every manifest is read.
     if not _KEY_RE.match(key):
         raise ValueError(
             f"{path.name}: key {key!r} is not a module name. Use letters, "
@@ -588,9 +475,7 @@ def load_manifest(path: Path | str) -> ModuleManifest:
 
     island_config = raw.get("island") if isinstance(raw.get("island"), dict) else {}
 
-    # A module declaring [events] speaks without being asked. atrade has
-    # declared one since before 2026-09-03 and this parser dropped it, so the
-    # host never learned that either shipped module had anything to say.
+    # A module declaring [events] speaks without being asked.
     raw_events = raw.get("events")
     events = None
     if isinstance(raw_events, dict):
@@ -656,9 +541,7 @@ def load_manifest(path: Path | str) -> ModuleManifest:
         examples=examples,
     )
 
-    # Everything the parser cannot see on its own: files that must exist,
-    # names that must point at something, flags that imply each other. Imported
-    # here rather than at module scope because the validator imports the
+    # Cross-checks the parser cannot make. Imported here: the validator imports the
     # dataclasses above.
     from .validator import problems           # noqa: PLC0415
     found = problems(manifest)
@@ -667,17 +550,13 @@ def load_manifest(path: Path | str) -> ModuleManifest:
     return manifest
 
 
-
 #: Reading one manifest is parsing it; both names are used in the tree.
 parse_manifest = load_manifest
 
 def load_manifests(dirs: Iterable[Path | str],
                    on_error=None) -> list[ModuleManifest]:
-    """Every valid manifest in `dirs`, sorted by key.
-
-    A broken manifest is skipped, never fatal. One user hand-editing one TOML
-    file must not stop the eagle booting — the failure mode of a discovery
-    mechanism has to be "that module is missing", not "nothing starts".
+    """Every valid manifest in `dirs`, sorted by key. A broken one is skipped, never
+    fatal.
     """
     found: list[ModuleManifest] = []
     seen: set[str] = set()
@@ -697,8 +576,7 @@ def load_manifests(dirs: Iterable[Path | str],
                 if on_error is not None:
                     on_error(path, e)
                 continue
-            # First directory wins, so a user manifest in ~/.aethelark can
-            # override a shipped one rather than duplicating the module.
+            # First directory wins, so a user manifest can override a shipped one.
             if manifest.key in seen:
                 continue
             seen.add(manifest.key)
@@ -709,15 +587,10 @@ def load_manifests(dirs: Iterable[Path | str],
 
 def build_argv(manifest: ModuleManifest, tool: ModuleTool,
                args: dict[str, Any]) -> list[str]:
-    """The full argv for one call. Never a shell string.
-
-    Substitution is per element, and an element whose placeholder has no value
-    is dropped whole. That is why flags are written `--limit={limit}` as a
-    single element: split into `["--limit", "{limit}"]`, an absent value leaves
-    a bare `--limit` behind, which then swallows whatever argument follows it.
-
-    Missing required arguments raise before anything is spawned — the model
-    gets told what it forgot instead of the module getting a usage error.
+    """The full argv for one call. Never a shell string. An element whose placeholder
+    has no value is dropped whole, which is why flags are written
+    `--limit={limit}`. Missing required arguments raise before anything is
+    spawned.
     """
     args = args or {}
     missing = [p.name for p in tool.params
@@ -745,15 +618,8 @@ def build_argv(manifest: ModuleManifest, tool: ModuleTool,
 
 
 def _render(value: Any) -> str:
-    """TOML/JSON scalars as a CLI would want them.
-
-    `True` is a Python spelling no CLI knows; booleans reach a module as
-    `true`/`false`. Lists and dicts get the same treatment for the same
-    reason: `str()` on a list produces a Python repr with single quotes, which
-    is not JSON, so a model that passes `jobs` as an array rather than a string
-    sent `[{'model_id': '1'}]` down the command line. The module's json.loads
-    then failed — after the user had already been asked to approve it, and with
-    the repr read back to them as the thing they were approving.
+    """Scalars as a CLI wants them: booleans as true/false, lists and dicts as JSON
+    (str() gives a Python repr).
     """
     if isinstance(value, bool):
         return "true" if value else "false"

@@ -74,6 +74,7 @@ it over the fixture: the fixture is a photograph and does not update itself.
 
 ## Core Architectural Reference
 
+- **`ARCHITECTURE.md`** is the map: data flow, every voice tool and where it runs, the island states, every Python ↔ page call, where data lives, and a one-line index of every file. It is generated from the source by `python tools/architecture.py`, and a test fails when it is out of date, so regenerate it after a change instead of editing it.
 - **`docs/MODULE_CONTRACT.md`** is the interface a module is written against.
 
 ## Apple Human Interface Guidelines (HIG) System-Wide Mandate
@@ -120,12 +121,14 @@ Apple's Dynamic Island is an event-driven, priority-scheduled presentation conta
 | S3: EXPANDED GLANCE   (440x236)-> Interactive 3D Turntable / Telemetry  |
 | S4: EXPANDED DEEP     (440x364)-> 7-Layer Scorecard / Camera Diagnostic |
 | S5: SYSTEM NOTICE     (320x52) -> Ephemeral Critical Alerts             |
+| S6: AGENT ASK         (420x132)-> Held agent request + Allow / Don't   |
 +-------------------------------------------------------------------------+
 ```
 
 1. **Orthogonal Voice Sub-FSM:** Voice states ($V \in \{\text{idle}, \text{listening}, \text{thinking}, \text{speaking}\}$) are strictly orthogonal to visual card presentation. When a card ($S_3, S_4$) is active, voice updates animate `#plive` tri-dots and the fluid aurora edge glow; they never tear down the card.
 2. **Priority Preemption Table:**
    - Critical alerts ($\text{priority} \ge 80$) preempt active cards.
+   - An agent ask preempts everything: an agent is blocked until it is answered. Voice moves only the live dot while it is up; anything else that arrives is replayed after the answer, and a card it covered comes back.
    - User-invoked cards suppress background ambient events ($\text{priority} < 80$).
    - Active browsing decks and user interactions suspend TTL decay up to `DWELL_CEIL_MS = 22500ms`.
 3. **Deterministic State Transitions:** Transitions compute union hit regions, fire single Qt bridge resizes, synchronize 3D turntables, and report screen subject context back to the voice agent in real time.

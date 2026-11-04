@@ -1,36 +1,13 @@
-"""A hypothesis about what the user wants, formed before the model answers.
+"""A hypothesis about what the user wants, formed while they are still talking. It
+does not route: the model still chooses the tool. It adds a confidence and an
+early guess, so read-only work can start before they stop.
 
-This does NOT route. The model still chooses the tool. What this adds is two
-things the model cannot give, because by the time it speaks the decision is
-already made and committed:
+The mirror of prompt_reflex: it may pre-warm on its own authority and may only act
+once the model has committed. `prewarm` is filtered to READ_ONLY in
+capabilities.py.
 
-  * a CONFIDENCE, so the eagle can tell a near-certain request from a coin
-    flip and behave differently — hedge, confirm, or prepare a fallback.
-  * a HYPOTHESIS EARLY, while the user is still talking, so the safe half of
-    the work can already be underway when they stop.
-
-AUTHORITY, INVERTED FROM prompt_reflex
---------------------------------------
-`core/prompt_reflex.py` solves the same shape of problem for a different input
-and is the model for this. Its rule: it may STOP on its own authority, and may
-only GO from an explicit proven-safe list, because blocking is cheap and
-reversible while allowing is neither.
-
-This is the mirror:
-
-    It may PRE-WARM on its own authority.
-    It may only ACT once the model has committed.
-
-Speculative navigation is the feature. Speculative action is a bug with a nice
-name. The `prewarm` list is filtered to READ_ONLY inside `capabilities.py`, not
-here, so a future caller cannot forget to.
-
-COST
-----
-It runs on the event loop inside the 350ms end-of-turn window. A hypothesis
-that costs more than the work it saves is a net loss, so this is substring
-matching over a fixed catalogue — no inference, no network, no allocation of
-consequence. Pinned by a test at well under a millisecond.
+Runs inside the 350 ms end-of-turn window, so it is substring matching over a
+fixed catalogue: well under a millisecond (pinned by a test).
 """
 from __future__ import annotations
 
@@ -40,16 +17,12 @@ from dataclasses import dataclass, field
 from core.capabilities import (Capability, CATALOGUE, find_by_phrase,
                                prewarm_for, _normalise)
 
-#: Sites common enough that naming one IS naming a destination, even without
-#: a dot. Short and boring on purpose — this is not a directory, it is the
-#: handful of names that carry no other meaning in a sentence.
+# Sites common enough that naming one names a destination.
 _KNOWN_SITES = ("makerworld", "youtube", "wikipedia", "github", "gmail",
                 "amazon", "spotify", "reddit", "linkedin", "whatsapp",
                 "bambulab", "printables", "thingiverse", "google")
 
-#: A domain-looking token. Matches "makerworld.com" and "en.wikipedia.org",
-#: not "0.2mm" or "the file.stl" — the same restraint as the step parser,
-#: for the same reason: guessing wrong sends a browser somewhere real.
+# A domain-looking token: "makerworld.com", not "0.2mm" or "file.stl".
 _LOOKS_LIKE_HOST = re.compile(
     r"\b[a-z0-9][a-z0-9-]*\.(?:com|org|net|io|dev|app|co|ai|me|uk|de|ro|eu)\b",
     re.I)
@@ -60,13 +33,8 @@ _GO_TO_SITE = re.compile(
 
 
 def worth_warming(utterance: str | None) -> bool:
-    """Is there a DESTINATION here, or just a verb?
-
-    Starting a browser costs a process; the warm-up saves ~310ms. That trade
-    is worth making when someone is going somewhere, and not worth making
-    because the word "click" appeared in a sentence about clicking — which is
-    what the user watched happen, repeatedly, with pages opening and closing
-    around a conversation that was not about the web at all.
+    """Is there a destination here, or just a verb? Starting a browser is worth it
+    only when someone is going somewhere.
     """
     text = (utterance or "").strip().lower()
     if not text:
@@ -84,9 +52,7 @@ def worth_warming(utterance: str | None) -> bool:
                  "her", "them", "bed", "sleep", "work"))
 
 
-#: Confidence bands. Deliberately coarse — three meaningful states, not a
-#: false-precision float. Anything finer would imply a calibration this has
-#: not earned yet.
+# Confidence bands: deliberately coarse.
 HIGH = 0.8      # one capability matched, and matched distinctively
 MEDIUM = 0.5    # matched, but something else also plausibly fits
 LOW = 0.2       # a weak signal; the model should not be influenced much
@@ -97,16 +63,14 @@ NONE = 0.0      # nothing recognised: today's behaviour, model decides alone
 class Intent:
     """What the eagle thinks is being asked, and what it may do about it."""
 
-    #: Best single guess at the request, or None when nothing is recognised.
+    # Best single guess, or None.
     capability: Capability | None
     confidence: float
-    #: Tools worth putting in front of the model. Never narrower than the
-    #: answer — a narrowing that excludes the right tool is worse than none.
+    # Tools worth putting in front of the model. Never narrower than the answer.
     candidates: tuple[str, ...] = ()
-    #: Read-only work that may begin NOW, before the model has said anything.
+    # Read-only work that may begin now.
     prewarm: tuple[Capability, ...] = ()
-    #: What matched, for the trace. Diagnosing a bad hypothesis is impossible
-    #: without knowing which phrase caused it.
+    # What matched, for the trace.
     matched: str = ""
 
 
@@ -126,16 +90,11 @@ def _all_matches(text: str) -> list[tuple[int, Capability, str]]:
 
 
 def decode(utterance) -> Intent:
-    """Form a hypothesis. Never raises; silence is a valid answer.
-
-    Works on a PARTIAL utterance on purpose - the value is in being early, so
-    it has to be useful halfway through a sentence.
-    """
+    """Form a hypothesis. Works on a partial utterance. Never raises."""
     try:
         return _decode(utterance)
     except Exception:
-        # A broken hypothesis must never take down a turn. Falling back to
-        # "no idea" costs the speculative work and nothing else.
+        # A broken hypothesis costs only the speculative work.
         return _EMPTY
 
 
@@ -152,15 +111,8 @@ def _decode(utterance) -> Intent:
 
     best_len, best_cap, matched = hits[0]
 
-    # Confidence is about DISTINCTIVENESS, not about how sure the phrase felt.
-    # Two capabilities matching equally well is a genuine ambiguity, and
-    # reporting high confidence on it would waste the pre-warm most of the
-    # time - the cost of being confidently wrong is paid every turn.
-    # MARGIN, not mere presence of a rival. An incidental short match ("message"
-    # inside "what did i miss in my messages") is not competition with a long
-    # distinctive one, and treating it as such made every real request look
-    # ambiguous - which would waste the pre-warm on exactly the requests it
-    # should serve best.
+    # Confidence is about distinctiveness, measured as a margin: a short incidental
+    # match does not compete with a long distinctive one.
     runner_up = next((l for l, c, _m in hits if c.id != best_cap.id), 0)
     margin = best_len - runner_up
 
@@ -173,8 +125,7 @@ def _decode(utterance) -> Intent:
     else:
         confidence = LOW                  # a genuine tie
 
-    # A short match inside a long sentence is weak evidence: "playlist" in a
-    # forty-word request is probably not what the request is about.
+    # A short match in a long sentence is weak evidence.
     if best_len <= 4 and len(text) > 40:
         confidence = min(confidence, LOW)
 

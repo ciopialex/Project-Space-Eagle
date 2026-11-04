@@ -108,6 +108,15 @@ def test_a_sign_in_reaches_the_modules_that_declared_that_site(tmp_path):
                                   cookies_fn=cookies, log=lambda _l: None) == []
 
 
+def test_a_session_only_chrome_holds_still_reaches_the_module(tmp_path):
+    manifest, which, record = _module(tmp_path)
+    result = accounts.repair(manifest, "makerworld.com", which,
+                             cookies_fn=lambda site, start=False: [],
+                             fallback_fn=lambda site: SESSION)
+    assert result["ok"] is True
+    assert "SECRET-TOKEN" in json.loads(record.read_text())["stdin"]
+
+
 @pytest.mark.parametrize("bad, why", [
     ('site = "https://makerworld.com/"\nproof = "token"\nreceive = ["session"]', "bare domain"),
     ('site = "makerworld.com"\nreceive = ["session"]', "no proof"),

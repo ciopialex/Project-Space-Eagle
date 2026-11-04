@@ -1,43 +1,17 @@
-"""The mutation journal: what makes an action undoable, and what proves it isn't.
+"""The mutation journal: what makes an action undoable, and what proves it is not.
 
-THE ARGUMENT
-Consent is not a correctness mechanism. Its real function is moving
-accountability to the human, and it is paid for in attention - the scarcest
-resource in the system and the first to go at six in the morning. Every prompt
-that asks about something recoverable spends attention that the one genuinely
-unrecoverable action needed. Consent theatre is not neutral; it is why the
-important prompt gets skimmed.
+The assistant does not ask about things it can take back; it takes them back.
+Destroying the last copy of something is the only truly one-way thing a file tool
+does, and keeping a copy costs storage.
 
-So the assistant does not ask about things it can take back. It takes them
-back. This module is the machinery that decides which is which.
-
-Physics agrees, and more literally than it first sounds. Landauer's principle
-says erasing information is the one logically irreversible operation in
-computation - it costs energy and raises entropy. Everything else (copy, move,
-rename, transform) is reversible in principle. So the only genuinely one-way
-thing a file tool does is destroy the last copy of something, and that is a
-choice, not a necessity. The price of not destroying it is storage, which is
-approximately free.
-
-HOW IT IS USED
-Before a mutation, the caller stages whatever the mutation will destroy:
-
-    token = stage(path)             # None if it cannot be cheaply staged
+    token = stage(path)        # None if it cannot be cheaply staged
     if token is None:
-        ...this operation is genuinely irreversible - escalate to the human
+        ...irreversible: escalate to the human
     ...perform the mutation...
     record("overwrite", path=path, blob=token)
 
-`stage` returning None IS the irreversibility classifier. An operation whose
-prior state cannot be captured within the budget is exactly the operation that
-deserves a human, and there are far fewer of those than a prompt-everything
-design implies.
-
-WHAT THIS IS NOT
-It is not a transaction log and does not pretend to atomicity across
-operations. Undo is best-effort and refuses rather than guesses: if the world
-moved under it - the file changed after the entry was written - it declines
-that entry and says so. A wrong restore is worse than no restore.
+stage() returning None is the irreversibility classifier. Not a transaction log:
+undo is best-effort and refuses an entry whose file changed since.
 """
 from __future__ import annotations
 
@@ -53,9 +27,7 @@ from threading import RLock
 
 from core.user_paths import FILE_MODE, ensure_private_dir, user_data_dir
 
-# Above this, staging a copy stops being free and the operation is treated as
-# irreversible instead. Storage is cheap, not infinite, and silently copying a
-# multi-gigabyte file to make a delete undoable is its own kind of surprise.
+# Above this size, staging is not free and the operation counts as irreversible.
 MAX_STAGE_BYTES = 256 * 1024 * 1024
 
 _lock = RLock()
@@ -88,17 +60,10 @@ class Entry:
         return f"{when}  {self.op:<10} {target}{state}"
 
 
-# ── staging ─────────────────────────────────────────────────────────────────
-
 def stage(path: Path | str) -> str | None:
-    """Capture the current contents of `path` so a mutation can be reversed.
-
-    Returns a blob token, "" when there is nothing to preserve (the path does
-    not exist yet, so the inverse is simply deletion), or None when the prior
-    state cannot be captured - which marks the operation irreversible and is
-    the signal to escalate.
-
-    Content-addressed: staging the same bytes twice costs one copy.
+    """Capture the current contents of `path`. Returns a blob token, "" when there is
+    nothing to preserve (the inverse is deletion), or None when it cannot be
+    captured: irreversible. Content-addressed.
     """
     target = Path(path)
     try:
@@ -141,14 +106,12 @@ def _restore(token: str, destination: Path) -> None:
     os.replace(tmp, destination)
 
 
-# ── recording ───────────────────────────────────────────────────────────────
-
-#: Operations that leave something at a path, and so have an after-state.
+# Operations that leave something at a path, and so have an after-state.
 _LEAVES = ("create", "overwrite", "append", "copy", "move", "rename")
 
 
 def _fingerprint(path) -> dict | None:
-    """What a file looked like, cheaply: enough to tell it was touched since."""
+    """What a file looked like, cheaply: enough to tell it changed since."""
     try:
         st = Path(path).stat()
     except OSError:
@@ -157,12 +120,8 @@ def _fingerprint(path) -> dict | None:
 
 
 def record(op: str, **fields) -> str:
-    """Append one mutation to the journal. Returns its id.
-
-    Called after the mutation, so the result's fingerprint is taken here: undo
-    compares against it and refuses a file that has changed since. Without it
-    the journal could not keep its own promise, and "undo" after an hour of the
-    user's own edits would have thrown the edits away.
+    """Append one mutation to the journal; returns its id. Fingerprints the result so
+    undo can refuse a file edited since.
     """
     if op in _LEAVES:
         target = fields.get("dst") if op in ("copy", "move", "rename") else fields.get("path")
@@ -179,8 +138,7 @@ def record(op: str, **fields) -> str:
     with _lock:
         ensure_private_dir(journal_dir())
         path = journal_path()
-        # Append-only, fsynced: a journal that loses its last entry after a
-        # crash is worse than none, because the mutation still happened.
+        # Append-only and fsynced.
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
             handle.flush()
@@ -210,11 +168,7 @@ def _read_all() -> list[dict]:
 
 
 def _mark_undone(entry_id: str) -> None:
-    """Undo is itself recorded, so the log stays append-only.
-
-    Rewriting the file to flip a flag would mean the one structure the system
-    trusts for recovery is also the one being edited in place.
-    """
+    """Undo is itself recorded, so the log stays append-only."""
     record("_undone", ref=entry_id)
 
 
@@ -225,8 +179,6 @@ def history(limit: int = 20) -> list[Entry]:
            for e in raw if not e["op"].startswith("_")]
     return out[-limit:]
 
-
-# ── undoing ─────────────────────────────────────────────────────────────────
 
 def _unchanged(entry: Entry, target: Path) -> None:
     """Raise unless `target` is exactly as this entry left it."""
@@ -239,7 +191,7 @@ def _unchanged(entry: Entry, target: Path) -> None:
 
 
 def _discard(target: Path) -> None:
-    """Remove a file this journal created -- to the trash where there is one."""
+    """Remove a file this journal created, to the trash where there is one."""
     try:
         import send2trash
         send2trash.send2trash(str(target))
@@ -311,11 +263,8 @@ def _invert(entry: Entry) -> str:
 
 
 def undo_last(count: int = 1) -> str:
-    """Reverse the most recent operations, newest first.
-
-    Refuses rather than guesses. If a target changed after its entry was
-    written, that entry is skipped and reported: consent binds to an artifact,
-    and so does undo.
+    """Reverse the most recent operations, newest first. An entry whose target
+    changed is skipped and reported.
     """
     with _lock:
         pending = [e for e in history(limit=10_000) if not e.undone]
@@ -333,7 +282,7 @@ def undo_last(count: int = 1) -> str:
 
 
 def prune(keep_days: float = 30.0) -> int:
-    """Drop blobs no live entry refers to. Returns how many were removed."""
+    """Drop blobs no live entry refers to. Returns how many."""
     with _lock:
         cutoff = time.time() - keep_days * 86400
         referenced = {e.fields.get("blob") for e in history(limit=10_000)

@@ -88,8 +88,30 @@ async def developer_mode(parameters: dict, player=None) -> str:
                              project_name=project_dir.name, player=player)
     if not spawn_succeeded(result):
         return result
+    _announce_when_done(agent_key, agent.name, project_dir)
     followup = result.lower().startswith("prompt routed")
     where = f"a new folder called {project_dir.name}" if created else project_dir.name
     return (f"{agent.name} {'has the new instruction' if followup else 'is working on it'} "
-            f"in {where}. It shows on the island and says when it is done. Tell the "
-            f"user in one short sentence.")
+            f"in {where}. I'll say when it is done, and ask the user before "
+            f"anything risky. Tell the user in one short sentence.")
+
+
+def _announce_when_done(agent_key: str, agent_name: str, project_dir: Path) -> None:
+    from actions.pty_session import POOL
+    from core import escalations
+    session = POOL.get_alive(agent_key, project_dir)
+    if session is None or not hasattr(session, "on_result") or session.on_result is not None:
+        return
+
+    def on_result(event) -> None:
+        said = " ".join((event.text or "").split())
+        if len(said) > 500:
+            said = said[:500].rsplit(" ", 1)[0] + "…"
+        if event.ok:
+            escalations.notify(agent_name, f"finished in {project_dir.name}. It said: {said}",
+                               kind="done")
+        else:
+            escalations.notify(agent_name, f"stopped with a problem in {project_dir.name}: {said}",
+                               kind="done")
+
+    session.on_result = on_result

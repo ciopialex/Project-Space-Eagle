@@ -31,6 +31,8 @@ fastapi
 uvicorn[standard]
 cryptography
 python-multipart
+# Screenshots on Wayland go through the desktop's portal, over D-Bus.
+jeepney; sys_platform == "linux"
 pyobjc-framework-ApplicationServices; sys_platform == "darwin"
 comtypes; sys_platform == "win32"
 pycaw; sys_platform == "win32"

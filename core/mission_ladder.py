@@ -1,24 +1,8 @@
-"""Ways of doing one step, cheapest and most exact first.
+"""Ways of doing one step, most exact first: the DOM (exact, in the eagle's browser),
+the accessibility tree (exact when the app publishes one), then vision (a guess).
 
-The same shape as `GroundingResolver`, which tiers AT-SPI then vision to FIND
-a control. This tiers ways to ACT on one, and the ordering is accuracy rather
-than preference:
-
-  the DOM          knows exactly where a control is, in the eagle's own browser
-  the a11y tree    knows exactly where it is when the app publishes one -
-                   Chrome publishes NOTHING without --force-renderer-
-                   accessibility, which is why screen_click was blind on
-                   MakerWorld while the search bar sat in plain sight
-  vision           guesses. Measured live: 5808ms, and ~650px off the target
-
-Two rules, both learned from the log rather than from theory:
-
-1. **A rung that failed is never offered again for the same step.** The eagle
-   ran the identical `screen_click "Search bar"` twice, 81 attempts each, ten
-   seconds total, to prove the same thing twice.
-2. **Running out of rungs is an outcome, not a loop.** `exhausted` is what
-   turns "I cannot" into "delegate this, or ask the human" — with every reason
-   already collected for the handoff.
+A rung that failed is never offered again for the same step, and running out of
+rungs is an outcome (`exhausted`) carrying every reason for the handoff.
 """
 from __future__ import annotations
 
@@ -32,52 +16,34 @@ from core.mission import Mission, Step
 #: Click: DOM, then the accessibility tree, then pixels.
 _CLICK = ["web_click", "user_click", "screen_click", "vision_click"]
 
-#: Type: the same, ending in single keypresses. That last rung is what the
-#: user had to drive by voice, letter by letter — it belongs in the ladder so
-#: nobody has to.
+# Type: the same, ending in single keypresses.
 _TYPE = ["web_type", "user_type", "screen_type", "press_keys"]
 
-#: Open: the eagle's OWN browser first. `browser_control` opens the user's
-#: Chrome, which `web_agency` cannot see into — prompt.txt warns about this,
-#: and the MakerWorld run fell into it anyway after the bot wall.
+# Open: the eagle's own browser first; web_agency cannot see into the user's Chrome.
 _OPEN = ["web_open", "browser_open", "user_open"]
 
 #: Read: never clicks anything.
 _READ = ["web_look", "user_look", "screen_look"]
 
-#: The disk. A workflow that only ever touches a browser cannot do the thing
-#: the user actually asked for — download a form, read details off the Desktop,
-#: fill it in, send it back. Before these existed, "Read the file
-#: my-details.txt on the Desktop" fell to the READ ladder, `web_look` read the
-#: web page instead, and the step reported SUCCESS having never touched the
-#: disk. A wrong answer delivered confidently is worse than a refusal.
+# The disk: reading a file must never fall to a page read that reports success.
 _FILE_READ = ["file_read"]
 _FILE_WRITE = ["file_fill", "file_write"]
 
-#: Handing a file to a page. Distinct from click for the same reason download
-#: is: the success condition is "the input holds the file", not "the click
-#: landed".
+# Handing a file to a page: success means the input holds the file.
 _UPLOAD = ["web_upload"]
 
-#: Getting a file FROM a page. Its own ladder for the reason documented on
-#: `web_agency._download`: a click succeeds when the page reacts, a download
-#: succeeds only when a file is on disk. Before this existed, "Click the
-#: Download the registration form link" fell to the CLICK ladder, the DOM
-#: click genuinely worked, the step reported done, and no file ever arrived —
-#: confident, wrong, and silent, discovered only by checking the disk by hand.
+# Getting a file from a page: success means a file on disk, not a page reaction.
 _DOWNLOAD = ["web_download"]
 
 _LADDERS = {"click": _CLICK, "type": _TYPE, "open": _OPEN, "read": _READ,
             "file_read": _FILE_READ, "file_write": _FILE_WRITE,
             "upload": _UPLOAD, "download": _DOWNLOAD}
 
-#: "download" as a standalone word, not as a modifier of something already on
-#: disk. Word-bounded so "the downloaded form" (past tense — a FILE step) does
-#: not collide with "Download the form" (present tense — a browser step): the
-#: 'd' immediately after "download" in "downloaded" fails the trailing \b.
+# "download" as a standalone word: "downloaded" fails the trailing \b, so "the
+# downloaded form" is a file step.
 _DOWNLOAD_WORD = re.compile(r"\bdownload\b")
 
-#: Words that mean the DISK rather than the page.
+# Words that mean the disk rather than the page.
 _FILE_WORDS = ("file", "document", ".txt", ".pdf", ".csv", ".json", ".md",
                "desktop", "downloads", "downloaded", "folder", "directory",
                "disk")
@@ -85,12 +51,7 @@ _SAVE_WORDS = ("fill ", "save ", "write ", "edit ", "complete ")
 
 
 def _is_local(intent: str) -> bool:
-    """Does this step mean a file on disk, or a page in a browser?
-
-    Deliberately narrow. Guessing "local" for a web step would send a page
-    read to the filesystem, which is the same class of confident wrong answer
-    in the other direction.
-    """
+    """Does this step mean a file on disk or a page? Deliberately narrow."""
     low = f" {intent} "
     if "http://" in low or "https://" in low or " url " in low:
         return False
@@ -103,28 +64,22 @@ class Outcome:
     strategy: str = ""
     detail: str = ""
     exhausted: bool = False
-    #: True/False when the world was observed before and after, None when it
-    #: was not looked at. `ok` means the CALL worked; this means something
-    #: actually happened. They are different, and every bug this codebase has
-    #: fought for weeks lives in the gap between them.
+    # True/False when the world was observed before and after, None when not. `ok` means
+    # the call worked; this means something happened.
     moved: bool | None = None
 
 
-#: Words that join two actions into one sentence. A step containing one is a
-#: plan that was never decomposed — and the ladder will happily run its FIRST
-#: verb and call the whole thing done, which is exactly what happened live.
+# Words that join two actions: a step with one was never decomposed.
 _JOINERS = (" then ", " and then ", " after that ", " next ", " followed by ",
             " , then ")
 
-#: Verbs that start an action. Two of them in one step is two steps.
+# Verbs that start an action. Two in one step is two steps.
 _ACTION_WORDS = ("open ", "go to ", "navigate ", "click ", "press ", "type ",
                  "write ", "enter ", "fill ", "search ", "download ",
                  "upload ", "submit ", "select ", "read ", "save ")
 
 
-#: Nouns that close the name of a control. A determiner opens a name and one
-#: of these ends it, so "the Go to Submit page link" is a label from "the" to
-#: "link" — not an instruction to go anywhere.
+# Nouns that close a control's name, so "the Go to Submit page link" is one label.
 _NAME_END = ("link", "button", "form", "page", "field", "box", "tab", "menu",
              "option", "checkbox", "icon", "file", "entry", "item", "result")
 
@@ -134,28 +89,15 @@ _QUOTED = re.compile(r"""["'“”‘’][^"'“”‘’]{0,60}["'“”‘’]
 
 
 def _without_names(low: str) -> str:
-    """The sentence with the names of things blanked out.
-
-    Websites name controls after what they do — "Download the form", "Submit
-    form", "Go to checkout" — so counting verbs across a raw sentence counts
-    labels as actions. It refused `Click the Go to Submit page link`, which is
-    one click, and with it the entire e2e workflow.
-
-    Non-greedy and length-capped so a name span stops at the first closing
-    noun instead of swallowing a real second action further down the line.
+    """The sentence with control names blanked out, so a label like "Download the
+    form" does not count as an action. Non-greedy and length-capped.
     """
     return _NAME_SPAN.sub(" ", _QUOTED.sub(" ", low))
 
 
 def is_compound(intent: str) -> bool:
-    """Is this several actions wearing one step?
-
-    Two signals, because either alone is wrong. A joining word ("then",
-    "after that") is explicit — and it counts only OUTSIDE a name, so a
-    control called "Terms and Conditions" is not two steps. Failing that,
-    three or more action verbs is not a step; two is tolerated, because
-    "click the Download button" contains "click" and "download" and is
-    perfectly single.
+    """Is this several actions in one step? A joining word outside a name, or three
+    or more action verbs (two is tolerated: "click the Download button").
     """
     low = f" {(intent or '').lower().strip()} "
     bare = f" {_without_names(low).strip()} "
@@ -165,11 +107,8 @@ def is_compound(intent: str) -> bool:
 
 
 def kind_of(step: Step) -> str:
-    """Which ladder this step belongs on, from how a person phrased it.
-
-    Disk beats browser: the local checks come FIRST, because the failure they
-    prevent is silent. "Read the file on my Desktop" routed to the read ladder
-    returns the current web page, cheerfully, as though it were the file.
+    """Which ladder this step belongs on. Disk checks first: a misrouted file read
+    fails silently.
     """
     intent = (step.intent or "").lower().strip()
 
@@ -199,40 +138,18 @@ def strategies_for(step: Step) -> list[str]:
 def attempt(step: Step, mission: Mission,
             runners: dict[str, Callable[[Step], tuple[bool, str]]],
             observe: Callable[[], object] | None = None) -> Outcome:
-    """Walk the ladder until a rung works, and check the world moved.
-
-    `runners` is injected so the rules can be tested without a browser, a
-    screen or a network. A rung with no runner is SKIPPED rather than counted
-    as a failure — an unimplemented strategy must not burn the step's budget
-    or pollute the handoff with a failure that never happened.
-
-    `observe` fingerprints the current page. Optional, and absent by default,
-    so every existing caller behaves exactly as before. When present, a rung
-    that reports success while nothing changed is still reported as `ok` — it
-    DID work — but carries `moved=False`, because "the call returned" and
-    "something happened" are different claims and only one of them is what the
-    user asked for.
-
-    Steps that legitimately change nothing (reading a page, opening one
-    already open) are exempt: flagging those would make the signal useless.
+    """Walk the ladder until a rung works, and check the world moved. A rung with no
+    runner is skipped, not counted as a failure. With `observe`, a successful rung
+    that changed nothing is still ok but carries moved=False. Steps that
+    legitimately change nothing are exempt.
     """
-    # Hand in the blackboard right before anything runs. Same dict object as
-    # `mission.facts` — never a copy — so a runner that writes into
-    # `step.data` here has told every later step, which is the only way "read
-    # the file on my Desktop" can reach "fill the form with those details".
+    # Hand in the blackboard (the same dict as mission.facts) so later steps see what
+    # earlier ones found.
     step.data = mission.facts
-    # And the one up-front yes, re-read from the mission every attempt rather
-    # than cached on the step: a step retried after a reconnect must see
-    # whatever `mission.authorized` is NOW, not whatever it was when the step
-    # was first attempted.
+    # Re-read the up-front yes from the mission on every attempt.
     step.authorized = mission.authorized
 
-    # None of these are judged by whether the PAGE changed — a download and an
-    # upload both say so explicitly (`web_agency._download`/`_upload`: success
-    # is "a file is on disk" / "the input holds the file", not "the page
-    # reacted"), and file_read/file_write never touch a page at all. Flagging
-    # "nothing changed" on any of them would make the doubt signal noise
-    # instead of information — the same reasoning that already exempts read.
+    # Downloads, uploads and file steps are not judged by page change.
     from core.mission_ladder import kind_of as _kind          # self, for clarity
     expects_movement = _kind(step) not in (
         "read", "file_read", "file_write", "download", "upload")
@@ -268,10 +185,8 @@ def attempt(step: Step, mission: Mission,
 
 
 def _moved(before, observe, expects_movement) -> tuple[bool | None, str]:
-    """Did the page change, and is that worth saying?
-
-    Returns `(moved, note)`. `moved` is None when the world could not be read
-    — never False, because a failed look is not a still world.
+    """Did the page change, and is it worth saying? (moved, note); moved is None when
+    the world could not be read.
     """
     try:
         after = observe()
