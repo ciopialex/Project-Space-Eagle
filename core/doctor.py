@@ -154,13 +154,14 @@ def _os_permission() -> Check:
     """The one gate no installer can pass for you."""
     plat = _plat()
     if plat != "macos":
-        # Wayland restricts synthetic input too.
+        # Measured on GNOME (Ubuntu 26.04): typing and clicking are held until the
+        # user allows "remote interaction"; screenshots ask once, separately.
         if plat == "linux" and os.environ.get("WAYLAND_DISPLAY"):
             return Check(
                 "input permission", MANUAL,
-                "Wayland blocks synthetic mouse/keyboard for ordinary apps",
-                fix="log in with an X11/Xorg session, or expect keyboard and "
-                    "mouse control to be refused by the compositor")
+                "Wayland asks first: the eagle's typing and clicking wait until you allow them",
+                fix="click Allow when the desktop asks about remote interaction "
+                    "and about screenshots")
         return Check("input permission", OK, f"{plat}: not gated")
     try:
         from ApplicationServices import AXIsProcessTrusted

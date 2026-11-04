@@ -1364,6 +1364,11 @@ class WebShellUI(QObject):
             key = (data.pop("brain_api_key", "") or "").strip()
             from core import prefs
             before = prefs.enabled("labs_tools_enabled")
+            # Names live in the session's instructions, read when it connects: a
+            # rename the live session never heard was answered with the old name.
+            was = _config()
+            renamed = any(k in data and (data[k] or "") != (was.get(k) or "")
+                          for k in ("user_name", "assistant_name"))
             snap = save(data)
             if key:
                 provider = (data.get("brain_provider") or snap["brain"]["provider"]
@@ -1374,7 +1379,7 @@ class WebShellUI(QObject):
                     snap = set_brain_key(provider, key)
             self._push("setSettings", snap)
             self.sync_island_prefs()
-            if prefs.enabled("labs_tools_enabled") != before and self.on_session_refresh:
+            if (renamed or prefs.enabled("labs_tools_enabled") != before) and self.on_session_refresh:
                 threading.Thread(target=self.on_session_refresh, daemon=True).start()
         except Exception as e:
             print(f"[aethelark_web] save_settings failed: {e}")
@@ -2678,6 +2683,10 @@ VOICE_DID_NOT_START = "Voice didn't start. Run: eagle --doctor --fix"
 
 
 def _launch_main_app():
+    # The app lives in the pill, a Tool window Qt does not count. Left at the default,
+    # closing any other window while the full window was hidden (the key screen when
+    # Google refused a key, done or dismissed) quit the whole eagle. Quit is explicit.
+    QApplication.instance().setQuitOnLastWindowClosed(False)
     ui = WebShellUI("face.png")
 
     def _say_if_update_is_ready():

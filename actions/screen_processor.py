@@ -108,19 +108,9 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
         return img_bytes, f"image/{source_format.lower()}"
 
 def _capture_screen() -> tuple[bytes, str]:
-
-    if not _MSS:
-        raise RuntimeError("mss is not installed. Run: pip install mss")
-
-    with mss.mss() as sct:
-        monitors = sct.monitors          # [0] = all combined, [1..n] = real screens
-        target   = monitors[1] if len(monitors) > 1 else monitors[0]
-        shot     = sct.grab(target)
-        png      = mss.tools.to_png(shot.rgb, shot.size)
-        if png is None:
-            raise RuntimeError("Screen capture failed to encode to PNG.")
-
-    return _compress(png, "PNG")
+    """Raises core.screen_grab.ScreenshotUnavailable, whose text is for the model."""
+    from core import screen_grab
+    return _compress(screen_grab.png_bytes(), "PNG")
 
 
 def _cv2_backend() -> int:

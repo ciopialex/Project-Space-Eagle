@@ -86,17 +86,15 @@ def _require_pyautogui():
 
 
 def _grab_screen():
-    """Full-screen capture as a PIL image. mss first (no external helper); pyautogui
-    needs scrot or gnome-screenshot on Linux.
+    """Full-screen capture as a PIL image (core.screen_grab: mss, or the screenshot
+    portal on Wayland); pyautogui, which needs scrot or gnome-screenshot on Linux,
+    if that fails some other way.
     """
+    from core import screen_grab
     try:
-        import mss
-        from PIL import Image
-        with mss.mss() as sct:
-            mons   = sct.monitors
-            target = mons[1] if len(mons) > 1 else mons[0]
-            shot   = sct.grab(target)
-            return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+        return screen_grab.grab()
+    except screen_grab.ScreenshotUnavailable:
+        raise
     except Exception as e:
         print(f"[ComputerControl] mss capture failed ({e}); falling back to pyautogui")
         _require_pyautogui()

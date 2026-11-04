@@ -60,6 +60,7 @@ from actions.send_message      import send_message
 from actions.reminder          import reminder
 from actions.computer_settings import computer_settings
 from actions.screen_processor  import _capture_camera, _capture_screen
+from core.screen_grab import ScreenshotUnavailable
 from actions.youtube_video     import youtube_video
 from actions.desktop           import desktop_control
 from actions.browser_control   import browser_control
@@ -2187,18 +2188,29 @@ class AethelarkLive:
                         print(f"[Vision] 📷 Camera: {len(img_b):,} bytes")
                         _stall = "camera"
                     else:
-                        img_b, mime_t = await loop.run_in_executor(self._tool_executor, _capture_screen)
-                        print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
                         _stall = "screen"
-                    self._pending_vision = (img_b, mime_t, user_text, angle)
-                    # A ToolResult, with the byte count: it tells a real frame from a
-                    # black one.
-                    result = ToolResult.success(
-                        f"[VISION_ACTIVE] {_stall.capitalize()} captured. "
-                        f"Immediately say ONE short natural sentence in the user's own language, "
-                        f"telling them you are looking at their {_stall} right now. "
-                        f"Do NOT describe or guess content — the actual image arrives in the NEXT message.",
-                        angle=_stall, captured_bytes=len(img_b), mime=mime_t)
+                        try:
+                            img_b, mime_t = await loop.run_in_executor(self._tool_executor, _capture_screen)
+                            print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
+                        except ScreenshotUnavailable as _e:
+                            # Said to the user, and vision is free again: left busy,
+                            # every later look was refused as "already on its way".
+                            img_b, _unavailable = None, str(_e)
+                            self._vision_busy = False
+                            self._vision_guard.mark_delivered()
+                            print(f"[Vision] screen unavailable — {_unavailable[:90]}")
+                    if img_b is None:
+                        result = ToolResult.failure(_unavailable, guidance=_unavailable)
+                    else:
+                        self._pending_vision = (img_b, mime_t, user_text, angle)
+                        # A ToolResult, with the byte count: it tells a real frame from
+                        # a black one.
+                        result = ToolResult.success(
+                            f"[VISION_ACTIVE] {_stall.capitalize()} captured. "
+                            f"Immediately say ONE short natural sentence in the user's own language, "
+                            f"telling them you are looking at their {_stall} right now. "
+                            f"Do NOT describe or guess content — the actual image arrives in the NEXT message.",
+                            angle=_stall, captured_bytes=len(img_b), mime=mime_t)
 
             elif name == "island_view":
                 result = island_view(self.ui, args.get("view"), args.get("target"))
@@ -3006,11 +3018,15 @@ class AethelarkLive:
                                 self._pending_vision = None
                                 print(f"[Vision] 📤 {len(img_b):,} bytes (angle={angle}) → main session via send_realtime_input")
                                 self._vision_guard.mark_delivered()
-                                await session.send_realtime_input(
-                                    media=types.Blob(data=img_b, mime_type=mime_t)
-                                )
+                                # The picture and the question in one turn. Sent as a
+                                # realtime frame with the question as a separate turn,
+                                # the model answered without it: 0 of 3 saw the image,
+                                # against 3 of 3 this way (same image and question).
                                 await session.send_client_content(
-                                    turns={"parts": [{"text": question}]},
+                                    turns=types.Content(role="user", parts=[
+                                        types.Part(inline_data=types.Blob(data=img_b, mime_type=mime_t)),
+                                        types.Part(text=question),
+                                    ]),
                                     turn_complete=True,
                                 )
                                 # The picture is in; the next capture may go.
