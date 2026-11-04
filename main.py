@@ -1582,6 +1582,8 @@ class AethelarkLive:
         # Typed while there was no session: (monotonic time, text). Sent when the
         # session is back, if still fresh.
         self._pending_text: list[tuple[float, str]] = []
+        self._unanswered_text: tuple[float, str] | None = None   # typed, no reply yet
+        self._refreshing = False      # a session refresh is closing the current one
         self._refresh_lock = threading.Lock()
 
         # Tool batches running off the receive loop. A strong reference (asyncio keeps
@@ -1748,12 +1750,15 @@ class AethelarkLive:
     _PENDING_TEXT_S = 60.0
 
     def _on_text_command(self, text: str):
-        if not self._loop or not self.session:
+        if not self._loop or not self.session or self._refreshing:
             self._pending_text = (self._pending_text + [(time.monotonic(), text)])[-3:]
             self.ui.write_log("SYS: Reconnecting — I'll send that the moment I'm back.")
             return
-        # Typed input is a request, same as speech, so it clears the background gate.
+        # Typed input is a request, same as speech, so it clears the background gate
+        # and counts as the user waiting for an answer.
         self._unprompted_turn = False
+        self._last_user_speech = time.monotonic()
+        self._unanswered_text = (time.monotonic(), text)
         note_user_turn(text, typed=True)
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
@@ -2894,6 +2899,8 @@ class AethelarkLive:
                         or (_sc and (getattr(_sc, "model_turn", None)
                                      or getattr(_sc, "output_transcription", None)
                                      or getattr(_sc, "turn_complete", None))))
+                    if _answered:
+                        self._unanswered_text = None
                     # Not while a stopped answer is still being discarded.
                     if _answered and not self._interrupted:
                         self._trace_mark("first_token")
@@ -3583,11 +3590,20 @@ class AethelarkLive:
             return
 
         async def _refresh():
-            # Never cut a reply or a tool off mid-flight to add a tool.
+            # Typed from here on waits for the new session.
+            self._refreshing = True
+            # Never cut a reply or a tool off mid-flight.
             for _ in range(120):
-                if not self._inflight_tools and not self._is_speaking:
+                if (not self._inflight_tools and not self._is_speaking
+                        and not self._model_turn_active):
                     break
                 await asyncio.sleep(0.5)
+            # A question the old session got but never started on goes to the new
+            # one: a rename saved just before "What is my name?" closed the session
+            # 80 ms after the question went in, and it was never answered.
+            if self._unanswered_text:
+                self._pending_text.append(self._unanswered_text)
+                self._unanswered_text = None
             self._go_away_reconnect = True
             try:
                 await session.close()
@@ -3628,6 +3644,7 @@ class AethelarkLive:
                         asyncio.TaskGroup() as tg,
                     ):
                         self.session          = session
+                        self._refreshing      = False
                         self.audio_in_queue   = queue.Queue(maxsize=2000)  # ~100s at 50ms/frame — burst-safe buffer
                         self.out_queue        = asyncio.Queue(maxsize=10)   # ~640ms at 64ms/frame
                         self._mic_drops       = 0
