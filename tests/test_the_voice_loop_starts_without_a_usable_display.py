@@ -22,7 +22,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 @pytest.mark.skipif(sys.platform != "linux", reason="the X display is a Linux import-time dependency")
 def test_main_imports_when_the_x_display_refuses_the_connection():
-    env = dict(os.environ, DISPLAY=":99")   # no server there: the same exception class
+    # A display with no server behind it raises the same exception class. Not a
+    # fixed number: CI runs its own Xvfb on :99.
+    free = next(n for n in range(400, 900)
+                if not Path(f"/tmp/.X11-unix/X{n}").exists() and not Path(f"/tmp/.X{n}-lock").exists())
+    env = dict(os.environ, DISPLAY=f":{free}")
     env.pop("WAYLAND_DISPLAY", None)
     proc = subprocess.run(
         [sys.executable, "-c",
