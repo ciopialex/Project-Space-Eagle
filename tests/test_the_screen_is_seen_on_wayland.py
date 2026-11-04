@@ -62,3 +62,16 @@ def test_x11_keeps_using_mss(monkeypatch):
     monkeypatch.setattr(screen_grab, "_portal_call", lambda t: pytest.fail("no portal on X11"))
     monkeypatch.setattr(screen_grab, "_from_mss", lambda: Image.new("RGB", (8, 8)))
     assert screen_grab.grab().size == (8, 8)
+
+
+def test_on_wayland_the_windows_go_through_xwayland_so_the_pill_stays_on_top(monkeypatch):
+    from aethelark_web import _windows_through_x11
+    monkeypatch.setattr("aethelark_web.sys.platform", "linux")
+    env = {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}
+    assert _windows_through_x11(env) and env["QT_QPA_PLATFORM"] == "xcb"
+    chosen = {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0", "QT_QPA_PLATFORM": "wayland"}
+    assert not _windows_through_x11(chosen) and chosen["QT_QPA_PLATFORM"] == "wayland"
+    no_xwayland = {"WAYLAND_DISPLAY": "wayland-0"}
+    assert not _windows_through_x11(no_xwayland) and "QT_QPA_PLATFORM" not in no_xwayland
+    x11 = {"DISPLAY": ":0"}
+    assert not _windows_through_x11(x11) and "QT_QPA_PLATFORM" not in x11

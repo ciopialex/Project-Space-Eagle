@@ -2749,7 +2749,21 @@ def _quiet_once_started() -> None:
     QTimer.singleShot(8000, to_null)
 
 
+def _windows_through_x11(environ=None) -> bool:
+    """On Wayland, Qt's own windows can neither stay on top nor place themselves:
+    measured on Ubuntu 26.04, the pill sat mid-screen and sank behind the next
+    window opened. Through Xwayland the desktop honours both. Linux only, only
+    where Xwayland runs, and never over a platform the user chose."""
+    env = os.environ if environ is None else environ
+    if (sys.platform.startswith("linux") and env.get("WAYLAND_DISPLAY")
+            and env.get("DISPLAY") and not env.get("QT_QPA_PLATFORM")):
+        env["QT_QPA_PLATFORM"] = "xcb"
+        return True
+    return False
+
+
 def main():
+    _windows_through_x11()
     app = QApplication.instance() or QApplication(sys.argv)
     _name_the_app(app)
     load_app_fonts()
