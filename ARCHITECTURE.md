@@ -496,6 +496,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `tools/overlap.py` | How much of the new code is the old code, measured three ways, not one. |
 | `tools/package_module.py` | Build a `.aem` bundle from an installed module directory. |
 | `tools/provenance.py` |  |
+| `tools/sandbox.py` | Run the eagle headless in a sandbox that cannot hurt the machine, and talk to it. |
 | `tools/secret_scan.py` | Stops this machine's secrets and identity from reaching a commit or a push. |
 | `tools/web_bench.py` | Measure the web action path, so the next change to it is not a guess. |
 | `tools/web_coverage.py` | How much of a page the eagle can actually see. |

@@ -16,6 +16,7 @@ if _platform.system() == "Windows":
 
 import asyncio
 import contextlib
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import re
 import threading
@@ -121,6 +122,9 @@ CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
+# Mic frames that may wait for the event loop: 32 x 64 ms, about 2 s of audio. A device
+# that delivers faster than real time loses its oldest frames instead of filling memory.
+MIC_HANDOFF_MAX     = 32
 
 # How long a deliberate stop keeps discarding the answer it stopped, if turn_complete
 # never arrives.
@@ -1558,6 +1562,11 @@ class AethelarkLive:
         self._shutdown_requested = False          # graceful shutdown flag
 
         self._mic_drops: int = 0                  # count of oldest-mic-frames dropped due to overflow
+        # Audio thread -> event loop. One wake-up is pending at a time, however fast
+        # the device delivers.
+        self._mic_handoff: deque = deque(maxlen=MIC_HANDOFF_MAX)
+        self._mic_handoff_drops: int = 0          # written by the audio thread only
+        self._mic_drain_due = False
 
         # Gemini Live's rolling resumption token: a reconnect with it keeps the
         # conversation.
@@ -2747,6 +2756,32 @@ class AethelarkLive:
             mime = msg.get("mime_type", "audio/pcm")
             self._push_mic_queue({"data": b"\x00" * len(data), "mime_type": mime})
 
+    def _mic_callback(self, loop, data: bytes) -> None:
+        """Audio thread. Hands one frame to the event loop. At most MIC_HANDOFF_MAX
+        frames wait and at most one wake-up is scheduled, so memory and the loop's
+        queue stay flat even when the device runs faster than real time.
+        """
+        handoff = self._mic_handoff
+        if len(handoff) == handoff.maxlen:
+            self._mic_handoff_drops += 1
+        handoff.append(data)
+        if not self._mic_drain_due:
+            self._mic_drain_due = True
+            loop.call_soon_threadsafe(self._drain_mic)
+
+    def _drain_mic(self) -> None:
+        """Event loop. Feeds the frames waiting now, oldest first. Frames that arrive
+        meanwhile wait for the next wake-up, so other work on the loop keeps its turn.
+        """
+        self._mic_drain_due = False
+        handoff = self._mic_handoff
+        for _ in range(len(handoff)):
+            try:
+                data = handoff.popleft()
+            except IndexError:
+                return
+            self._on_mic_frame(data)
+
     def _on_mic_frame(self, data: bytes) -> None:
         """Every mic frame, on the event loop. While the eagle speaks nothing is
         sent, because Gemini cannot tell the user from the eagle's own voice; the
@@ -2787,7 +2822,7 @@ class AethelarkLive:
             if self.ui.muted:
                 return
             # Never block the PortAudio callback.
-            loop.call_soon_threadsafe(self._on_mic_frame, indata.tobytes())
+            self._mic_callback(loop, indata.tobytes())
 
         try:
             with sd.InputStream(
@@ -3400,11 +3435,12 @@ class AethelarkLive:
                 mic_age_ms = mic_q * 64  # each frame ≈ 64ms at 16kHz/1024 samples
                 play_age_ms = play_q * 50  # each frame ≈ 50ms at 24kHz/2400 bytes
                 drops = self._mic_drops
+                handoff_drops = self._mic_handoff_drops
                 print(
                     f"[Telemetry] sid={self._session_id} epoch={self._turn_epoch} "
                     f"mic_q={mic_q}/{out_queue.maxsize}(~{mic_age_ms}ms) "
                     f"play_q={play_q}/{audio_in_queue.maxsize}(~{play_age_ms}ms) "
-                    f"mic_drops={drops}"
+                    f"mic_drops={drops} mic_handoff_drops={handoff_drops}"
                 )
 
             # Wedged-session watchdog.
@@ -3579,6 +3615,7 @@ class AethelarkLive:
                         self.audio_in_queue   = queue.Queue(maxsize=2000)  # ~100s at 50ms/frame — burst-safe buffer
                         self.out_queue        = asyncio.Queue(maxsize=10)   # ~640ms at 64ms/frame
                         self._mic_drops       = 0
+                        self._mic_handoff.clear()
                         self._turn_done_event = asyncio.Event()
 
                         # Reset transient state from the previous session.
