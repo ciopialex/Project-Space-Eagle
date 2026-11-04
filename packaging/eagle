@@ -122,6 +122,19 @@ case "${ARGS[0]:-}" in
                     "$REPO/.venv/bin/python" -m pip install --quiet \
                         -r "$REPO/requirements.txt" ${CONSTRAINTS[@]+"${CONSTRAINTS[@]}"}
                 fi
+                # The maintained Xlib over pyautogui's old one, as install.sh
+                # does: the old one cannot open a GNOME Wayland display.
+                if [ "$(uname -s)" = "Linux" ]; then
+                    if [ -n "$UV" ]; then
+                        "$UV" pip install --quiet --python "$REPO/.venv/bin/python" \
+                            --reinstall-package python-xlib python-xlib \
+                            ${CONSTRAINTS[@]+"${CONSTRAINTS[@]}"} || true
+                    else
+                        "$REPO/.venv/bin/python" -m pip install --quiet \
+                            --force-reinstall --no-deps python-xlib \
+                            ${CONSTRAINTS[@]+"${CONSTRAINTS[@]}"} || true
+                    fi
+                fi
                 echo "eagle: the app is at $(git -C "$REPO" log -1 --format='%h %s' | cut -c1-72)"
             else
                 echo "eagle: could not reach the app's repository, so the app was not updated." >&2

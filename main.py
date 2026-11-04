@@ -3817,6 +3817,10 @@ def _run_core(ui, start, *, sleep=time.sleep, max_restarts: int = 5) -> None:
                 print(f"[Aethelark] Core failed {attempt}x — giving up. {label}")
                 _safe_log(ui, f"ERR: Core offline — gave up after {attempt} attempts.")
                 _safe_state(ui, "SLEEPING")
+                try:
+                    ui.show_notice("Voice stopped. Reopen Aethelark to retry.")
+                except Exception:
+                    pass
                 return
             delay = min(2 ** attempt, 30)
             print(f"[Aethelark] Core died ({label}) — restarting in {delay}s "

@@ -52,6 +52,8 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
 .field:focus{box-shadow:inset 0 0 0 1.5px rgba(236,236,242,.55)}
 .field::placeholder{color:var(--faint)}
 .field.center{text-align:center;padding:0 18px}
+/* A centred caret lands on top of a centred placeholder; the heading already asks. */
+.field.center:focus::placeholder{color:transparent}
 .reveal{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:0;
   color:var(--muted);font-family:inherit;font-size:12px;cursor:pointer;padding:6px 8px;border-radius:7px}
 .reveal:hover{color:#fff}
@@ -80,7 +82,7 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
   .hint{font-size:12.5px;line-height:1.5;color:var(--dim,#9aa4b2);margin:-4px 0 0;max-width:34ch;text-align:center}
   .hint b{color:var(--ink,#eef1f6);font-weight:600}
-  .modprog{width:100%;display:flex;flex-direction:column;gap:6px;margin:4px 0 14px;font-size:13px;color:var(--dim,#9aa4b2);text-align:left}
+  .modprog{width:100%;display:flex;flex-direction:column;gap:6px;margin:4px 0 14px;font-size:13px;color:var(--dim,#9aa4b2);text-align:center}
   .modprog b{color:var(--ink,#eef1f6);font-weight:600}
   .modprog .bad{color:#e57373}
   .modlist{display:flex;flex-direction:column;gap:10px;margin:6px 0 22px;width:100%}
@@ -285,6 +287,11 @@ h1{font-weight:600;font-size:30px;line-height:1.2;margin:0 0 12px;letter-spacing
     var k = KEY_VIEWS[state.key_view || 'get'];
     var v = ($('api-key').value || '').trim();
     $('key-main').disabled = !!k.needsText && v.length < 10;
+    // A key in the field is not still being waited for.
+    var st = $('key-status');
+    if (state.key_view === 'wait' && st.className === 'status') {
+      st.innerHTML = v ? '' : '<span class="spin"></span>Waiting for your key…';
+    }
     if (k.typed) {
       $('key-main').textContent = v ? k.typed : k.main;
       $('key-main').onclick = v ? function(){ checkKey(); } : k.act;

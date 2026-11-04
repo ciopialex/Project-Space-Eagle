@@ -768,7 +768,7 @@ class WebShellUI(QObject):
         load_app_fonts()
         self._app.setStyle("Fusion")
 
-        icon_file = BASE / "assets" / "images" / "aethelark.png"
+        icon_file = BASE / "assets" / "images" / "app_icon.png"
         if not icon_file.is_file():
             icon_file = BASE / "web" / "public" / "favicon-512x512.png"
         if icon_file.is_file():
@@ -2674,20 +2674,31 @@ class OnboardingWindow(QMainWindow):
             QApplication.instance().quit()
 
 
+VOICE_DID_NOT_START = "Voice didn't start. Run: eagle --doctor --fix"
+
+
 def _launch_main_app():
     ui = WebShellUI("face.png")
 
     def _say_if_update_is_ready():
         from core.update_check import newer_version
         if newer_version(BASE):
-            ui.show_notice("A new version is ready. Run eagle update in a terminal.")
+            ui.show_notice("New version ready. Run: eagle update")
 
     QTimer.singleShot(20000, lambda: threading.Thread(
         target=_say_if_update_is_ready, daemon=True, name="update-check").start())
 
     def runner():
         ui.wait_for_api_key()
-        from main import AethelarkLive, _run_core
+        try:
+            from main import AethelarkLive, _run_core
+        except Exception:
+            # This thread dying used to leave the pill looking idle and never
+            # listening, with nothing on screen to say so.
+            import traceback
+            traceback.print_exc()
+            ui.show_notice(VOICE_DID_NOT_START)
+            return
         import asyncio
 
         # Supervised by _run_core, which builds a new event loop on a restart.

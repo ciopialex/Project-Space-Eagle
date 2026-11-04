@@ -77,6 +77,28 @@ def _module(name: str, pip: str, why: str) -> Check:
         return Check(why, MISSING, f"installed but would not start: {str(e)[:60]}")
 
 
+def _xlib_too_old() -> bool:
+    """python3-xlib 0.15, which pyautogui asks for, cannot read the auth cookies
+    GNOME on Wayland writes for Xwayland. The maintained python-xlib (0.33) can."""
+    try:
+        import Xlib
+        return tuple(Xlib.__version__) < (0, 33)
+    except Exception:
+        return False
+
+
+def _mouse_and_keyboard() -> Check:
+    check = _module("pyautogui", "pyautogui", "mouse and keyboard")
+    if not check.good and not check.fix and _plat() == "linux" and _xlib_too_old():
+        check.detail = "its X library is too old to open this desktop"
+        if "pip install --python" in _pip(""):     # uv
+            check.fix = _pip("--reinstall-package python-xlib python-xlib==0.33")
+        else:
+            check.fix = _pip("--force-reinstall --no-deps python-xlib==0.33")
+        check.auto = True
+    return check
+
+
 def _structural_grounding() -> Check:
     """The fast, exact way the eagle finds controls; vision is the slow fallback."""
     plat = _plat()
@@ -310,7 +332,7 @@ def run_checks() -> list[Check]:
         _audio(),
         _echo_cancel(),
         _module("mss", "mss", "screen capture"),
-        _module("pyautogui", "pyautogui", "mouse and keyboard"),
+        _mouse_and_keyboard(),
         _module("google.genai", "google-genai", "the brain"),
         _module("PyQt6.QtWebEngineWidgets", "PyQt6 PyQt6-WebEngine",
                 "the window"),

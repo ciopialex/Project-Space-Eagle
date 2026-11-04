@@ -10,7 +10,7 @@ camera when you ask. It thinks with Google's Gemini, using your own free API key
 **macOS and Linux** (in a terminal):
 
 ```bash
-(curl -fsSL https://get.aethelark.com || wget -qO- https://get.aethelark.com) | bash
+(curl -fsSL https://get.aethelark.com 2>/dev/null || wget -qO- https://get.aethelark.com) | bash
 ```
 
 **Windows** (in PowerShell):

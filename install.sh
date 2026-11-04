@@ -335,6 +335,13 @@ uv pip install --python "$VENV_PY" -q -r "$HOME_DIR/requirements.txt" ${CONSTRAI
   >>"$LOG" 2>&1 || die "the Python packages Aethelark needs did not install."
 
 if [ "$OS" = "Linux" ]; then
+  # pyautogui pulls in python3-xlib 0.15, which cannot read the auth cookies
+  # GNOME on Wayland writes for Xwayland: every screen tool then fails on the
+  # default Ubuntu 24.04/26.04 session. python-xlib is its maintained fork and
+  # installs the same `Xlib` package, so writing it over the top replaces the
+  # code while pip still sees pyautogui's requirement as met.
+  uv pip install --python "$VENV_PY" -q --reinstall-package python-xlib python-xlib \
+    ${CONSTRAINTS[@]+"${CONSTRAINTS[@]}"} >>"$LOG" 2>&1 || true
   step 72 "Adding screen understanding…"
   # Not fatal: without it the eagle still works, by sight alone, and
   # `eagle --doctor` says so and what to install.
@@ -450,7 +457,7 @@ Type=Application
 Name=Aethelark
 Comment=Voice-commanded operator for your machine
 Exec=$BIN_DIR/eagle
-Icon=$HOME_DIR/assets/images/aethelark.png
+Icon=$HOME_DIR/assets/images/app_icon.png
 Terminal=false
 StartupWMClass=aethelark
 Categories=Utility;Development;

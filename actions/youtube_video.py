@@ -12,7 +12,9 @@ from urllib.parse import quote_plus
 try:
     import pyautogui
     _PYAUTOGUI = True
-except ImportError:
+# Any failure, not only ImportError: on Linux the import opens the X display,
+# and on GNOME Wayland that raised and took the whole voice loop down with it.
+except Exception:
     _PYAUTOGUI = False
 
 try:

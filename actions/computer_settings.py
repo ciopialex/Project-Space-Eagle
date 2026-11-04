@@ -15,7 +15,9 @@ try:
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
-except ImportError:
+# Any failure, not only ImportError: on Linux the import opens the X display,
+# and on GNOME Wayland that raised and took the whole voice loop down with it.
+except Exception:
     _PYAUTOGUI = False
 
 try:
