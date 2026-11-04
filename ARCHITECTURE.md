@@ -467,6 +467,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `core/quota.py` | Tell a rate limit apart from a broken tool. |
 | `core/run_cmd.py` | External commands with a deadline that actually reclaims what it kills. |
 | `core/safe_exec.py` | Run model-generated Python (desktop_control's `task`) without handing it the |
+| `core/screen_grab.py` | The whole screen as a PIL image, on every desktop. |
 | `core/session_port.py` | Act on the browser the eagle opened for the user, through the DOM. browser_control |
 | `core/setup_modules.py` | Adding the modules a user chose in setup, while they finish setting up. |
 | `core/tool_fallback.py` | When a narrow tool fails, name the general one that can still do the job. |
@@ -489,6 +490,7 @@ Hosted by `PillWebWindow`, bridge `PillBridge` (`aethelark_web.py`). Page → Py
 | `tools/bench_log.py` | Read a session log, say what actually happened, and flag what went wrong. |
 | `tools/bench_rewrite.py` | The numbers this rewrite claims, produced by running them. |
 | `tools/build_airports.py` | Build actions/flights/airports.json from OurAirports' public-domain CSV. |
+| `tools/cdp.py` | Drive the eagle's own pages over the Chrome DevTools protocol. |
 | `tools/dead_code.py` | Find code nothing can reach, conservatively enough to act on. |
 | `tools/img2glyph.py` | Image → ASCII by structural glyph matching. |
 | `tools/mission_e2e.py` | Run a whole workflow against our own site, and judge it from the far side. |

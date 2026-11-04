@@ -7,9 +7,13 @@
 What the sandbox is:
 - Its own HOME, data dir, virtual screen (Xvfb) and D-Bus. Only the voice settings
   and the Gemini key are copied from the real config, and the copy is deleted at exit.
+- Links it opens are written to opened_urls.txt instead of reaching a browser (a
+  recording xdg-open/gio first on PATH), and key-shaped variables are dropped from
+  the environment, as a new user's machine would not have them.
 - Fake audio at real-time pace. The mic plays silence, or a WAV once; the speaker
   writes what the eagle says to speaker.wav. Every other way of opening a real audio
   device raises.
+- `kill -USR1` on the eagle's process appends every thread's Python stack to stacks.txt.
 - Three stops on memory: a watchdog inside the eagle writes report.txt (what holds the
   memory, every thread's CPU, Python and native stacks) and exits at --limit-mb; the
   monitor here kills the run at limit + 1200 MB; the kernel caps it at limit + 1500 MB
@@ -243,8 +247,16 @@ def cmd_child() -> None:
     base: dict = {}
     import ctypes
     ctypes.CDLL(None).prctl(0x59616D61, ctypes.c_ulong(2**64 - 1), 0, 0, 0)  # PR_SET_PTRACER_ANY, for gdb
+    # `kill -USR1 <pid>` writes every thread's Python stack to stacks.txt.
+    import faulthandler
+    import signal
+    faulthandler.register(signal.SIGUSR1, file=open(out / "stacks.txt", "a"), all_threads=True)
+
+    opens = [0]
 
     def mic_opened():
+        opens[0] += 1
+        (out / "mic_opens").write_text(str(opens[0]))
         if not base:
             base.update(rss=_rss_mb(), cpu=_thread_cpu(), smaps=_smaps(), at=time.monotonic())
             (out / "mic_open").write_text(str(base["rss"]))
@@ -327,19 +339,41 @@ def cmd_say(a) -> None:
     asyncio.run(_say(a.text, state["port"], a.watch, Path(state["dir"]) / "eagle.log"))
 
 
-def _write_config(home: Path) -> Path:
+def real_config() -> dict:
+    """The user's own config, read only to copy CONFIG_KEYS (and, in tests, the key)."""
     sys.path.insert(0, str(ROOT))
     from core import user_paths
-    real = json.loads(user_paths.api_keys_path().read_text())
-    keep = {k: real[k] for k in CONFIG_KEYS if k in real}
-    keep.update(onboarded=True, user_name="Sam")
+    return json.loads(user_paths.api_keys_path().read_text())
+
+
+def _write_config(home: Path, fresh: bool, overrides: dict | None = None) -> Path:
     cfg = home / "data" / "config"
     cfg.mkdir(parents=True, exist_ok=True)
     cfg.chmod(0o700)
     path = cfg / "api_keys.json"
+    if fresh:                       # first run: no key, onboarding shows
+        return path
+    real = real_config()
+    keep = {k: real[k] for k in CONFIG_KEYS if k in real}
+    keep.update(onboarded=True, user_name="Sam")
+    keep.update(overrides or {})
     path.touch(0o600)
     path.write_text(json.dumps(keep))
     return path
+
+
+# A developer's shell carries keys a new user's does not; onboarding looks for them.
+_SECRET_ENV = re.compile(r"(_API_KEY|_TOKEN|_SECRET|_PASSWORD)$|^GOOGLE_APPLICATION_CREDENTIALS$")
+
+
+def _shred(directory: Path) -> None:
+    for f in directory.rglob("*"):
+        if f.is_file() and not f.is_symlink():
+            try:
+                f.write_bytes(b"\0" * f.stat().st_size)
+                f.unlink()
+            except OSError:
+                pass
 
 
 def _free_display() -> int:
@@ -349,89 +383,154 @@ def _free_display() -> int:
     raise SystemExit("no free X display number")
 
 
-def cmd_run(a) -> None:
-    for tool in ("Xvfb", "dbus-run-session", "systemd-run"):
-        if not shutil.which(tool):
-            raise SystemExit(f"{tool} is not installed")
-    if STATE.exists():
-        raise SystemExit(f"a sandbox may already be running ({STATE}); delete it if not")
-    out = Path(a.dir).resolve() if a.dir else Path(tempfile.mkdtemp(prefix="eagle-sandbox-"))
-    home = out / "home"
-    home.mkdir(parents=True, exist_ok=True)
-    (home / ".asoundrc").write_text("pcm.!default { type null }\n")
-    key_file = _write_config(home)
-    display = _free_display()
-    unit = f"eagle-sandbox-{os.getpid()}"
-    hard_mb, kill_mb = a.limit_mb + 1500, a.limit_mb + 1200
-    env = {k: v for k, v in os.environ.items() if not k.startswith("XDG_") or k == "XDG_RUNTIME_DIR"}
-    env.update(HOME=str(home), DISPLAY=f":{display}", PIPEWIRE_REMOTE="eagle-sandbox-none",
-               AETHELARK_DATA_DIR=str(home / "data"), PYTHONUNBUFFERED="1",
-               QTWEBENGINE_REMOTE_DEBUGGING=f"127.0.0.1:{a.port}",
-               EAGLE_SANDBOX_DIR=str(out), EAGLE_SANDBOX_LIMIT_MB=str(a.limit_mb),
-               EAGLE_SANDBOX_MIC_WAV=str(Path(a.mic_wav).resolve()) if a.mic_wav else "",
-               EAGLE_SANDBOX_MIC_WAV_AT=str(a.mic_wav_at),
-               EAGLE_SANDBOX_MIC_UNPACED="1" if a.mic_unpaced else "")
-    xvfb = subprocess.Popen(["Xvfb", f":{display}", "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1)
-    log = open(out / "eagle.log", "w")
-    proc = subprocess.Popen(
-        ["systemd-run", "--user", "--scope", "-q", f"--unit={unit}",
-         "-p", f"MemoryMax={hard_mb}M", "-p", "MemorySwapMax=0", "--",
-         "timeout", "-s", "KILL", str(a.seconds + 60),
-         "dbus-run-session", "--", sys.executable, str(Path(__file__).resolve()), "_child"],
-        cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
-    STATE.write_text(json.dumps({"dir": str(out), "port": a.port, "unit": unit}))
-    print(f"sandbox: {out}  (display :{display}, DevTools 127.0.0.1:{a.port}, memory cap {hard_mb} MB)")
+class Sandbox:
+    """One sandboxed eagle. `with Sandbox(...) as sb:` starts it and always tears it
+    down: the scope is killed, Xvfb stopped and every config file shredded."""
 
-    def talk():
-        for text in a.say:
-            try:
-                asyncio.run(_say(text, a.port, a.watch, out / "eagle.log"))
-            except Exception as e:
-                print(f"  say failed: {e}")
+    def __init__(self, out: Path | None = None, *, port: int = 9229, seconds: int = 120,
+                 limit_mb: int = 1500, mic_wav: str | None = None, mic_wav_at: float = 3.0,
+                 mic_unpaced: bool = False, fresh: bool = False, env: dict | None = None,
+                 config: dict | None = None):
+        for tool in ("Xvfb", "dbus-run-session", "systemd-run"):
+            if not shutil.which(tool):
+                raise SystemExit(f"{tool} is not installed")
+        self.out = Path(out).resolve() if out else Path(tempfile.mkdtemp(prefix="eagle-sandbox-"))
+        self.port, self.seconds, self.limit_mb = port, seconds, limit_mb
+        self.mic_wav, self.mic_wav_at, self.mic_unpaced = mic_wav, mic_wav_at, mic_unpaced
+        self.fresh, self.base_env = fresh, dict(os.environ if env is None else env)
+        self.config_overrides = config
+        self.home = self.out / "home"
+        self.unit = f"eagle-sandbox-{os.getpid()}-{port}"
+        self.proc = self.xvfb = self._log = None
 
-    outcome, peak, started, talker, cgroup, mic_at = "time is up", 0, time.monotonic(), None, None, None
-    try:
-        while proc.poll() is None:
-            elapsed = time.monotonic() - started
-            if cgroup is None:
-                r = subprocess.run(["systemctl", "--user", "show", "-p", "ControlGroup", "--value",
-                                    f"{unit}.scope"], capture_output=True, text=True)
-                cgroup = Path("/sys/fs/cgroup" + r.stdout.strip()) if r.stdout.strip() else None
-            try:
-                mem = int((cgroup / "memory.current").read_text()) >> 20 if cgroup else 0
-            except OSError:
-                mem = 0
-            peak = max(peak, mem)
-            if mem > kill_mb:
-                outcome = f"monitor killed it at {mem} MB"
-                break
-            if mic_at is None and (out / "mic_open").exists():
-                mic_at = elapsed
-            if talker is None and a.say and mic_at is not None and elapsed > mic_at + a.settle:
-                talker = threading.Thread(target=talk, daemon=True)
-                talker.start()
-            if talker is not None and not talker.is_alive() and not a.stay:
-                outcome = "prompts done"
-                break
-            if elapsed > a.seconds:
-                break
-            time.sleep(0.2)
-        else:
-            outcome = {99: "the watchdog stopped it (see report.txt)"}.get(proc.returncode,
-                                                                          f"it exited ({proc.returncode})")
-    except KeyboardInterrupt:
-        outcome = "stopped by you"
-    finally:
-        subprocess.run(["systemctl", "--user", "kill", "-s", "KILL", f"{unit}.scope"],
+    @property
+    def log_path(self) -> Path:
+        return self.out / "eagle.log"
+
+    @property
+    def config_path(self) -> Path:
+        return self.home / "data" / "config" / "api_keys.json"
+
+    @property
+    def opened_urls(self) -> list[str]:
+        f = self.out / "opened_urls.txt"
+        return f.read_text().split() if f.exists() else []
+
+    @property
+    def mic_opens(self) -> int:
+        f = self.out / "mic_opens"
+        return int(f.read_text() or 0) if f.exists() else 0
+
+    def start(self) -> "Sandbox":
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / ".asoundrc").write_text("pcm.!default { type null }\n")
+        _write_config(self.home, self.fresh, self.config_overrides)
+        # Links the eagle opens are written down, not opened in a real browser: Qt
+        # hands them to xdg-open, which goes to the system's default browser.
+        bin_dir = self.out / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        for name in ("xdg-open", "gio", "sensible-browser", "x-www-browser"):
+            opener = bin_dir / name
+            opener.write_text(f'#!/bin/sh\nfor a; do case "$a" in *://*) echo "$a" >> "{self.out}/opened_urls.txt";; esac; done\n')
+            opener.chmod(0o755)
+        display = self.display = _free_display()
+        hard_mb = self.limit_mb + 1500
+        env = {k: v for k, v in self.base_env.items()
+               if (not k.startswith("XDG_") or k == "XDG_RUNTIME_DIR") and not _SECRET_ENV.search(k)}
+        env.update(HOME=str(self.home), DISPLAY=f":{display}", PIPEWIRE_REMOTE="eagle-sandbox-none",
+                   AETHELARK_DATA_DIR=str(self.home / "data"), PYTHONUNBUFFERED="1",
+                   BROWSER=str(bin_dir / "xdg-open"),
+                   PATH=f"{bin_dir}:{self.base_env.get('PATH', os.defpath)}",
+                   QTWEBENGINE_REMOTE_DEBUGGING=f"127.0.0.1:{self.port}",
+                   EAGLE_SANDBOX_DIR=str(self.out), EAGLE_SANDBOX_LIMIT_MB=str(self.limit_mb),
+                   EAGLE_SANDBOX_MIC_WAV=str(Path(self.mic_wav).resolve()) if self.mic_wav else "",
+                   EAGLE_SANDBOX_MIC_WAV_AT=str(self.mic_wav_at),
+                   EAGLE_SANDBOX_MIC_UNPACED="1" if self.mic_unpaced else "")
+        self.xvfb = subprocess.Popen(["Xvfb", f":{display}", "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+        self._log = open(self.log_path, "w")
+        self.proc = subprocess.Popen(
+            ["systemd-run", "--user", "--scope", "-q", f"--unit={self.unit}",
+             "-p", f"MemoryMax={hard_mb}M", "-p", "MemorySwapMax=0", "--",
+             "timeout", "-s", "KILL", str(self.seconds + 60),
+             "dbus-run-session", "--", sys.executable, str(Path(__file__).resolve()), "_child"],
+            cwd=ROOT, env=env, stdout=self._log, stderr=subprocess.STDOUT)
+        STATE.write_text(json.dumps({"dir": str(self.out), "port": self.port, "unit": self.unit}))
+        return self
+
+    def memory_mb(self) -> int:
+        r = subprocess.run(["systemctl", "--user", "show", "-p", "ControlGroup", "--value",
+                            f"{self.unit}.scope"], capture_output=True, text=True)
+        try:
+            return int((Path("/sys/fs/cgroup" + r.stdout.strip()) / "memory.current").read_text()) >> 20
+        except (OSError, ValueError):
+            return 0
+
+    def stop(self) -> None:
+        subprocess.run(["systemctl", "--user", "kill", "-s", "KILL", f"{self.unit}.scope"],
                        capture_output=True)
-        proc.wait(timeout=10)
-        xvfb.terminate()
-        key_file.write_bytes(b"\0" * key_file.stat().st_size)
-        key_file.unlink()
+        if self.proc:
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+        if self.xvfb:
+            self.xvfb.terminate()
+        _shred(self.home / "data" / "config")
         STATE.unlink(missing_ok=True)
-        log.close()
+        if self._log:
+            self._log.close()
+
+    def __enter__(self) -> "Sandbox":
+        if STATE.exists():
+            raise SystemExit(f"a sandbox may already be running ({STATE}); delete it if not")
+        return self.start()
+
+    def __exit__(self, *_):
+        self.stop()
+
+
+def cmd_run(a) -> None:
+    sb = Sandbox(a.dir, port=a.port, seconds=a.seconds, limit_mb=a.limit_mb, mic_wav=a.mic_wav,
+                 mic_wav_at=a.mic_wav_at, mic_unpaced=a.mic_unpaced, fresh=a.fresh)
+    kill_mb = a.limit_mb + 1200
+    with sb:
+        out = sb.out
+        print(f"sandbox: {out}  (DevTools 127.0.0.1:{a.port}, memory cap {a.limit_mb + 1500} MB)")
+
+        def talk():
+            for text in a.say:
+                try:
+                    asyncio.run(_say(text, a.port, a.watch, sb.log_path))
+                except Exception as e:
+                    print(f"  say failed: {e}")
+
+        outcome, peak, started, talker, mic_at = "time is up", 0, time.monotonic(), None, None
+        try:
+            while sb.proc.poll() is None:
+                elapsed = time.monotonic() - started
+                mem = sb.memory_mb()
+                peak = max(peak, mem)
+                if mem > kill_mb:
+                    outcome = f"monitor killed it at {mem} MB"
+                    break
+                if mic_at is None and (out / "mic_open").exists():
+                    mic_at = elapsed
+                if talker is None and a.say and mic_at is not None and elapsed > mic_at + a.settle:
+                    talker = threading.Thread(target=talk, daemon=True)
+                    talker.start()
+                if talker is not None and not talker.is_alive() and not a.stay:
+                    outcome = "prompts done"
+                    break
+                if elapsed > a.seconds:
+                    break
+                time.sleep(0.2)
+            else:
+                outcome = {99: "the watchdog stopped it (see report.txt)"}.get(
+                    sb.proc.returncode, f"it exited ({sb.proc.returncode})")
+        except KeyboardInterrupt:
+            outcome = "stopped by you"
     print(f"\nend: {outcome}; peak memory {peak} MB")
     for name in ("report.txt", "speaker.wav", "memory.txt", "eagle.log"):
         if (out / name).exists():
@@ -456,6 +555,7 @@ def main() -> None:
     r.add_argument("--stay", action="store_true", help="keep running after the prompts, for 'say'")
     r.add_argument("--port", type=int, default=9229)
     r.add_argument("--dir", help="where logs go (default: a new temp dir)")
+    r.add_argument("--fresh", action="store_true", help="no config: start at onboarding, like a first run")
     s = sub.add_parser("say", help="type into a running sandbox")
     s.add_argument("text")
     s.add_argument("--watch", type=float, default=30.0)
