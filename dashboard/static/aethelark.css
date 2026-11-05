@@ -7,8 +7,8 @@
 }
 
 @font-face {
-  font-family: 'Doto';
-  src: url('/static/fonts/Doto.ttf') format('truetype');
+  font-family: 'Aethelark';
+  src: url('/static/fonts/Aethelark-Plain-Regular.ttf') format('truetype');
   font-weight: 400 900;
   font-display: swap;
 }
@@ -39,7 +39,7 @@
   --radius-full: 9999px;
   
   --font-sans: 'Manrope', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: 'Doto', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-mono: 'Aethelark', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 * {

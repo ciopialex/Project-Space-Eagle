@@ -47,6 +47,9 @@ KNOWN: tuple[AgentCLI, ...] = (
              ("claude", "cloud", "clawed", "claude code"), stream="claude"),
     AgentCLI("antigravity_cli", "Antigravity", "agy", ("agy", "-i", None),
              ("antigravity", "anti-gravity", "agy", "anti gravity"), stream="agy"),
+    # xAI's terminal agent; the first prompt is its positional argument (`grok [PROMPT]`, checked on grok 1.0.70).
+    AgentCLI("grok_build", "Grok Build", "grok", ("grok", None),
+             ("grok", "grok build", "grok cli", "grok code")),
     AgentCLI("gemini_cli", "Gemini CLI", "gemini",
              ("env", "GEMINI_CLI_TRUST_WORKSPACE=true", "gemini", "-i", None),
              ("gemini", "gemini cli")),
@@ -68,7 +71,7 @@ KNOWN: tuple[AgentCLI, ...] = (
     AgentCLI("kimi", "Kimi", "kimi", ("kimi",), ("kimi",)),
 )
 
-PREFERENCE = ("claude_code", "antigravity_cli", "codex", "gemini_cli",
+PREFERENCE = ("claude_code", "antigravity_cli", "grok_build", "codex", "gemini_cli",
               "opencode", "cursor_agent", "hermes")
 
 

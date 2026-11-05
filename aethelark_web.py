@@ -577,6 +577,25 @@ class PillBridge(QObject):
             w.move(o[2] + (sx - o[0]), o[3] + (sy - o[1]))
 
 
+def _line_icon(paths: str, color: str, px: int):
+    """A line icon for a native Qt control, drawn from SVG paths (the app draws no emoji or glyphs as icons)."""
+    from PyQt6.QtCore import QByteArray, QSize
+    from PyQt6.QtGui import QIcon, QPainter, QPixmap
+    from PyQt6.QtSvg import QSvgRenderer
+    # The Aethelark icon grammar (web/aethelark-icons.js): one 2-unit stroke, flat ends, sharp joins.
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%s" stroke-width="2" '
+           'stroke-linecap="butt" stroke-linejoin="miter">%s</svg>' % (color, paths))
+    scale = 3   # drawn large, so it stays crisp on a HiDPI screen
+    pm = QPixmap(px * scale, px * scale)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    QSvgRenderer(QByteArray(svg.encode())).render(painter)
+    painter.end()
+    pm.setDevicePixelRatio(scale)
+    icon = QIcon(pm)
+    return icon
+
+
 class PillWebWindow(QMainWindow):
     """Transparent, frameless, always-on-top window rendering web/pill.html."""
 
@@ -678,7 +697,7 @@ class WebClipboardPanel(QWidget):
         wrap.setObjectName("clipwrap")
         wrap.setStyleSheet("""
             #clipwrap{background:rgba(12,12,16,0.97);border:1px solid rgba(200,200,208,0.22);border-radius:14px;}
-            QLabel#hdr{color:#C8C8D0;font-family:'Doto';font-weight:700;font-size:9px;letter-spacing:2px;background:transparent;}
+            QLabel#hdr{color:#C8C8D0;font-family:'Aethelark Plain';font-weight:400;font-size:9px;letter-spacing:2px;background:transparent;}
             QLabel#prev{color:#E5E5EA;background:rgba(0,0,0,0.35);border:1px solid rgba(200,200,208,0.14);border-radius:7px;padding:6px 9px;font-size:11px;}
             QPushButton#act{color:#C8C8D0;background:rgba(255,255,255,0.04);border:1px solid rgba(200,200,208,0.16);border-radius:8px;font-family:'Manrope';font-weight:600;font-size:10px;letter-spacing:1px;padding:8px 0;}
             QPushButton#act:hover{color:#fff;border-color:#C8C8D0;background:rgba(255,255,255,0.08);}
@@ -695,7 +714,8 @@ class WebClipboardPanel(QWidget):
 
         hdr = QHBoxLayout()
         h = QLabel("◈  CLIPBOARD DETECTED"); h.setObjectName("hdr")
-        x = QPushButton("✕"); x.setObjectName("x"); x.setFixedSize(18, 18)
+        x = QPushButton(); x.setObjectName("x"); x.setFixedSize(18, 18)
+        x.setIcon(_line_icon('<path d="M6 6L18 18M18 6L6 18"/>', "#A2A2AA", 12))   # "close" in web/aethelark-icons.js; x.setToolTip("Close")
         x.setCursor(Qt.CursorShape.PointingHandCursor); x.clicked.connect(self.hide)
         hdr.addWidget(h); hdr.addStretch(); hdr.addWidget(x)
         lay.addLayout(hdr)
@@ -1851,7 +1871,7 @@ class WebShellUI(QObject):
             if v:
                 facts.append({"icon": icon, "label": label, "value": v})
         for cat, icon, label in (("projects", "⬢", "Building"),
-                                 ("preferences", "⚡", None), ("wishes", "✧", "Wants")):
+                                 ("preferences", "\u2261", None), ("wishes", "✧", "Wants")):
             for k, e in list(mem.get(cat, {}).items())[:1]:
                 v = e.get("value") if isinstance(e, dict) else e
                 if v:
