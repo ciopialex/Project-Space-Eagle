@@ -3748,7 +3748,7 @@ class AethelarkLive:
                         except Exception as _e:
                             print(f"[session] summary unavailable: {_e}")
                         self.ui.set_state("LISTENING")
-                        self.ui.write_log(f"SYS: Aethelark online. (sid={self._session_id})")
+                        # The session id is for the log file, not the user's feed.
 
                         if self._dashboard:
                             await self._dashboard.broadcast({"type": "status", "state": "active"})
