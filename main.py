@@ -49,7 +49,8 @@ from core.quota import explain_quota, looks_like_quota
 from core import proc_registry
 from core.turn_trace import TraceLog, TurnTrace, _enabled_by_default as _trace_enabled
 from core.mic_vad import SpeechDetector, _rms
-from core.barge_in import BargeInDetector
+from core.barge_in import BargeInDetector, full_duplex
+from core import echo_cancel
 from core.intent import decode as _decode_intent
 
 from actions.file_processor import file_processor
@@ -1535,6 +1536,11 @@ class AethelarkLive:
         self._barge = BargeInDetector(frame_ms=1000.0 * CHUNK_SIZE / SEND_SAMPLE_RATE)
         self._barge_reply          = False
         self._barge_on             = True
+        # Full duplex: the mic keeps streaming to Gemini while the eagle talks, and
+        # Gemini stops itself when the user cuts in. _duplex_ready is decided per
+        # session (echo cancellation can change), _duplex_now per reply.
+        self._duplex_ready         = False
+        self._duplex_now           = False
         self._play_peak            = 0.0
         # Backstop for straggler audio from a cancelled turn; turn_complete normally
         # clears the latch.
@@ -2807,9 +2813,10 @@ class AethelarkLive:
             self._on_mic_frame(data)
 
     def _on_mic_frame(self, data: bytes) -> None:
-        """Every mic frame, on the event loop. While the eagle speaks nothing is
-        sent, because Gemini cannot tell the user from the eagle's own voice; the
-        frame goes to the barge-in detector instead.
+        """Every mic frame, on the event loop. While the eagle speaks the frame
+        still goes to Gemini when its own voice cannot reach the mic (full duplex).
+        Otherwise nothing is sent, because Gemini cannot tell the user from the
+        eagle's own voice; the frame goes to the local barge-in detector instead.
         """
         with self._speaking_lock:
             speaking = self._is_speaking
@@ -2823,7 +2830,19 @@ class AethelarkLive:
             self._barge_reply = True
             self._barge_on = prefs.enabled("barge_in_enabled")
             self._mic_shield_on = prefs.enabled("mic_shield_enabled")
+            self._duplex_now = self._barge_on and self._duplex_ready
             self._barge.start_utterance()
+        if self._duplex_now:
+            # Gemini hears the user over its own (cancelled) voice and stops itself,
+            # about 0.75 s in. The local detector is quicker when the user is clearly
+            # louder than the echo: it silences the speakers first. Gemini already has
+            # every frame, so nothing is replayed.
+            self._enqueue_mic({"data": data, "mime_type": "audio/pcm"})
+            if self._barge.feed(data, self._play_peak, self._hearing_vad.noise_floor):
+                self._barge.take_preroll()
+                print(f"[Aethelark] 🗣 Barge-in — {self._barge.describe()}")
+                self.interrupt()
+            return
         if self._barge_on and self._barge.feed(
                 data, self._play_peak, self._hearing_vad.noise_floor):
             self._barge_in()
@@ -2976,6 +2995,7 @@ class AethelarkLive:
                             if self._interrupted:
                                 self._interrupt_until = time.monotonic()
                             else:
+                                print("[Aethelark] ✋ Gemini heard the user and stopped")
                                 self._drop_queued_audio()
 
                         if sc.turn_complete:
@@ -3676,6 +3696,12 @@ class AethelarkLive:
                         connected_ok = True
                         self._backoff.on_connected()   # starts the health timer
                         print(f"[Aethelark] Connected. (session={self._session_id})")
+                        self._duplex_ready = await asyncio.to_thread(
+                            full_duplex, prefs.get("full_duplex"),
+                            lambda: echo_cancel.state().active)
+                        print("[Aethelark] Talk over it: "
+                              + ("full duplex, the mic stays open while it speaks"
+                                 if self._duplex_ready else "local detector"))
                         try:
                             mods = ", ".join(sorted(m.key for m in MODULE_BUS.available())) or "none"
                             print(f"[session] {'CODING' if coding_enabled() else 'CASUAL'} · "

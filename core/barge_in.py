@@ -41,6 +41,23 @@ SNAP = 1.5
 SNAP_MS = 2000.0
 
 
+def full_duplex(setting, echo_cancelled) -> bool:
+    """Should the mic stay open to Gemini while the eagle talks? Then Gemini hears
+    the user cut in and stops itself, the way a phone call works. Only safe where
+    the eagle's own voice does not reach the mic: with echo cancellation, or with
+    headphones (the user says so with full_duplex: true). `echo_cancelled` is
+    called only for "auto".
+    """
+    if setting is True or str(setting).lower() in ("true", "on", "always"):
+        return True
+    if setting is False or str(setting).lower() in ("false", "off", "never"):
+        return False
+    try:
+        return bool(echo_cancelled())
+    except Exception:
+        return False
+
+
 class BargeInDetector:
     """Feed it mic frames while the eagle speaks. Never raises. Event loop only."""
 

@@ -34,6 +34,11 @@ DEFAULTS: dict[str, object] = {
     # On, unlike everything above: it never acts on its own, only when the
     # user talks over the eagle. Off is for a room full of other voices.
     "barge_in_enabled": True,
+    # How talking over it works. "auto": the mic stays open to Gemini while the
+    # eagle talks (full duplex) wherever echo cancellation keeps its own voice
+    # out; elsewhere a local detector listens instead. True: always full duplex
+    # (headphones). False: never.
+    "full_duplex": "auto",
     # Zero-latency acoustic keystroke shield. Blocks mechanical keyboard clicks
     # and typing sounds from reaching Gemini while the user is not speaking,
     # bursting pre-roll on speech onset for unclipped consonants.
