@@ -89,3 +89,67 @@ def test_what_is_on_the_screen_is_seen(launch):
     seen = ("aethelark", "eagle", "dashboard", "microphone", "listening")
     wait_for(lambda: any(w in t.lower() for t in log_lines(eagle, "ae") for w in seen), 60,
              "a description of the open window\n" + log_tail(sb))
+
+
+def test_after_esc_stops_an_answer_the_next_question_is_answered_at_once(launch):
+    """The server holds a stopped answer's turn until its audio would have played
+    out; a typed question used to wait behind it for 31-36 s."""
+    import time
+    sb, eagle = launch()
+    wait_for(lambda: connections(sb) >= 1, 40, "the voice loop to connect\n" + log_tail(sb))
+    dash = open_full_window(eagle)
+    pill = eagle.page("pill.html")
+    ask_typed(dash, "Count slowly from one to forty, every number spelled out.")
+    pill.wait("window.island.state === 'speaking'", 30, what="the count to start")
+    time.sleep(1.5)
+    dash.press("Escape")
+    pill.wait("window.island.state !== 'speaking'", 2, what="Esc to stop the eagle")
+    n = len(log_lines(eagle, "ae"))
+    t0 = time.monotonic()
+    ask_typed(dash, "What is 2 plus 2? Just the number.")
+    wait_for(lambda: any("4" in t or "four" in t.lower() for t in log_lines(eagle, "ae")[n:]), 10,
+             "an answer within 10 s of stopping\n" + log_tail(sb))
+    print(f"answered {time.monotonic() - t0:.1f}s after the question")
+
+
+def test_a_refused_key_typed_into_settings_is_not_saved_and_says_why(launch):
+    sb, eagle = launch()
+    wait_for(lambda: connections(sb) >= 1, 40, "the voice loop to connect\n" + log_tail(sb))
+    good = json.loads(sb.config_path.read_text())["gemini_api_key"]
+    dash = open_full_window(eagle)
+    dash.click(".stud")
+    dash.click("#set-key")
+    dash.paste("AIza" + "y" * 35)
+    dash.click("#set-key-save")
+    msg = dash.wait("(t => t && !t.startsWith('Checking') && t)(document.getElementById('set-key-msg').innerText)",
+                    30, what="Google's verdict on the key")
+    assert "updated" not in msg.lower(), msg
+    assert json.loads(sb.config_path.read_text())["gemini_api_key"] == good
+    print("message:", msg)
+
+
+def test_quit_in_settings_closes_the_eagle(launch):
+    sb, eagle = launch()
+    wait_for(lambda: connections(sb) >= 1, 40, "the voice loop to connect\n" + log_tail(sb))
+    dash = open_full_window(eagle)
+    dash.click(".stud")
+    x, y = dash.center("#set-quit")
+    try:
+        for kind in ("mousePressed", "mouseReleased"):
+            dash.call("Input.dispatchMouseEvent", type=kind, x=x, y=y, button="left", clickCount=1)
+    except Exception:
+        pass                              # the page may close under the click
+    wait_for(lambda: sb.proc.poll() is not None, 15, "the eagle to exit")
+
+
+def test_the_weather_suggestion_gets_the_weather(launch):
+    """Onboarding's first suggestion. A new user's city is not known yet; the
+    answer used to be "What city would you like the weather for?"."""
+    sb, eagle = launch()
+    wait_for(lambda: connections(sb) >= 1, 40, "the voice loop to connect\n" + log_tail(sb))
+    dash = open_full_window(eagle)
+    n = len(log_lines(eagle, "ae"))
+    dash.click("text=What's the weather like today?")
+    answer = wait_for(lambda: log_lines(eagle, "ae")[n:], 45, "an answer\n" + log_tail(sb))
+    assert "weather_report" in sb.log_path.read_text(errors="replace"), "the weather tool ran"
+    assert any(w in " ".join(answer).lower() for w in ("degree", "°")), answer

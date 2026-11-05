@@ -644,11 +644,31 @@ def take_screenshot():
     elif _OS == "Darwin":
         pyautogui.hotkey("command", "shift", "3")
     else:
-        for cmd in [["scrot"], ["gnome-screenshot"], ["import", "-window", "root", "screenshot.png"]]:
-            if run_cmd(["which", cmd[0]], capture_output=True).returncode == 0:
-                subprocess.Popen(cmd)
-                return
-        pyautogui.hotkey("ctrl", "print_screen")
+        # Through core.screen_grab: scrot and friends read X, which on Wayland holds
+        # only X11 windows, so they saved a black picture. Saved where people look.
+        from datetime import datetime
+        from core import screen_grab
+        try:
+            img = screen_grab.grab()
+        except screen_grab.ScreenshotUnavailable as e:
+            return ToolResult.failure(str(e), guidance=str(e))
+        folder = _pictures_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"Screenshot {datetime.now():%Y-%m-%d %H-%M-%S}.png"
+        img.save(path)
+        return ToolResult.success(f"Saved a screenshot to {folder.name} as {path.name}.",
+                                  path=str(path))
+
+
+def _pictures_dir() -> Path:
+    try:
+        r = run_cmd(["xdg-user-dir", "PICTURES"], capture_output=True, text=True, timeout=3)
+        p = Path(r.stdout.strip())
+        if r.returncode == 0 and p.is_absolute() and p != Path.home():
+            return p
+    except Exception:
+        pass
+    return Path.home() / "Pictures"
 
 def lock_screen():
     if _OS == "Windows":

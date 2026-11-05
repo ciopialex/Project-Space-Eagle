@@ -801,9 +801,10 @@ TOOL_DECLARATIONS = [
             "properties": {
                 "city": {"type": "STRING", "description": (
                     "City name. If the user did not say one, use the city "
-                    "you remember they live in.")}
+                    "you remember they live in. If you do not know it, leave "
+                    "this out: the computer's own city is used.")}
             },
-            "required": ["city"]
+            "required": []
         }
     },
     {
@@ -1760,13 +1761,19 @@ class AethelarkLive:
         self._last_user_speech = time.monotonic()
         self._unanswered_text = (time.monotonic(), text)
         note_user_turn(text, typed=True)
-        asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
+        if self._model_turn_active:
+            # An answer is still open on the server, playing or stopped with Esc or a
+            # tap: the server holds a turn until its audio would have finished
+            # playing, and a client turn waits behind it. Measured: a count stopped
+            # 1.5 s in kept the next typed question unanswered for 31-36 s. Realtime
+            # text interrupts that answer, as talking over it does.
+            send = self.session.send_realtime_input(text=text)
+        else:
+            send = self.session.send_client_content(
                 turns={"parts": [{"text": text}]},
                 turn_complete=True
-            ),
-            self._loop
-        )
+            )
+        asyncio.run_coroutine_threadsafe(send, self._loop)
 
     async def _flush_pending_text(self, session) -> None:
         """Send what was typed while there was no session, if still fresh."""
