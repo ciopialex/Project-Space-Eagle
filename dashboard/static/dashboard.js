@@ -122,7 +122,7 @@ const Aethelark = (function () {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     const data = await res.json();
-    showToast(data.delivered ? 'Wake signal delivered ⚡' : 'Agent offline');
+    showToast(data.delivered ? 'Wake signal delivered' : 'Agent offline');
   }
 
   function connectWebSocket() {

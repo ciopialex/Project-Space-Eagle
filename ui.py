@@ -6,7 +6,7 @@ surface is `aethelark_web.WebShellUI`.
 
 Three things outlived it, and `aethelark_web.py` imports exactly these:
 
-  * `load_app_fonts`  — registers Doto and Manrope so text matches the design
+  * `load_app_fonts`  — registers Aethelark Plain and Manrope so text matches the design
   * `_metrics`        — the background CPU / memory / net / GPU / temp sampler
   * `make_spring_curve` — a real spring step-response sampled into a QEasingCurve
 
@@ -36,12 +36,13 @@ BASE_DIR   = _base_dir()
 
 
 def load_app_fonts() -> list:
-    """Register Aethelark's bundled display + body fonts (Doto, Manrope) as Qt
+    """Register Aethelark's bundled display + body fonts (Aethelark Plain, Manrope) as Qt
     application fonts so the UI renders identically on every machine. Neither is
     a common system font, so without this the display text (wordmark, clock,
     agent glyphs, metric values) silently falls back and stops matching the
-    design. Fonts ship in assets/fonts; Manrope is downloaded once only if
-    missing."""
+    design. Fonts live in assets/fonts; Manrope is downloaded once only if
+    missing. Aethelark Plain is proprietary and is installed beside the app, not
+    downloaded; without it the text falls back to a system font."""
     from PyQt6.QtGui import QFontDatabase
 
     font_dir = BASE_DIR / "assets" / "fonts"
@@ -59,7 +60,7 @@ def load_app_fonts() -> list:
             print(f"[Fonts] Manrope download failed: {e}")
 
     loaded = []
-    for name in ("Doto.ttf", "Manrope-Variable.ttf"):
+    for name in ("Aethelark-Plain-Regular.ttf", "Manrope-Variable.ttf"):
         p = font_dir / name
         if p.exists() and p.stat().st_size > 0:
             fid = QFontDatabase.addApplicationFont(str(p))
@@ -67,7 +68,7 @@ def load_app_fonts() -> list:
                 fams = QFontDatabase.applicationFontFamilies(fid)
                 if fams:
                     loaded.append(fams[0])
-    for want in ("Doto", "Manrope"):
+    for want in ("Aethelark Plain", "Manrope"):
         if want not in loaded:
             print(f"[Fonts] ⚠️  {want} not registered — text will fall back to a system font.")
     return loaded
