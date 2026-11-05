@@ -49,8 +49,7 @@ from core.quota import explain_quota, looks_like_quota
 from core import proc_registry
 from core.turn_trace import TraceLog, TurnTrace, _enabled_by_default as _trace_enabled
 from core.mic_vad import SpeechDetector, _rms
-from core.barge_in import BargeInDetector, full_duplex
-from core import echo_cancel
+from core.barge_in import BargeInDetector, Overlap
 from core.intent import decode as _decode_intent
 
 from actions.file_processor import file_processor
@@ -1505,6 +1504,11 @@ def reload_modules() -> tuple[set[str], set[str]]:
     return after - before, before - after
 
 
+# The eagle's voice while someone talks over it, before it decides to give way.
+# About -9 dB: clearly yielding, still audible.
+DUCK_GAIN = 0.35
+
+
 class AethelarkLive:
 
     def __init__(self, ui: AethelarkUI):
@@ -1533,14 +1537,17 @@ class AethelarkLive:
         # Talking over the eagle. _play_peak is the speaker level now (playback thread
         # writes, event loop reads). _barge_reply is True while the detector follows the
         # current reply; _barge_on is the Settings toggle when it began.
-        self._barge = BargeInDetector(frame_ms=1000.0 * CHUNK_SIZE / SEND_SAMPLE_RATE)
+        _frame_ms = 1000.0 * CHUNK_SIZE / SEND_SAMPLE_RATE
+        # Long enough to hold everything said before the eagle gives way.
+        self._barge = BargeInDetector(frame_ms=_frame_ms, preroll_ms=1600.0)
+        # Talked over, the eagle lowers its voice at once and gives way only if the
+        # user keeps talking (core/barge_in.Overlap). _duck_gain is the speaker
+        # level it asks for (event loop writes, playback thread reads).
+        self._overlap = Overlap(frame_ms=_frame_ms)
+        self._duck_gain            = 1.0
+        self._duck_applied         = 1.0
         self._barge_reply          = False
         self._barge_on             = True
-        # Full duplex: the mic keeps streaming to Gemini while the eagle talks, and
-        # Gemini stops itself when the user cuts in. _duplex_ready is decided per
-        # session (echo cancellation can change), _duplex_now per reply.
-        self._duplex_ready         = False
-        self._duplex_now           = False
         self._play_peak            = 0.0
         # Backstop for straggler audio from a cancelled turn; turn_complete normally
         # clears the latch.
@@ -1817,6 +1824,8 @@ class AethelarkLive:
         with self._speaking_lock:
             was = self._is_speaking
             self._is_speaking = value
+        if not value:
+            self._duck_gain = 1.0
         if was and not value:
             # Output buffer plus one mic frame plus 0.1 s of room decay.
             self._echo_clear_at = (time.monotonic() + self._out_latency_s
@@ -2813,15 +2822,20 @@ class AethelarkLive:
             self._on_mic_frame(data)
 
     def _on_mic_frame(self, data: bytes) -> None:
-        """Every mic frame, on the event loop. While the eagle speaks the frame
-        still goes to Gemini when its own voice cannot reach the mic (full duplex).
-        Otherwise nothing is sent, because Gemini cannot tell the user from the
-        eagle's own voice; the frame goes to the local barge-in detector instead.
+        """Every mic frame, on the event loop. While the eagle speaks nothing is
+        sent, because Gemini cannot tell the user from the eagle's own voice; the
+        frame goes to the barge-in detector instead.
         """
         with self._speaking_lock:
             speaking = self._is_speaking
         if not speaking:
             self._barge_reply = False
+            if self._overlap.active:
+                # The eagle finished while the user was starting to talk: their
+                # first words were held back, so send them before this frame.
+                n = self._overlap.since_onset + self._overlap.pad_n
+                self._overlap.reset()
+                self._send_held(self._barge.take_preroll(n))
             self._enqueue_mic({"data": data, "mime_type": "audio/pcm"})
             return
         if not self._barge_reply:
@@ -2830,32 +2844,47 @@ class AethelarkLive:
             self._barge_reply = True
             self._barge_on = prefs.enabled("barge_in_enabled")
             self._mic_shield_on = prefs.enabled("mic_shield_enabled")
-            self._duplex_now = self._barge_on and self._duplex_ready
             self._barge.start_utterance()
-        if self._duplex_now:
-            # Gemini hears the user over its own (cancelled) voice and stops itself,
-            # about 0.75 s in. The local detector is quicker when the user is clearly
-            # louder than the echo: it silences the speakers first. Gemini already has
-            # every frame, so nothing is replayed.
-            self._enqueue_mic({"data": data, "mime_type": "audio/pcm"})
-            if self._barge.feed(data, self._play_peak, self._hearing_vad.noise_floor):
-                self._barge.take_preroll()
-                print(f"[Aethelark] 🗣 Barge-in — {self._barge.describe()}")
-                self.interrupt()
+            self._overlap.reset()
+        if not self._barge_on:
             return
-        if self._barge_on and self._barge.feed(
-                data, self._play_peak, self._hearing_vad.noise_floor):
-            self._barge_in()
+        self._barge.feed(data, self._play_peak, self._hearing_vad.noise_floor)
+        act = self._overlap.step(self._barge.last_voiced)
+        if act == "duck":
+            self._duck_gain = DUCK_GAIN
+            print(f"[Aethelark] 🗣 Talked over — lowering its voice ({self._barge.describe()})")
+        elif act == "resume":
+            self._duck_gain = 1.0
+            print("[Aethelark] 🗣 Only a short sound — carrying on")
+        elif act == "yield":
+            self._barge_in(self._overlap.yielded_frames)
 
-    def _barge_in(self) -> None:
-        """The user is talking over the eagle: stop, and listen to all of it."""
-        heard = self._barge.take_preroll()
+    def _barge_in(self, frames: int | None = None) -> None:
+        """The user kept talking over the eagle: stop, and send everything they said
+        from their first word."""
+        heard = self._barge.take_preroll(frames)
         print(f"[Aethelark] 🗣 Barge-in — {self._barge.describe()}")
         self.interrupt()
         # What the user said while the detector was deciding, so the server hears their
         # first word.
-        for frame in heard:
-            self._enqueue_mic({"data": frame, "mime_type": "audio/pcm"})
+        self._send_held(heard)
+
+    def _send_held(self, frames: list[bytes]) -> None:
+        """Send words the user said over the eagle, held back until it gave way.
+        They are known to be the user, so they skip the mic shield, and the hearing
+        detector is told the user is mid-sentence: otherwise the echo-tail guard
+        that follows the eagle's voice would blank the user's first words.
+        """
+        if not frames:
+            return
+        self._echo_clear_at = 0.0
+        self._echo_reset_due = False
+        for frame in frames:
+            self._hearing_vad.feed(frame)
+            self._trace_mic_frame(frame)
+            self._push_mic_queue({"data": frame, "mime_type": "audio/pcm"})
+        if not self._hearing:
+            self._set_hearing(True)
 
     async def _listen_audio(self):
         print("[Aethelark] 🎤 Mic started")
@@ -3168,9 +3197,10 @@ class AethelarkLive:
                 if not _is_speaking_now():
                     self.set_speaking(True)
 
-                # Playback level, for telling the user from their echo
-                # (core/barge_in.py). Fast up, slow down.
-                self._play_peak = max(_rms(chunk) or 0.0, self._play_peak * 0.6)
+                # Playback level as it leaves the speakers, for telling the user from
+                # their echo (core/barge_in.py). Fast up, slow down.
+                gain = self._duck_gain
+                self._play_peak = max((_rms(chunk) or 0.0) * gain, self._play_peak * 0.6)
 
                 out = chunk
                 # Native rate and web UI: hand raw PCM to the device, no numpy.
@@ -3186,6 +3216,18 @@ class AethelarkLive:
                     except Exception as re_err:
                         print(f"[Aethelark] Resampling error: {re_err}")
                         out = chunk
+
+                # Talked over: lower the voice, ramped across the chunk so it does
+                # not click.
+                if gain != 1.0 or self._duck_applied != 1.0:
+                    try:
+                        import numpy as np
+                        s16 = np.frombuffer(out, dtype=np.int16).astype(np.float32)
+                        s16 *= np.linspace(self._duck_applied, gain, len(s16), dtype=np.float32)
+                        out = s16.astype(np.int16).tobytes()
+                        self._duck_applied = gain
+                    except Exception as duck_err:
+                        print(f"[Aethelark] Duck error: {duck_err}")
 
                 # Marked at the device write, so `audio` is our own playback cost.
                 self._trace_mark("first_audio")
@@ -3696,12 +3738,6 @@ class AethelarkLive:
                         connected_ok = True
                         self._backoff.on_connected()   # starts the health timer
                         print(f"[Aethelark] Connected. (session={self._session_id})")
-                        self._duplex_ready = await asyncio.to_thread(
-                            full_duplex, prefs.get("full_duplex"),
-                            lambda: echo_cancel.state().active)
-                        print("[Aethelark] Talk over it: "
-                              + ("full duplex, the mic stays open while it speaks"
-                                 if self._duplex_ready else "local detector"))
                         try:
                             mods = ", ".join(sorted(m.key for m in MODULE_BUS.available())) or "none"
                             print(f"[session] {'CODING' if coding_enabled() else 'CASUAL'} · "
