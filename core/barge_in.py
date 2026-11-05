@@ -60,6 +60,7 @@ class BargeInDetector:
         self._ratios: deque[float] = deque(maxlen=max(1, round(SNAP_MS / frame_ms)))
         self.last_mic = 0.0
         self.last_threshold = 0.0
+        self.last_voiced = False   # this frame was the user, not the echo
 
     def start_utterance(self) -> None:
         """The eagle started talking: forget the last attempt, keep the room."""
@@ -82,6 +83,7 @@ class BargeInDetector:
         self._played.append(playback)
         self._frames += 1
         level = _rms(frame)
+        self.last_voiced = False
         if level is None:
             return False
         reference = max(self._played)
@@ -89,7 +91,8 @@ class BargeInDetector:
         threshold = max(ABS_FLOOR, noise_floor * 4.0, echo * self.margin)
         self.last_mic, self.last_threshold = level, threshold
 
-        self._votes.append(level > threshold)
+        self.last_voiced = level > threshold
+        self._votes.append(self.last_voiced)
         self._vote_ratios.append(level / reference if reference > MIN_PLAYBACK else None)
         self._run = sum(self._votes)
 
@@ -119,9 +122,12 @@ class BargeInDetector:
         if hot:
             self.coupling = min(max(self.coupling, max(hot) / self.margin), 4.0)
 
-    def take_preroll(self) -> list[bytes]:
-        """The frames heard while deciding, oldest first, and forget them."""
+    def take_preroll(self, last: int | None = None) -> list[bytes]:
+        """The frames heard while deciding, oldest first, and forget them. `last`
+        keeps only the newest that many."""
         frames = list(self._preroll)
+        if last is not None:
+            frames = frames[-last:] if last > 0 else []
         self._preroll.clear()
         self._votes.clear()
         self._vote_ratios.clear()
@@ -131,3 +137,66 @@ class BargeInDetector:
     def describe(self) -> str:
         return (f"mic {self.last_mic:.0f} over threshold {self.last_threshold:.0f}, "
                 f"echo ratio {self.coupling:.2f}")
+
+
+# How people talk over each other. The speaker falters at once (here: drops its
+# voice), gives way if the other keeps going, and carries on after a short
+# "mhm", "yeah" or a cough. A backchannel is a few hundred ms of voice; "wait,
+# wait" or a question is more.
+DUCK_MS = 128        # voice heard this long: falter
+YIELD_MS = 448       # this much voice: give way
+RESUME_MS = 384      # quiet this long before giving way: it was a backchannel
+PREROLL_PAD_MS = 256  # audio kept from before the first voiced frame
+
+
+class Overlap:
+    """Turns per-frame "that was the user" verdicts into what the eagle does.
+    step() returns "duck", "yield", "resume" or None. Event loop only."""
+
+    def __init__(self, frame_ms: float = 64.0, duck_ms: float = DUCK_MS,
+                 yield_ms: float = YIELD_MS, resume_ms: float = RESUME_MS) -> None:
+        self.frame_ms = frame_ms
+        self.duck_n = max(1, round(duck_ms / frame_ms))
+        self.yield_n = max(self.duck_n + 1, round(yield_ms / frame_ms))
+        self.resume_n = max(1, round(resume_ms / frame_ms))
+        self.pad_n = max(0, round(PREROLL_PAD_MS / frame_ms))
+        self.reset()
+
+    yielded_frames = 0       # on "yield": how many frames the user's words span
+
+    def reset(self) -> None:
+        self.voiced = 0          # voiced frames since the overlap began
+        self.since_onset = 0     # all frames since the overlap began
+        self.quiet = 0           # quiet frames in a row
+        self.ducked = False
+
+    @property
+    def active(self) -> bool:
+        return self.voiced > 0
+
+    @property
+    def heard_frames(self) -> int:
+        """Frames to hand Gemini on yielding: the overlap plus a little before."""
+        return self.since_onset + self.pad_n
+
+    def step(self, voiced: bool) -> str | None:
+        if not self.voiced and not voiced:
+            return None
+        self.since_onset += 1
+        if voiced:
+            self.voiced += 1
+            self.quiet = 0
+        else:
+            self.quiet += 1
+        if self.voiced >= self.yield_n:
+            self.yielded_frames = self.since_onset + self.pad_n
+            self.reset()
+            return "yield"
+        if self.quiet >= self.resume_n:
+            was = self.ducked
+            self.reset()
+            return "resume" if was else None
+        if not self.ducked and self.voiced >= self.duck_n:
+            self.ducked = True
+            return "duck"
+        return None

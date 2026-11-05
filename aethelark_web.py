@@ -1738,8 +1738,8 @@ class WebShellUI(QObject):
                             "elapsed": "0:00", "conductor": "NO ACTIVE SWARM",
                             "state": "STANDBY"},
                 "agents": [],
-                "timeline": [{"ts": "", "text": "No active swarm. Say "
-                              "“build me…” to start one.", "done": False}],
+                # The empty stage says how to start; the timeline stays empty.
+                "timeline": [],
             }
         self._push("setSwarm", view)
         if not view.get("solo"):

@@ -40,7 +40,7 @@ canvas#stars{position:fixed;inset:0;z-index:0;pointer-events:none}
 
 /* window */
 .app{position:relative;width:1200px;max-width:100%;height:726px;border-radius:16px;overflow:hidden;
-  background:linear-gradient(135deg,rgba(16,16,20,.92),rgba(7,7,10,.96));
+  background:linear-gradient(135deg,#101014,#07070a);
   box-shadow:0 24px 55px rgba(0,0,0,.62),0 0 30px rgba(255,255,255,.012);
   display:grid;grid-template-rows:54px 1fr 26px;outline:1px solid rgba(255,255,255,.05);outline-offset:-1px;
   transition:width .55s var(--ease-collapse),height .55s var(--ease-collapse),border-radius .55s var(--ease-collapse)}
@@ -361,6 +361,11 @@ canvas#stars{position:fixed;inset:0;z-index:0;pointer-events:none}
             </div>
           </div>
           <div class="blackboard" id="bbsync" hidden><span class="bi">&#9673;</span><span class="bt"></span></div>
+          <div class="sw-empty" id="sw-empty">
+            <div class="h">No agents working</div>
+            <div class="p">Ask for something to be built and the coding agents on this computer show up here as they work.</div>
+            <div class="eg"><span>&ldquo;Have Claude Code add dark mode to my blog&rdquo;</span><span>&ldquo;Build me a booking site for a dental clinic&rdquo;</span></div>
+          </div>
         </div>
 
         <div class="rail">
@@ -476,6 +481,31 @@ draw();
      is what made it stutter). Origin near the top-centre so it reads as growing
      from the Dynamic Island's spot. */
   .app { transform-origin:50% 4%; }
+
+  /* The eagle fills the middle column instead of leaving its lower half empty. */
+  #resting .stage .core-wrap { flex:1 1 auto; }
+  #resting .stage .saybar { flex:none; padding-bottom:4px; }
+  /* Empty feeds say what goes there. */
+  .log:empty::before { content:"Nothing yet today. Say hello, or type below.";
+    margin:auto; color:var(--muted,#7C7C86); font-size:11.5px; text-align:center; line-height:1.6; }
+  .tl:empty::before { content:"Steps appear here as agents work.";
+    display:block; color:var(--muted,#7C7C86); font-size:11.5px; padding:4px 2px; }
+  /* Coding view with nothing running. */
+  #swarm .stage { position:relative; }
+  #swarm .interrupt.idle { opacity:.35; pointer-events:none; filter:saturate(.4); }
+  .sw-empty { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:10px; text-align:center; padding:24px; color:var(--muted,#7C7C86); }
+  .sw-empty[hidden] { display:none; }
+  .sw-empty .h { font-family:'Manrope'; font-weight:700; font-size:17px; color:var(--silver-hi,#ECECF2); }
+  .sw-empty .p { max-width:380px; font-size:12.5px; line-height:1.6; }
+  .sw-empty .eg { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+  .sw-empty .eg span { padding:8px 14px; border-radius:18px; font-size:12px; color:var(--text2,#C8C8D0);
+    background:rgba(255,255,255,.03); box-shadow:inset 0 0 0 1px rgba(200,200,208,.13); }
+  /* Long names stay on one line inside their tiles. */
+  #swarm .conductor .txt { min-width:0; }
+  #swarm .conductor .txt .t { letter-spacing:.1em; }
+  #swarm .conductor .txt .t, #swarm .conductor .txt .s { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #swarm .swrow .v { min-width:0; max-width:62%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:right; }
   .app.ae-in  { animation:aeIn  .46s cubic-bezier(.22,1.12,.35,1) both; will-change:transform,opacity; }
   .app.ae-out { animation:aeOut .24s cubic-bezier(.4,0,.9,.4)     both; will-change:transform,opacity; }
   @keyframes aeIn  { from { transform:scale(.16) translateY(-11vh); opacity:0; }
@@ -514,7 +544,7 @@ draw();
   #set-scrim.open { display:block; }
   @keyframes setfade { from{opacity:0} to{opacity:1} }
   #set-panel { position:absolute; top:0; right:0; height:100%;
-    width:min(460px,86%); display:flex; flex-direction:column;
+    width:min(440px,86%); display:flex; flex-direction:column;
     background:linear-gradient(180deg,rgba(18,18,24,.98),rgba(8,8,12,.99));
     box-shadow:-30px 0 80px rgba(0,0,0,.6), inset 1px 0 0 rgba(200,200,208,.14);
     transform:translateX(100%); transition:transform .26s cubic-bezier(.2,.9,.25,1); }
@@ -522,8 +552,8 @@ draw();
   .set-hd { display:flex; align-items:center; justify-content:space-between;
     padding:20px 24px 14px; flex:none;
     box-shadow:inset 0 -1px 0 rgba(200,200,208,.1); }
-  .set-hd .ttl { font-family:'Doto'; font-weight:800; font-size:13px;
-    letter-spacing:.34em; color:var(--silver,#C8C8D0); }
+  .set-hd .ttl { font-family:'Manrope'; font-weight:700; font-size:19px;
+    letter-spacing:-.01em; color:var(--silver-hi,#ECECF2); }
   .set-hd .x { width:28px; height:28px; border-radius:8px; display:grid;
     place-items:center; color:var(--muted,#7C7C86); cursor:pointer; font-size:14px;
     background:rgba(255,255,255,.03); box-shadow:inset 0 0 0 1px rgba(200,200,208,.14); }
@@ -531,22 +561,41 @@ draw();
   .set-body { flex:1; overflow-y:auto; padding:8px 24px 26px; }
   .set-body::-webkit-scrollbar { width:8px; }
   .set-body::-webkit-scrollbar-thumb { background:rgba(200,200,208,.18); border-radius:4px; }
-  .set-sec { margin-top:22px; }
-  .set-sec > .lbl { font-family:'Doto'; font-weight:700; font-size:10px;
-    letter-spacing:.2em; color:var(--muted,#7C7C86); text-transform:uppercase;
-    margin-bottom:10px; }
-  .set-row { display:flex; align-items:center; gap:14px; padding:14px 16px;
-    border-radius:13px; margin-bottom:10px; background:rgba(255,255,255,.025);
-    box-shadow:inset 0 0 0 1px rgba(200,200,208,.14); }
-  .set-row .ic { flex:none; width:36px; height:36px; border-radius:10px;
-    display:grid; place-items:center; font-family:'Doto'; font-weight:700; font-size:14px;
-    background:linear-gradient(135deg,#2a2a32,#141419); color:var(--silver-hi,#ECECF2);
-    box-shadow:inset 0 1px 0 rgba(255,255,255,.06); }
+  .set-sec { margin-top:24px; }
+  .set-sec:first-child { margin-top:10px; }
+  .set-sec > .lbl { font-family:'Manrope'; font-weight:600; font-size:11px;
+    letter-spacing:.08em; color:var(--muted,#7C7C86); text-transform:uppercase;
+    margin:0 0 8px 14px; }
+  /* Grouped inset list: one card per group, rows divided by hairlines that start
+     after the icon, the way iOS Settings draws them. */
+  .set-group { border-radius:14px; overflow:hidden; corner-shape:superellipse(1.6);
+    background:rgba(255,255,255,.035); box-shadow:inset 0 0 0 1px rgba(200,200,208,.11); }
+  .set-row { position:relative; display:flex; align-items:center; gap:12px;
+    padding:11px 14px; min-height:52px; transition:background .16s; }
+  .set-group > .set-row:hover { background:rgba(255,255,255,.025); }
+  .set-group > * + *::before { content:""; position:absolute; top:0; right:0; left:56px;
+    height:1px; background:rgba(200,200,208,.09); }
+  .set-group > .set-stack + *::before, .set-group > .set-field-row + *::before { left:14px; }
+  .set-row .ic { flex:none; width:30px; height:30px; border-radius:8px;
+    display:grid; place-items:center; color:var(--silver-hi,#ECECF2);
+    background:linear-gradient(135deg,#2c2c34,#17171c);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.07), inset 0 0 0 1px rgba(200,200,208,.08); }
   .set-row .tt { flex:1; min-width:0; }
   .set-row .tt .t { font-size:13.5px; color:var(--text,#E5E5EA); font-weight:600;
-    display:flex; align-items:center; gap:8px; }
-  .set-row .tt .d { font-size:11.5px; color:var(--muted,#7C7C86); line-height:1.5;
-    margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .set-row .tt .d, .set-field-foot .d, .set-stack .d { font-size:11.5px;
+    color:var(--muted,#7C7C86); line-height:1.45; margin-top:2px; }
+  .set-field-row { position:relative; display:flex; align-items:center; gap:12px;
+    padding:6px 8px 6px 14px; min-height:50px; cursor:text; }
+  .set-field-row .k { flex:none; width:84px; font-size:13.5px; font-weight:600;
+    color:var(--text,#E5E5EA); }
+  .set-field-row .set-field { flex:1; background:transparent; box-shadow:none;
+    padding:0 6px; height:38px; }
+  .set-field-row .set-field:focus { background:rgba(255,255,255,.04);
+    box-shadow:inset 0 0 0 1px rgba(200,200,208,.35); }
+  .set-field-foot { position:relative; display:flex; align-items:center;
+    justify-content:space-between; gap:10px; padding:8px 8px 8px 14px; }
+  .set-field-foot .d { margin:0; }
   .set-mini { font-family:'Manrope'; font-weight:600; font-size:11px; letter-spacing:.06em;
     padding:8px 14px; border-radius:9px; cursor:pointer; flex:none; border:0;
     color:var(--text2,#C8C8D0); background:rgba(255,255,255,.04);
@@ -569,6 +618,7 @@ draw();
   .set-step { color:var(--silver-hi,#ECECF2); opacity:.8; }
   .set-err { color:var(--red,#ef4d5c); }
   /* toggle switch */
+  .set-sw:focus-visible, .set-mini:focus-visible { outline:2px solid rgba(236,236,242,.6); outline-offset:2px; }
   .set-sw { flex:none; width:42px; height:24px; border-radius:13px; cursor:pointer;
     background:rgba(255,255,255,.06); box-shadow:inset 0 0 0 1px rgba(200,200,208,.2);
     position:relative; transition:.2s; }
@@ -584,7 +634,7 @@ draw();
     box-shadow:inset 0 0 0 1px rgba(200,200,208,.14); }
   .set-field:focus { box-shadow:inset 0 0 0 1px var(--silver,#C8C8D0); }
   .set-field::placeholder { color:var(--muted,#7C7C86); }
-  .set-stack { display:block; padding:14px 16px; }
+  .set-stack { display:block; padding:14px; }
   .set-stack .t { font-size:13.5px; color:var(--text,#E5E5EA); font-weight:600; margin-bottom:8px; }
   .set-inline { display:flex; gap:8px; margin-top:8px; }
   .set-inline .set-field { flex:1; }
@@ -831,6 +881,10 @@ draw();
       var ct = document.querySelector('#swarm .conductor .txt .sig.t');
       if (ct && mm.state != null) ct.textContent = mm.state;
     }
+    var swEmpty = document.getElementById('sw-empty');
+    var working = !!(d.agents && d.agents.length);
+    if (swEmpty) swEmpty.hidden = working;
+    document.querySelectorAll('#swarm .opbtn.interrupt').forEach(function (b) { b.classList.toggle('idle', !working); });
     if (d.agents) {
       var badge = { work: 'WORKING', review: 'IN REVIEW', block: 'NEEDS YOU', idle: 'STANDBY' };
       var lanesBox = document.querySelector('#swarm .lanes');
@@ -1041,87 +1095,120 @@ draw();
   /* One switch per behaviour the eagle can do on its own. Each defaults off:
      speaking first, watching the clipboard and opening a network remote are
      things a person chooses, not things chosen for them. */
-  var TOGGLES = [
-    ['barge_in_enabled', 'Talk over it', 'Speak while it talks to cut in.'],
-    ['morning_brief_enabled', 'Morning brief', 'Headlines when the eagle starts.'],
-    ['proactive_enabled', 'Check in when quiet', 'Speaks up after a long silence.'],
-    ['system_alerts_enabled', 'System alerts', 'Warns when the computer runs hot.'],
-    ['clipboard_assist_enabled', 'Clipboard helper', 'Quick actions for text you copy.'],
-    ['island_live_activities', 'Running prints on the island', 'Keep a running print showing between looks.'],
-    ['remote_dashboard_enabled', 'Phone remote', 'Control it from your phone. Restart to apply.'],
-    ['labs_tools_enabled', 'Labs', 'Messaging, email, desktop control and missions.']
+  /* Switches, in the groups a person looks for them in. Each defaults off,
+     except talking over it: speaking first, watching the clipboard and opening a
+     network remote are things a person chooses, not things chosen for them. */
+  var CONVERSATION = [
+    ['barge_in_enabled', 'wave', 'Talk over it', 'Cut in while it talks. A quick “mhm” won’t stop it.'],
+    ['morning_brief_enabled', 'sun', 'Morning brief', 'Headlines when the eagle starts.'],
+    ['proactive_enabled', 'chat', 'Check in when quiet', 'Speaks up after a long silence.']
+  ];
+  var EXTRAS = [
+    ['system_alerts_enabled', 'therm', 'System alerts', 'Warns when the computer runs hot.'],
+    ['clipboard_assist_enabled', 'clip', 'Clipboard helper', 'Quick actions for text you copy.'],
+    ['island_live_activities', 'cube', '3D prints on the island', 'Keep a running print in view.'],
+    ['remote_dashboard_enabled', 'phone', 'Phone remote', 'Use it from your phone. Applies after a restart.'],
+    ['labs_tools_enabled', 'flask', 'Labs', 'Messaging, email, desktop control and missions.']
   ];
 
+  var ICONS = {
+    wave: 'M3 12h2M7 8v8M11 5v14M15 8v8M19 11v2',
+    sun: 'M12 4v2M5.6 7.6 7 9M18.4 7.6 17 9M3 15h2M19 15h2M7.5 15a4.5 4.5 0 0 1 9 0M3 19h18',
+    chat: 'M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4 3.5V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z',
+    therm: 'M10 13.5V5a2 2 0 0 1 4 0v8.5a4 4 0 1 1-4 0zM12 9v6',
+    clip: 'M9 4h6v3H9zM8 5.5H6v15h12v-15h-2',
+    cube: 'M12 3l8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9',
+    phone: 'M8 2.5h8a1 1 0 0 1 1 1v17a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1v-17a1 1 0 0 1 1-1zM11 18h2',
+    flask: 'M9 3h6M10 3v6l-5 8.5A2 2 0 0 0 6.7 21h10.6a2 2 0 0 0 1.7-3.5L14 9V3M7.5 15h9',
+    power: 'M12 3v8M6.4 6.6a8 8 0 1 0 11.2 0',
+    redo: 'M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4v4.5H15',
+    exit: 'M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10',
+    link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1',
+    globe: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM3.5 12h17M12 3c2.5 2.6 3.5 5.6 3.5 9s-1 6.4-3.5 9c-2.5-2.6-3.5-5.6-3.5-9s1-6.4 3.5-9z',
+    mail: 'M4 6h16v12H4zM4 7l8 6 8-6',
+    bubble: 'M12 3.5a8.5 8.5 0 0 0-7.4 12.7L3.5 20.5l4.4-1.1A8.5 8.5 0 1 0 12 3.5z',
+    play: 'M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v10a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 17V7A1.5 1.5 0 0 1 5 5.5zM10.5 9.5v5l4-2.5z',
+    module: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z'
+  };
+  var ICON_FOR = { '◆': 'module', '↳': 'link' };
+  function icon(name) {
+    var d = ICONS[ICON_FOR[name] || name];
+    if (!d) return esc(name);
+    return '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"'
+      + ' stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="' + d + '"/></svg>';
+  }
+
   function row(ic, title, desc, right, extra) {
-    return '<div class="set-row"' + (extra || '') + '><div class="ic">' + ic + '</div><div class="tt">'
+    return '<div class="set-row"' + (extra || '') + '><div class="ic">' + icon(ic) + '</div><div class="tt">'
       + '<div class="t">' + title + '</div><div class="d">' + desc + '</div></div>' + right + '</div>';
+  }
+  function toggles(list) {
+    return list.map(function (t) {
+      return row(t[1], t[2], t[3], '<div class="set-sw" role="switch" tabindex="0" data-pref="' + t[0] + '"></div>');
+    }).join('');
   }
 
   var SHELL =
     '<div id="set-panel">'
-    + '<div class="set-hd"><span class="ttl">SETTINGS</span>'
-    +   '<div class="x" id="set-close" title="Close">✕</div></div>'
+    + '<div class="set-hd"><span class="ttl">Settings</span>'
+    +   '<div class="x" id="set-close" title="Close (Esc)">✕</div></div>'
     + '<div class="set-body">'
 
-    + '<div class="set-sec"><div class="lbl">Voice</div>'
+    + '<div class="set-sec"><div class="lbl">You</div><div class="set-group">'
+    +   '<label class="set-field-row"><span class="k">Its name</span>'
+    +     '<input class="set-field" id="set-asst" placeholder="Aethelark" autocomplete="off"></label>'
+    +   '<label class="set-field-row"><span class="k">Calls you</span>'
+    +     '<input class="set-field" id="set-addr" placeholder="Your name" autocomplete="off"></label>'
+    +   '<div class="set-field-foot"><span class="d" id="set-id-msg">Changes save when you press Enter.</span>'
+    +     '<button class="set-mini" id="set-id-save" disabled>Save</button></div>'
+    + '</div></div>'
+
+    + '<div class="set-sec"><div class="lbl">Conversation</div><div class="set-group">'
+    +   toggles(CONVERSATION)
+    + '</div></div>'
+
+    + '<div class="set-sec"><div class="lbl">Voice key</div><div class="set-group">'
     +   '<div class="set-row set-stack">'
     +     '<div class="t">Gemini key <span class="set-badge off" id="set-key-badge">NONE</span></div>'
     +     '<div class="set-inline"><input class="set-field" id="set-key" type="password" placeholder="Paste a new key to replace it">'
     +       '<button class="set-mini solid" id="set-key-save">Update</button></div>'
-    +     '<div class="d" id="set-key-msg" style="margin-top:8px"></div>'
-    +   '</div></div>'
+    +     '<div class="d" id="set-key-msg"></div>'
+    +   '</div></div></div>'
 
-    + '<div class="set-sec"><div class="lbl">You</div>'
-    +   '<div class="set-row set-stack">'
-    +     '<div class="t">The eagle\'s name</div>'
-    +     '<input class="set-field" id="set-asst" placeholder="Aethelark">'
-    +     '<div class="t" style="margin-top:14px">What it calls you</div>'
-    +     '<input class="set-field" id="set-addr" placeholder="Your name">'
-    +     '<div class="set-inline"><button class="set-mini solid" id="set-id-save" style="flex:1">Save</button></div>'
-    +   '</div></div>'
+    + '<div class="set-sec"><div class="lbl">Extras</div><div class="set-group">'
+    +   toggles(EXTRAS)
+    + '</div></div>'
 
-    + '<div class="set-sec"><div class="lbl">Behaviour</div>'
-    +   TOGGLES.map(function (t) {
-          return row('○', t[1], t[2], '<div class="set-sw" data-pref="' + t[0] + '"></div>');
-        }).join('')
-    +   row('⏻', 'Start on boot', '<span id="set-boot-d">Wake the eagle when your computer starts.</span>',
-            '<div class="set-sw" id="set-boot-sw"></div>')
-    + '</div>'
+    + '<div class="set-sec"><div class="lbl">Modules</div><div class="set-group" id="set-shop"></div></div>'
 
-    + '<div class="set-sec"><div class="lbl">Modules</div><div id="set-shop"></div></div>'
+    + '<div class="set-sec" id="set-chrome" style="display:none"><div class="lbl">Accounts</div><div class="set-group">'
+    +   row('globe', 'Your Chrome sign-ins <span class="set-badge off" id="set-ch-badge">OFF</span>',
+            '<span id="set-ch-d">Never sign in to a site twice.</span>',
+            '<button class="set-mini solid" id="set-ch-btn">Set up</button>')
+    + '</div></div>'
 
-    + '<div class="set-sec" id="set-chrome" style="display:none"><div class="lbl">Accounts</div>'
-    +   '<div class="set-row"><div class="ic">◎</div><div class="tt">'
-    +     '<div class="t">Your Chrome sign-ins <span class="set-badge off" id="set-ch-badge">OFF</span></div>'
-    +     '<div class="d" id="set-ch-d">Never sign in to a site twice.</div></div>'
-    +     '<button class="set-mini solid" id="set-ch-btn">Set up</button></div>'
-    + '</div>'
+    + '<div class="set-sec" id="set-accounts" style="display:none"><div class="lbl">More accounts · Labs</div><div class="set-group">'
+    +   row('mail', 'Google <span class="set-badge off" id="set-g-badge">NOT LINKED</span>',
+            '<span id="set-g-d">Email briefings need your account.</span>',
+            '<button class="set-mini" id="set-g-btn">Connect</button>')
+    +   row('bubble', 'WhatsApp', 'Link with a QR code to send messages by voice.',
+            '<button class="set-mini" id="set-wa-btn">Link</button>')
+    +   row('play', 'YouTube <span class="set-badge off" id="set-yt-badge">CHECKING</span>',
+            '<span id="set-yt-d">Liked videos, playlists and subscriptions.</span>',
+            '<button class="set-mini" id="set-yt-btn">Connect</button>')
+    +   row('link', 'Signed-in sites <span class="set-badge off" id="set-br-badge">NONE</span>',
+            '<span id="set-br-d">Sites the eagle signed in to in its own window.</span>',
+            '<button class="set-mini" id="set-br-btn">Sign in…</button>')
+    + '</div></div>'
 
-    + '<div class="set-sec" id="set-accounts" style="display:none"><div class="lbl">More accounts · Labs</div>'
-    +   '<div class="set-row"><div class="ic">G</div><div class="tt">'
-    +     '<div class="t">Google <span class="set-badge off" id="set-g-badge">NOT LINKED</span></div>'
-    +     '<div class="d" id="set-g-d">Email briefings need your account.</div></div>'
-    +     '<button class="set-mini" id="set-g-btn">Connect</button></div>'
-    +   '<div class="set-row"><div class="ic">W</div><div class="tt">'
-    +     '<div class="t">WhatsApp</div>'
-    +     '<div class="d">Link with a QR code to send messages by voice.</div></div>'
-    +     '<button class="set-mini" id="set-wa-btn">Link</button></div>'
-    +   '<div class="set-row"><div class="ic">▶</div><div class="tt">'
-    +     '<div class="t">YouTube <span class="set-badge off" id="set-yt-badge">CHECKING</span></div>'
-    +     '<div class="d" id="set-yt-d">Liked videos, playlists and subscriptions.</div></div>'
-    +     '<button class="set-mini" id="set-yt-btn">Connect</button></div>'
-    +   '<div class="set-row"><div class="ic">◉</div><div class="tt">'
-    +     '<div class="t">Signed-in sites <span class="set-badge off" id="set-br-badge">NONE</span></div>'
-    +     '<div class="d" id="set-br-d">Sites the eagle signed in to in its own window.</div></div>'
-    +     '<button class="set-mini" id="set-br-btn">Sign in…</button></div>'
-    + '</div>'
-
-    + '<div class="set-sec"><div class="lbl">Session</div>'
-    +   row('↻', 'Run setup again', 'Key, name and microphone check.',
+    + '<div class="set-sec"><div class="lbl">System</div><div class="set-group">'
+    +   row('power', 'Start on boot', '<span id="set-boot-d">Wake the eagle when your computer starts.</span>',
+            '<div class="set-sw" role="switch" tabindex="0" id="set-boot-sw"></div>')
+    +   row('redo', 'Run setup again', 'Key, name and microphone check.',
             '<button class="set-mini" id="set-reonboard">Open</button>')
-    +   row('⏻', 'Quit Aethelark', 'Close the eagle.',
+    +   row('exit', 'Quit Aethelark', 'Close the eagle.',
             '<button class="set-mini danger" id="set-quit">Quit</button>')
-    + '</div>'
+    + '</div></div>'
 
     + '</div></div>';
 
@@ -1213,6 +1300,7 @@ draw();
 
     document.querySelectorAll('#set-panel .set-sw[data-pref]').forEach(function (sw) {
       sw.classList.toggle('on', !!prefs[sw.dataset.pref]);
+      sw.setAttribute('aria-checked', prefs[sw.dataset.pref] ? 'true' : 'false');
     });
 
     var brain = s.brain || {};
@@ -1228,6 +1316,10 @@ draw();
     var id = s.identity || {};
     setVal('set-asst', id.assistant_name || '');
     setVal('set-addr', id.user_name || '');
+    if (document.activeElement !== document.getElementById('set-asst')
+        && document.activeElement !== document.getElementById('set-addr')) {
+      idSaved = (id.assistant_name || '').trim() + '\n' + (id.user_name || '').trim();
+    }
 
     var startup = s.startup || {};
     var bsw = document.getElementById('set-boot-sw');
@@ -1308,8 +1400,19 @@ draw();
     }
   };
 
+  var idSaved = null;
+  function idDirty(on) {
+    var b = document.getElementById('set-id-save'), m = document.getElementById('set-id-msg');
+    if (b) b.disabled = !on;
+    if (m) m.textContent = on ? 'Press Enter to save.' : 'Saved.';
+  }
   function saveIdentity() {
     if (!pb()) return;
+    var now = (document.getElementById('set-asst').value || '').trim() + '\n'
+            + (document.getElementById('set-addr').value || '').trim();
+    if (now === idSaved) { idDirty(false); return; }
+    idSaved = now;
+    idDirty(false);
     pb().save_settings(JSON.stringify({
       assistant_name: (document.getElementById('set-asst').value || '').trim(),
       user_name: (document.getElementById('set-addr').value || '').trim(),
@@ -1319,6 +1422,12 @@ draw();
 
   function wire() {
     document.getElementById('set-close').onclick = close;
+    panel.addEventListener('keydown', function (e) {
+      var t = e.target;
+      if (t && t.classList && t.classList.contains('set-sw') && (e.key === ' ' || e.key === 'Enter')) {
+        e.preventDefault(); t.click();
+      }
+    });
     scrim.addEventListener('click', function (e) { if (e.target === scrim) close(); });
 
     document.querySelectorAll('#set-panel .set-sw[data-pref]').forEach(function (sw) {
@@ -1346,8 +1455,12 @@ draw();
       pb().set_autostart(!this.classList.contains('on'));
     };
     document.getElementById('set-id-save').onclick = saveIdentity;
-    document.getElementById('set-asst').addEventListener('keydown', function (e) { if (e.key === 'Enter') saveIdentity(); });
-    document.getElementById('set-addr').addEventListener('keydown', function (e) { if (e.key === 'Enter') saveIdentity(); });
+    ['set-asst', 'set-addr'].forEach(function (id) {
+      var f = document.getElementById(id);
+      f.addEventListener('keydown', function (e) { if (e.key === 'Enter') { saveIdentity(); f.blur(); } });
+      f.addEventListener('input', function () { idDirty(true); });
+      f.addEventListener('change', saveIdentity);
+    });
 
     document.getElementById('set-ch-btn').onclick = function () {
       if (!pb()) return;
